@@ -217,8 +217,15 @@
         pruneTimerHeap();
         if (timerHeap.length === 0 || timerHeap[0].deadline > now) break;
 
-        var timer = heapPop();
-        if (timers.get(timer.id) !== timer) continue;
+        // A single active timer is very common in games (autosave,
+        // animation/plugin heartbeat). Avoid heap pop+push when no ordering
+        // work is necessary; keep the timer at slot 0 and advance in place.
+        var singleTimer = timerHeap.length === 1;
+        var timer = singleTimer ? timerHeap[0] : heapPop();
+        if (timers.get(timer.id) !== timer) {
+          if (singleTimer) heapPop();
+          continue;
+        }
 
         if (timer.interval > 0) {
           // Preserve browser-style "one callback after a stall" semantics,
@@ -226,8 +233,9 @@
           // burn millions of iterations after suspend/resume or a long hitch.
           var missed = Math.floor((now - timer.deadline) / timer.interval) + 1;
           timer.deadline += missed * timer.interval;
-          heapPush(timer);
+          if (!singleTimer) heapPush(timer);
         } else {
+          if (singleTimer) heapPop();
           timers.delete(timer.id);
         }
 
