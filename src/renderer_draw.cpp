@@ -67,6 +67,7 @@ void Renderer::computeFilterContentBounds() {
     std::vector<std::array<float, 4>> regions;
   };
   std::vector<Accumulator> stack;
+  stack.reserve(scene_packet::maxFilterDepth);
   const auto unite = [](Accumulator& acc, float x0, float y0, float x1,
                         float y1) {
     if (!acc.hasContent) {
@@ -156,7 +157,7 @@ void Renderer::computeFilterContentBounds() {
     }
     if (command.action == RenderCommand::Action::filterEnd) {
       if (stack.empty()) continue;
-      const Accumulator level = stack.back();
+      Accumulator level = std::move(stack.back());
       stack.pop_back();
       const RenderCommand& begun = frame_.commands[level.beginIndex];
       FilterContentBounds& out = filterBounds_[level.beginIndex];
@@ -203,7 +204,7 @@ void Renderer::computeFilterContentBounds() {
                     static_cast<int>(std::floor(loY)),
                     static_cast<int>(std::ceil(hiX)),
                     static_cast<int>(std::ceil(hiY))};
-        auto regions = regionsValid ? level.regions :
+        auto regions = regionsValid ? std::move(level.regions) :
                                       std::vector<std::array<float, 4>>{};
         compactRegions(regions);
         for (const auto& region : regions) {
@@ -411,6 +412,7 @@ void Renderer::renderScene() {
     std::size_t depth = 1;
     std::size_t end = begin;
     std::vector<std::size_t> drawIndices;
+    drawIndices.reserve(16);
     bool eligible = true;
     for (std::size_t index = begin + 1;
          index < frame_.commands.size() && depth > 0; ++index) {
@@ -515,6 +517,7 @@ void Renderer::renderScene() {
     RenderCommand::Primitive primitive = RenderCommand::Primitive::sprite;
   };
   std::vector<DrawOperation> operations;
+  operations.reserve(frame_.commands.size());
   std::size_t preparingFilterDepth = 0;
   for (std::size_t commandIndex = 0;
        commandIndex < frame_.commands.size(); ++commandIndex) {
