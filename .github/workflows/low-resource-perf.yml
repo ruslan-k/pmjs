@@ -28,7 +28,11 @@ jobs:
           sh tools/profile-device.sh --no-perf -i 0.1 -o /tmp/pmjs-device-profile-smoke -- sh -c 'sleep 0.35'
           test -s /tmp/pmjs-device-profile-smoke/samples.csv
           test -s /tmp/pmjs-device-profile-smoke/summary.txt
-          grep -q '^exit_code=0          sudo apt-get update
+          grep -q '^exit_code=0$' /tmp/pmjs-device-profile-smoke/summary.txt
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ninja-build xvfb pkg-config libnode-dev \
             libsdl2-dev libegl1-mesa-dev libgles2-mesa-dev \
