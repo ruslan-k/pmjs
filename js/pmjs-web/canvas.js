@@ -126,16 +126,18 @@ function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
   var t = context._transform;
   var determinant = t[0] * t[3] - t[1] * t[2];
   if (Math.abs(determinant) < 0.000001) return;
-  var corners = [[dx, dy], [dx + dw, dy], [dx + dw, dy + dh], [dx, dy + dh]];
-  for (var index = 0; index < corners.length; index++) {
-    var point = corners[index], px = point[0], py = point[1];
-    point[0] = t[0] * px + t[2] * py + t[4];
-    point[1] = t[1] * px + t[3] * py + t[5];
-  }
-  var left = Math.max(0, Math.floor(Math.min.apply(null, corners.map(function(p) { return p[0]; }))));
-  var top = Math.max(0, Math.floor(Math.min.apply(null, corners.map(function(p) { return p[1]; }))));
-  var right = Math.min(context.canvas.width, Math.ceil(Math.max.apply(null, corners.map(function(p) { return p[0]; }))));
-  var bottom = Math.min(context.canvas.height, Math.ceil(Math.max.apply(null, corners.map(function(p) { return p[1]; }))));
+  var x0 = t[0] * dx + t[2] * dy + t[4];
+  var y0 = t[1] * dx + t[3] * dy + t[5];
+  var x1 = t[0] * (dx + dw) + t[2] * dy + t[4];
+  var y1 = t[1] * (dx + dw) + t[3] * dy + t[5];
+  var x2 = t[0] * (dx + dw) + t[2] * (dy + dh) + t[4];
+  var y2 = t[1] * (dx + dw) + t[3] * (dy + dh) + t[5];
+  var x3 = t[0] * dx + t[2] * (dy + dh) + t[4];
+  var y3 = t[1] * dx + t[3] * (dy + dh) + t[5];
+  var left = Math.max(0, Math.floor(Math.min(x0, x1, x2, x3)));
+  var top = Math.max(0, Math.floor(Math.min(y0, y1, y2, y3)));
+  var right = Math.min(context.canvas.width, Math.ceil(Math.max(x0, x1, x2, x3)));
+  var bottom = Math.min(context.canvas.height, Math.ceil(Math.max(y0, y1, y2, y3)));
   if (right <= left || bottom <= top) return;
   var sourcePixels = canvasSourcePixels(source, nativeSource, operationId);
   var destination = context.canvas._ensureNativeCanvas();
@@ -176,16 +178,21 @@ function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
 
 function paintAffineRectangle(context, x, y, width, height, rgba, clear) {
   var t = context._transform;
-  var points = [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
-  for (var index = 0; index < 4; index++) {
-    var px = points[index][0], py = points[index][1];
-    points[index] = [t[0] * px + t[2] * py + t[4],
-      t[1] * px + t[3] * py + t[5]];
-  }
-  var left = Math.max(0, Math.floor(Math.min.apply(null, points.map(function(p) { return p[0]; }))));
-  var top = Math.max(0, Math.floor(Math.min.apply(null, points.map(function(p) { return p[1]; }))));
-  var right = Math.min(context.canvas.width, Math.ceil(Math.max.apply(null, points.map(function(p) { return p[0]; }))));
-  var bottom = Math.min(context.canvas.height, Math.ceil(Math.max.apply(null, points.map(function(p) { return p[1]; }))));
+  var x0 = t[0] * x + t[2] * y + t[4];
+  var y0 = t[1] * x + t[3] * y + t[5];
+  var x1 = t[0] * (x + width) + t[2] * y + t[4];
+  var y1 = t[1] * (x + width) + t[3] * y + t[5];
+  var x2 = t[0] * (x + width) + t[2] * (y + height) + t[4];
+  var y2 = t[1] * (x + width) + t[3] * (y + height) + t[5];
+  var x3 = t[0] * x + t[2] * (y + height) + t[4];
+  var y3 = t[1] * x + t[3] * (y + height) + t[5];
+  // Flat storage avoids four point-array allocations plus four temporary map()
+  // arrays while keeping the edge loop compact.
+  var points = [x0, y0, x1, y1, x2, y2, x3, y3];
+  var left = Math.max(0, Math.floor(Math.min(x0, x1, x2, x3)));
+  var top = Math.max(0, Math.floor(Math.min(y0, y1, y2, y3)));
+  var right = Math.min(context.canvas.width, Math.ceil(Math.max(x0, x1, x2, x3)));
+  var bottom = Math.min(context.canvas.height, Math.ceil(Math.max(y0, y1, y2, y3)));
   if (right <= left || bottom <= top) return;
   var canvas = context.canvas._ensureNativeCanvas();
   var pixels = NativeHost.canvas.readPixels(canvas.handle, left, top,
@@ -194,9 +201,12 @@ function paintAffineRectangle(context, x, y, width, height, rgba, clear) {
   for (var targetY = top; targetY < bottom; targetY++) for (var targetX = left; targetX < right; targetX++) {
     var inside = true, sign = 0;
     for (var edge = 0; edge < 4; edge++) {
-      var first = points[edge], second = points[(edge + 1) & 3];
-      var cross = (second[0] - first[0]) * (targetY + 0.5 - first[1]) -
-        (second[1] - first[1]) * (targetX + 0.5 - first[0]);
+      var firstOffset = edge * 2;
+      var secondOffset = ((edge + 1) & 3) * 2;
+      var firstX = points[firstOffset], firstY = points[firstOffset + 1];
+      var secondX = points[secondOffset], secondY = points[secondOffset + 1];
+      var cross = (secondX - firstX) * (targetY + 0.5 - firstY) -
+        (secondY - firstY) * (targetX + 0.5 - firstX);
       if (Math.abs(cross) < 0.000001) continue;
       var currentSign = cross < 0 ? -1 : 1;
       if (sign && sign !== currentSign) { inside = false; break; }
@@ -308,12 +318,21 @@ function fillAxisAlignedRadialGradient(context, rectangle, style) {
   var top = Math.floor(rectangle.y);
   var width = Math.ceil(rectangle.x + rectangle.width) - left;
   var height = Math.ceil(rectangle.y + rectangle.height) - top;
+  var stopCount = style.stops.length;
+  var stopOffsets = style._pmjsNativeStopOffsets;
+  var stopColors = style._pmjsNativeStopColors;
+  if (!stopOffsets || stopOffsets.length !== stopCount) {
+    stopOffsets = style._pmjsNativeStopOffsets = new Array(stopCount);
+    stopColors = style._pmjsNativeStopColors = new Array(stopCount);
+  }
+  for (var stopIndex = 0; stopIndex < stopCount; stopIndex++) {
+    stopOffsets[stopIndex] = style.stops[stopIndex].offset;
+    stopColors[stopIndex] = colorWithGlobalAlpha(
+      style.stops[stopIndex].color, context.globalAlpha);
+  }
   NativeHost.canvas.fillRadialGradient(context.canvas._ensureNativeCanvas().handle,
     left, top, width, height, style.x0, style.y0, style.r0, style.r1,
-    style.stops.map(function(stop) { return stop.offset; }),
-    style.stops.map(function(stop) {
-      return colorWithGlobalAlpha(stop.color, context.globalAlpha);
-    }), context.globalCompositeOperation === 'lighter');
+    stopOffsets, stopColors, context.globalCompositeOperation === 'lighter');
   return true;
 }
 
@@ -372,14 +391,27 @@ function passesCanvasClip(context, x, y) {
 }
 
 function rasterPath(context, stroke, rule) {
-  var paths = context._path.filter(function(path) { return path.length > 1; });
-  if (!paths.length) return;
-  var all = [].concat.apply([], paths);
+  var paths = context._path;
+  var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  var hasDrawablePath = false;
+  for (var boundsPath = 0; boundsPath < paths.length; boundsPath++) {
+    var boundsPoints = paths[boundsPath];
+    if (boundsPoints.length <= 1) continue;
+    hasDrawablePath = true;
+    for (var boundsPoint = 0; boundsPoint < boundsPoints.length; boundsPoint++) {
+      var point = boundsPoints[boundsPoint];
+      if (point[0] < minX) minX = point[0];
+      if (point[0] > maxX) maxX = point[0];
+      if (point[1] < minY) minY = point[1];
+      if (point[1] > maxY) maxY = point[1];
+    }
+  }
+  if (!hasDrawablePath) return;
   var radius = stroke ? Math.max(0.5, Number(context.lineWidth) / 2) : 0;
-  var left = Math.max(0, Math.floor(Math.min.apply(null, all.map(function(p) { return p[0]; })) - radius));
-  var top = Math.max(0, Math.floor(Math.min.apply(null, all.map(function(p) { return p[1]; })) - radius));
-  var right = Math.min(context.canvas.width, Math.ceil(Math.max.apply(null, all.map(function(p) { return p[0]; })) + radius));
-  var bottom = Math.min(context.canvas.height, Math.ceil(Math.max.apply(null, all.map(function(p) { return p[1]; })) + radius));
+  var left = Math.max(0, Math.floor(minX - radius));
+  var top = Math.max(0, Math.floor(minY - radius));
+  var right = Math.min(context.canvas.width, Math.ceil(maxX + radius));
+  var bottom = Math.min(context.canvas.height, Math.ceil(maxY + radius));
   if (right <= left || bottom <= top) return;
   var canvas = context.canvas._ensureNativeCanvas();
   var pixels = NativeHost.canvas.readPixels(canvas.handle, left, top, right - left, bottom - top);

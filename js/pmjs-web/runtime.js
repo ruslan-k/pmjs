@@ -18,7 +18,7 @@ function applyNativeWindowState(focused, visible) {
       var pad = nativeGamepads[padIndex];
       if (!pad) continue;
       for (var buttonIndex = 0; buttonIndex < pad.buttons.length; buttonIndex++) pad.buttons[buttonIndex]._value = 0;
-      pad.axes = [0, 0, 0, 0];
+      for (var axisIndex = 0; axisIndex < pad.axes.length; axisIndex++) pad.axes[axisIndex] = 0;
     }
   }
   if (wasFocused !== nativeWindowState.focused &&
@@ -125,6 +125,8 @@ Object.defineProperties(GamepadButton.prototype, {
 });
 globalThis.GamepadButton = GamepadButton;
 var nativeGamepads = [];
+var nativeEmptyGamepads = [];
+var nativeZeroAxes = [0, 0, 0, 0];
 var nativeGamepadExposed = false;
 var pendingKeyReleases = [];
 var pendingPadReleases = [];
@@ -147,7 +149,9 @@ Object.defineProperty(globalThis, 'navigator', { configurable: true, writable: t
   language: 'en-US',
   isCocoonJS: false,
   plugins: { namedItem: function() { return null; } },
-  getGamepads: function() { return nativeGamepadExposed ? nativeGamepads.slice() : []; }
+  // Browser callers treat this as a read-only snapshot. Reusing the stable
+  // container avoids an array allocation on every RPG Maker Input.update().
+  getGamepads: function() { return nativeGamepadExposed ? nativeGamepads : nativeEmptyGamepads; }
 } });
 globalThis.__pmjsReceiveInput = function(state) {
   if (!state) return;
@@ -201,7 +205,11 @@ globalThis.__pmjsReceiveInput = function(state) {
       nativeGamepads[i] = pad;
     }
     pad.timestamp = Date.now();
-    pad.axes = (sourcePad.axes || [0, 0, 0, 0]).slice();
+    var sourceAxes = sourcePad.axes || nativeZeroAxes;
+    pad.axes.length = sourceAxes.length;
+    for (var axis = 0; axis < sourceAxes.length; axis++) {
+      pad.axes[axis] = Number(sourceAxes[axis]) || 0;
+    }
     for (var j = 0; j < 17; j++) {
       var held = sourcePad.buttonsDown.indexOf(j) >= 0;
       var edge = sourcePad.buttonsPressed.indexOf(j) >= 0;

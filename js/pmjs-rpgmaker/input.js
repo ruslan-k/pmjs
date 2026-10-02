@@ -7,52 +7,79 @@
     var originalUpdate = Input.update;
     var previousKeys = null;
     var previousButtons = null;
+
     function copyMapper(mapper) {
       var copy = {};
       for (var code in mapper) copy[code] = mapper[code];
       return copy;
     }
-    function actionHeld(input, action, keys) {
-      if (keys.some(function(key) { return input.keyMapper[key] === action; })) return true;
-      return (input._gamepadStates || []).some(function(buttons) {
-        return buttons && buttons.some(function(pressed, button) {
-          return pressed && input.gamepadMapper[button] === action;
-        });
-      });
+
+    function actionHeld(input, action, state) {
+      var keys = state.keysDown || [];
+      var index;
+      for (index = 0; index < keys.length; index++) {
+        if (input.keyMapper[keys[index]] === action) return true;
+      }
+      keys = state.keysPressed || [];
+      for (index = 0; index < keys.length; index++) {
+        if (input.keyMapper[keys[index]] === action) return true;
+      }
+      var gamepadStates = input._gamepadStates || [];
+      for (var pad = 0; pad < gamepadStates.length; pad++) {
+        var buttons = gamepadStates[pad];
+        if (!buttons) continue;
+        for (var button = 0; button < buttons.length; button++) {
+          if (buttons[button] && input.gamepadMapper[button] === action) return true;
+        }
+      }
+      return false;
     }
+
+    // Mapper objects are normally unchanged for the lifetime of a game.
+    // Mutate the cached copies in place and allocate the "affected" set only
+    // when a plugin actually changes a mapping. The old implementation copied
+    // both mapper objects plus union objects on every 60 Hz Input.update().
+    function reconcileMapper(input, mapper, previous, state) {
+      var affected = null;
+      var code;
+      for (code in mapper) {
+        var nextAction = mapper[code];
+        var oldAction = previous[code];
+        if (oldAction === nextAction) continue;
+        if (!affected) affected = Object.create(null);
+        if (oldAction) affected[oldAction] = true;
+        if (nextAction) affected[nextAction] = true;
+        previous[code] = nextAction;
+      }
+      for (code in previous) {
+        if (Object.prototype.hasOwnProperty.call(mapper, code)) continue;
+        var removedAction = previous[code];
+        if (!affected) affected = Object.create(null);
+        if (removedAction) affected[removedAction] = true;
+        delete previous[code];
+      }
+      if (!affected) return false;
+      for (var action in affected) {
+        input._currentState[action] = actionHeld(input, action, state);
+      }
+      return true;
+    }
+
     function nativeInputUpdate() {
-      if (globalThis.__pmjsInputSnapshot && this.keyMapper && this.gamepadMapper) {
-        var keys = (globalThis.__pmjsInputSnapshot.keysDown || []).concat(
-          globalThis.__pmjsInputSnapshot.keysPressed || []);
+      var state = globalThis.__pmjsInputSnapshot;
+      if (state && this.keyMapper && this.gamepadMapper) {
         if (previousKeys) {
-          var keyCodes = Object.assign({}, previousKeys, this.keyMapper);
-          var affected = Object.create(null);
-          for (var code in keyCodes) {
-            if (previousKeys[code] === this.keyMapper[code]) continue;
-            if (previousKeys[code]) affected[previousKeys[code]] = true;
-            if (this.keyMapper[code]) affected[this.keyMapper[code]] = true;
-          }
-          for (var action in affected) {
-            this._currentState[action] = actionHeld(this, action, keys);
-          }
+          reconcileMapper(this, this.keyMapper, previousKeys, state);
+        } else {
+          previousKeys = copyMapper(this.keyMapper);
         }
         if (previousButtons) {
-          var changed = false;
-          var buttonCodes = Object.assign({}, previousButtons, this.gamepadMapper);
-          var affectedButtons = Object.create(null);
-          for (var button in buttonCodes) {
-            if (previousButtons[button] === this.gamepadMapper[button]) continue;
-            changed = true;
-            if (previousButtons[button]) affectedButtons[previousButtons[button]] = true;
-            if (this.gamepadMapper[button]) affectedButtons[this.gamepadMapper[button]] = true;
+          if (reconcileMapper(this, this.gamepadMapper, previousButtons, state)) {
+            this._gamepadStates = [];
           }
-          for (var buttonAction in affectedButtons) {
-            this._currentState[buttonAction] = actionHeld(this, buttonAction, keys);
-          }
-          if (changed) this._gamepadStates = [];
+        } else {
+          previousButtons = copyMapper(this.gamepadMapper);
         }
-        previousKeys = copyMapper(this.keyMapper);
-        previousButtons = copyMapper(this.gamepadMapper);
       }
       try { return originalUpdate.apply(this, arguments); }
       finally {
