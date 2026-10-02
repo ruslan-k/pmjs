@@ -33,6 +33,7 @@
     "js/pmjs-rpgmaker/input.js",
     "js/pmjs-mv/engine.js",
     "js/pmjs-mv/timing.js",
+    "js/pmjs-mv/logic-fastpaths.js",
     "js/pmjs-mv/render-prepare.js",
     "js/pmjs-mv/images.js",
     "js/pmjs-mv/storage.js",
