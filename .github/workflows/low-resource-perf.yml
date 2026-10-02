@@ -68,6 +68,12 @@ jobs:
           node --expose-gc tools/perf/input-bridge-bench.cjs /tmp/input-before.js 300000 | tee /tmp/input-before.json
           node --expose-gc tools/perf/input-bridge-bench.cjs js/pmjs-rpgmaker/input.js 300000 | tee /tmp/input-after.json
 
+      - name: Benchmark web runtime gamepad bridge before and after
+        run: |
+          git show "$BASE_SHA:js/pmjs-web/runtime.js" > /tmp/runtime-before.js
+          node --expose-gc tools/perf/runtime-input-bench.cjs /tmp/runtime-before.js 200000 | tee /tmp/runtime-input-before.json
+          node --expose-gc tools/perf/runtime-input-bench.cjs js/pmjs-web/runtime.js 200000 | tee /tmp/runtime-input-after.json
+
       - name: Build audio worker benchmark
         shell: bash
         run: |
@@ -100,6 +106,17 @@ jobs:
             "$GITHUB_WORKSPACE/build/pmjs_native.node" "$GITHUB_WORKSPACE/build/test-assets" \
             | tee /tmp/native-after.json
 
+      - name: Benchmark native steady-state frame loop before and after
+        run: |
+          xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 \
+            node --expose-gc tools/perf/steady-state-bench.cjs \
+            /tmp/pmjs-base/build/pmjs_native.node /tmp/pmjs-base/build/test-assets 10000 \
+            | tee /tmp/steady-before.json
+          xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 \
+            node --expose-gc tools/perf/steady-state-bench.cjs \
+            "$GITHUB_WORKSPACE/build/pmjs_native.node" "$GITHUB_WORKSPACE/build/test-assets" 10000 \
+            | tee /tmp/steady-after.json
+
       - name: Summarize benchmark deltas
         run: |
           python3 - <<'PY'
@@ -129,6 +146,8 @@ jobs:
               print(f"raf/frame: before={before['raf_median_ns_per_frame']:.1f} after={after['raf_median_ns_per_frame']:.1f} delta={pct(before['raf_median_ns_per_frame'], after['raf_median_ns_per_frame']):+.1f}%")
           if 'timer_median_ns_per_tick' in before and 'timer_median_ns_per_tick' in after:
               print(f"due interval: before={before['timer_median_ns_per_tick']:.1f} after={after['timer_median_ns_per_tick']:.1f} delta={pct(before['timer_median_ns_per_tick'], after['timer_median_ns_per_tick']):+.1f}%")
+          if 'stalled_interval_median_ns_per_tick' in before and 'stalled_interval_median_ns_per_tick' in after:
+              print(f"stalled interval: before={before['stalled_interval_median_ns_per_tick']:.1f} after={after['stalled_interval_median_ns_per_tick']:.1f} delta={pct(before['stalled_interval_median_ns_per_tick'], after['stalled_interval_median_ns_per_tick']):+.1f}%")
 
           before_input = load('/tmp/input-before.json')
           after_input = load('/tmp/input-after.json')
@@ -137,6 +156,15 @@ jobs:
           print(f"after  {after_input['median_ns_per_update']:.1f} ns/update")
           print(f"delta  {pct(before_input['median_ns_per_update'], after_input['median_ns_per_update']):+.1f}%")
           print(f"heap churn median: before={before_input['median_heap_delta_kb']:.1f} KiB after={after_input['median_heap_delta_kb']:.1f} KiB")
+
+          before_runtime = load('/tmp/runtime-input-before.json')
+          after_runtime = load('/tmp/runtime-input-after.json')
+          print('=== web runtime gamepad bridge ===')
+          for mode in ('steady', 'edge'):
+              bv = before_runtime[mode]['median_ns_per_update']
+              av = after_runtime[mode]['median_ns_per_update']
+              print(f"{mode}: before={bv:.1f} ns after={av:.1f} ns delta={pct(bv,av):+.1f}%")
+              print(f"{mode} heap delta: before={before_runtime[mode]['median_heap_delta_kb']:.1f} KiB after={after_runtime[mode]['median_heap_delta_kb']:.1f} KiB")
 
           def jsonl(path):
               with open(path) as f:
@@ -170,6 +198,13 @@ jobs:
               after_size = int(f.read().strip())
           print(f"native_binary_mb: before={before_size/(1024*1024):.3f} after={after_size/(1024*1024):.3f} delta={pct(before_size,after_size):+.1f}%")
           print(f"rss_mb: before={b['rss_mb']:.1f} after={a['rss_mb']:.1f} delta={pct(b['rss_mb'],a['rss_mb']):+.1f}%")
+
+          sb = load('/tmp/steady-before.json')
+          sa = load('/tmp/steady-after.json')
+          print('=== native steady-state frame loop ===')
+          for key in ('wall_us_per_frame', 'cpu_us_per_frame'):
+              print(f"{key}: before={sb[key]:.3f} after={sa[key]:.3f} delta={pct(sb[key],sa[key]):+.1f}%")
+          print(f"rss drift MB: before={sb['rss_drift_mb']:.3f} after={sa['rss_drift_mb']:.3f}")
           PY
 
       - name: Runner information
