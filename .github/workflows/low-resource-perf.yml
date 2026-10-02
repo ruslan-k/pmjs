@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build xvfb pkg-config \
+            ninja-build xvfb pkg-config libnode-dev \
             libsdl2-dev libegl1-mesa-dev libgles2-mesa-dev \
             libpng-dev libjpeg-dev libfreetype6-dev libharfbuzz-dev \
             libavformat-dev libavcodec-dev libavutil-dev \
