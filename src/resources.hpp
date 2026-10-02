@@ -129,6 +129,7 @@ class ImageStore {
   static std::size_t residentBytes(const Slot& slot);
   void destroySlot(std::size_t index);
   std::deque<Slot> slots_;
+  std::vector<std::size_t> freeSlots_;
   std::unordered_map<std::string, ImageHandle> pathCache_;
   std::size_t liveCount_ = 0;
   std::size_t gpuBytes_ = 0;
