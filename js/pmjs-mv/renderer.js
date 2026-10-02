@@ -1,12 +1,35 @@
+function pmjsMvRenderScale() {
+    var raw;
+    try {
+      raw = NativeHost.runtime.env('PMJS_RENDER_SCALE');
+    } catch (_) {}
+    if (raw === undefined || raw === null || raw === '') return 1;
+    var scale = Number(raw);
+    if (!Number.isFinite(scale) || scale < 0.5 || scale > 1) {
+      console.warn('[pmjs] ignoring invalid PMJS_RENDER_SCALE=' + raw +
+        ' (expected 0.5..1.0)');
+      return 1;
+    }
+    return scale;
+}
+
 function createNativeMvRenderer() {
     try {
       if (typeof globalThis.__pmjsBeforeCreateRenderer === 'function') {
         globalThis.__pmjsBeforeCreateRenderer.call(this);
       }
     } catch (_) {}
+    var renderScale = pmjsMvRenderScale();
+    globalThis.__pmjsRenderScale = renderScale;
+    if (renderScale !== 1) {
+      console.log('[pmjs] render_scale=' + renderScale +
+        ' backing=' + Math.max(1, Math.floor(this._width * renderScale)) +
+        'x' + Math.max(1, Math.floor(this._height * renderScale)) +
+        ' logical=' + this._width + 'x' + this._height);
+    }
     this._renderer = createNativePixiRenderer(this._width, this._height, {
       view: this._canvas,
-      resolution: 1,
+      resolution: renderScale,
       autoResize: false
     });
 }
