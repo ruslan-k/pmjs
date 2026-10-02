@@ -229,6 +229,7 @@ class CanvasStore {
   ImageStore& images_;
   std::unique_ptr<FontState> fonts_;
   std::vector<Surface> surfaces_;
+  std::vector<std::size_t> freeSurfaceSlots_;
   std::size_t liveCount_ = 0;
   std::size_t peakCpuBytes_ = 0;
   std::size_t peakLiveCount_ = 0;
