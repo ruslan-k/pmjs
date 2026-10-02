@@ -120,6 +120,10 @@ jobs:
           print(f"before {before['median_ns_per_frame']:.1f} ns/frame")
           print(f"after  {after['median_ns_per_frame']:.1f} ns/frame")
           print(f"delta  {pct(before['median_ns_per_frame'], after['median_ns_per_frame']):+.1f}%")
+          if 'raf_median_ns_per_frame' in before and 'raf_median_ns_per_frame' in after:
+              print(f"raf/frame: before={before['raf_median_ns_per_frame']:.1f} after={after['raf_median_ns_per_frame']:.1f} delta={pct(before['raf_median_ns_per_frame'], after['raf_median_ns_per_frame']):+.1f}%")
+          if 'timer_median_ns_per_tick' in before and 'timer_median_ns_per_tick' in after:
+              print(f"due interval: before={before['timer_median_ns_per_tick']:.1f} after={after['timer_median_ns_per_tick']:.1f} delta={pct(before['timer_median_ns_per_tick'], after['timer_median_ns_per_tick']):+.1f}%")
 
           before_input = load('/tmp/input-before.json')
           after_input = load('/tmp/input-after.json')
