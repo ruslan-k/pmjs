@@ -210,28 +210,11 @@ globalThis.__pmjsReceiveInput = function(state) {
     for (var axis = 0; axis < sourceAxes.length; axis++) {
       pad.axes[axis] = Number(sourceAxes[axis]) || 0;
     }
-    // Native snapshots expose compact lists of active buttons. Convert them
-    // once to masks instead of doing 34 linear indexOf() scans per pad/frame.
-    var downMask = 0;
-    var edgeMask = 0;
-    var sourceButtonsDown = sourcePad.buttonsDown || [];
-    var sourceButtonsPressed = sourcePad.buttonsPressed || [];
-    for (var downIndex = 0; downIndex < sourceButtonsDown.length; downIndex++) {
-      var downButton = sourceButtonsDown[downIndex] | 0;
-      if (downButton >= 0 && downButton < 17) downMask |= 1 << downButton;
-    }
-    for (var edgeIndex = 0; edgeIndex < sourceButtonsPressed.length; edgeIndex++) {
-      var edgeButton = sourceButtonsPressed[edgeIndex] | 0;
-      if (edgeButton >= 0 && edgeButton < 17) edgeMask |= 1 << edgeButton;
-    }
     for (var j = 0; j < 17; j++) {
-      var bit = 1 << j;
-      var held = (downMask & bit) !== 0;
-      var edge = (edgeMask & bit) !== 0;
+      var held = sourcePad.buttonsDown.indexOf(j) >= 0;
+      var edge = sourcePad.buttonsPressed.indexOf(j) >= 0;
       pad.buttons[j]._value = held || edge ? 1 : 0;
-      // Flat pairs avoid allocating a short-lived {pad, button} object for
-      // every synthetic edge release.
-      if (edge && !held) pendingPadReleases.push(pad, j);
+      if (edge && !held) pendingPadReleases.push({ pad: pad, button: j });
     }
   }
   nativeGamepads.length = pads.length;
@@ -248,8 +231,9 @@ globalThis.__pmjsReceiveInput = function(state) {
 globalThis.__pmjsFinishInputStep = function() {
   for (var i = 0; i < pendingKeyReleases.length; i++) dispatchNativeKey(pendingKeyReleases[i]);
   pendingKeyReleases.length = 0;
-  for (var j = 0; j < pendingPadReleases.length; j += 2) {
-    pendingPadReleases[j].buttons[pendingPadReleases[j + 1]]._value = 0;
+  for (var j = 0; j < pendingPadReleases.length; j++) {
+    var release = pendingPadReleases[j];
+    release.pad.buttons[release.button]._value = 0;
   }
   pendingPadReleases.length = 0;
 };
