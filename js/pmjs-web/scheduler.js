@@ -34,6 +34,7 @@
   var timers = new Map();
   var timerHeap = [];
   var deferredTimers = [];
+  var staleTimerCount = 0;
   var drainingTimers = false;
   var nextTimerDeadline = Infinity;
 
@@ -94,12 +95,22 @@
       var timer = timerHeap[0];
       if (timers.get(timer.id) === timer) break;
       heapPop();
+      if (staleTimerCount > 0) staleTimerCount--;
     }
   }
 
   function refreshTimerDeadline() {
     pruneTimerHeap();
     nextTimerDeadline = timerHeap.length ? timerHeap[0].deadline : Infinity;
+  }
+
+  function maybeCompactTimerHeap() {
+    if (drainingTimers || staleTimerCount < 64 ||
+        staleTimerCount * 2 < timerHeap.length) return;
+    timerHeap.length = 0;
+    timers.forEach(function(timer) { heapPush(timer); });
+    staleTimerCount = 0;
+    refreshTimerDeadline();
   }
 
   function queueTimer(timer) {
@@ -158,9 +169,10 @@
   }
 
   function clearTimeoutCompat(id) {
-    if (timers.delete(id) && timerHeap.length && timerHeap[0].id === id) {
-      refreshTimerDeadline();
-    }
+    if (!timers.delete(id)) return;
+    staleTimerCount++;
+    if (timerHeap.length && timerHeap[0].id === id) refreshTimerDeadline();
+    maybeCompactTimerHeap();
   }
 
   function setIntervalCompat(callback, delay) {
@@ -226,6 +238,7 @@
       }
       deferredTimers.length = 0;
       refreshTimerDeadline();
+      maybeCompactTimerHeap();
     }
   }
 
