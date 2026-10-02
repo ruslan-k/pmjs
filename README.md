@@ -67,13 +67,13 @@ Use `tools/profile-device.sh` to profile a real game launch on the target handhe
 
 ```sh
 # Profile the normal launcher at 1-second intervals.
-./tools/profile-device.sh -- ./example/run-game.sh /path/to/game /path/to/saves
+sh ./tools/profile-device.sh -- ./example/run-game.sh /path/to/game /path/to/saves
 
 # PortMaster-style launcher, sampling twice per second.
-./tools/profile-device.sh -i 0.5 -o ./profiles/device-run -- ./MyGame.sh
+sh ./tools/profile-device.sh -i 0.5 -o ./profiles/device-run -- ./MyGame.sh
 
 # On minimal firmware where perf_event_open is unavailable.
-./tools/profile-device.sh --no-perf -- ./MyGame.sh
+sh ./tools/profile-device.sh --no-perf -- ./MyGame.sh
 ```
 
 The output directory contains:
