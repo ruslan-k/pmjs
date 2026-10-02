@@ -681,9 +681,26 @@ void CanvasStore::fillRectNow(Surface& surface, int x, int y, int width, int hei
     static_cast<std::int64_t>(x) + width, 0, surface.width));
   const int y1 = static_cast<int>(std::clamp<std::int64_t>(
     static_cast<std::int64_t>(y) + height, 0, surface.height));
-  for (int py = y0; py < y1; ++py) {
-    for (int px = x0; px < x1; ++px) {
-      blendPixel(surface, px, py, rgba, 255);
+  if (x1 <= x0 || y1 <= y0 || (rgba & 0xffU) == 0) return;
+  if ((rgba & 0xffU) == 0xffU) {
+    const auto red = static_cast<std::uint8_t>((rgba >> 24U) & 0xffU);
+    const auto green = static_cast<std::uint8_t>((rgba >> 16U) & 0xffU);
+    const auto blue = static_cast<std::uint8_t>((rgba >> 8U) & 0xffU);
+    for (int py = y0; py < y1; ++py) {
+      auto* pixel = surface.pixels.data() +
+        (static_cast<std::size_t>(py) * surface.width + x0) * 4U;
+      for (int px = x0; px < x1; ++px, pixel += 4) {
+        pixel[0] = red;
+        pixel[1] = green;
+        pixel[2] = blue;
+        pixel[3] = 255;
+      }
+    }
+  } else {
+    for (int py = y0; py < y1; ++py) {
+      for (int px = x0; px < x1; ++px) {
+        blendPixel(surface, px, py, rgba, 255);
+      }
     }
   }
   markDirty(surface, x0, y0, x1 - x0, y1 - y0);
@@ -701,12 +718,12 @@ void CanvasStore::clearRectNow(Surface& surface, int x, int y, int width, int he
     static_cast<std::int64_t>(x) + width, 0, surface.width));
   const int y1 = static_cast<int>(std::clamp<std::int64_t>(
     static_cast<std::int64_t>(y) + height, 0, surface.height));
+  if (x1 <= x0 || y1 <= y0) return;
+  const std::size_t rowBytes = static_cast<std::size_t>(x1 - x0) * 4U;
   for (int py = y0; py < y1; ++py) {
-    for (int px = x0; px < x1; ++px) {
-      const std::size_t offset =
-        (static_cast<std::size_t>(py) * surface.width + px) * 4U;
-      std::fill_n(surface.pixels.data() + offset, 4, 0);
-    }
+    const std::size_t offset =
+      (static_cast<std::size_t>(py) * surface.width + x0) * 4U;
+    std::memset(surface.pixels.data() + offset, 0, rowBytes);
   }
   markDirty(surface, x0, y0, x1 - x0, y1 - y0);
 }
@@ -985,9 +1002,14 @@ std::optional<CanvasInfo> CanvasStore::create(int width, int height) {
   const auto extent = checkedImageExtent(width, height);
   if (!extent) return std::nullopt;
   std::size_t index = 0;
-  while (index < surfaces_.size() && surfaces_[index].live) ++index;
-  if (index >= indexMask) return std::nullopt;
-  if (index == surfaces_.size()) surfaces_.emplace_back();
+  if (!freeSurfaceSlots_.empty()) {
+    index = freeSurfaceSlots_.back();
+    freeSurfaceSlots_.pop_back();
+  } else {
+    index = surfaces_.size();
+    if (index >= indexMask) return std::nullopt;
+    surfaces_.emplace_back();
+  }
   auto& surface = surfaces_[index];
   surface.image = 0;
   surface.width = width;
@@ -1010,12 +1032,17 @@ std::optional<CanvasInfo> CanvasStore::createRgba(
   const auto image = images_.createRgba(width, height, pixels.data());
   if (!image) return std::nullopt;
   std::size_t index = 0;
-  while (index < surfaces_.size() && surfaces_[index].live) ++index;
-  if (index >= indexMask) {
-    images_.release(image->handle);
-    return std::nullopt;
+  if (!freeSurfaceSlots_.empty()) {
+    index = freeSurfaceSlots_.back();
+    freeSurfaceSlots_.pop_back();
+  } else {
+    index = surfaces_.size();
+    if (index >= indexMask) {
+      images_.release(image->handle);
+      return std::nullopt;
+    }
+    surfaces_.emplace_back();
   }
-  if (index == surfaces_.size()) surfaces_.emplace_back();
   auto& surface = surfaces_[index];
   surface.image = image->handle;
   surface.width = width;
@@ -1337,18 +1364,24 @@ std::optional<ImagePixels> CanvasStore::readPixels(CanvasHandle handle, int x,
   result.width = extent->width;
   result.height = extent->height;
   result.rgba.resize(extent->rgbaBytes);
-  for (int row = 0; row < height; ++row) {
-    const int sourceY = y + row;
-    if (sourceY < 0 || sourceY >= surface->height) continue;
-    for (int column = 0; column < width; ++column) {
-      const int sourceX = x + column;
-      if (sourceX < 0 || sourceX >= surface->width) continue;
+  const int sourceX0 = std::max(0, x);
+  const int sourceY0 = std::max(0, y);
+  const int sourceX1 = std::min(surface->width, x + width);
+  const int sourceY1 = std::min(surface->height, y + height);
+  if (sourceX1 > sourceX0 && sourceY1 > sourceY0) {
+    const int copyWidth = sourceX1 - sourceX0;
+    const int destinationX = sourceX0 - x;
+    const int destinationY = sourceY0 - y;
+    const std::size_t rowBytes = static_cast<std::size_t>(copyWidth) * 4U;
+    for (int row = 0; row < sourceY1 - sourceY0; ++row) {
       const std::size_t sourceOffset =
-        (static_cast<std::size_t>(sourceY) * surface->width + sourceX) * 4U;
+        (static_cast<std::size_t>(sourceY0 + row) * surface->width +
+         sourceX0) * 4U;
       const std::size_t destinationOffset =
-        (static_cast<std::size_t>(row) * width + column) * 4U;
-      std::copy_n(surface->pixels.data() + sourceOffset, 4,
-                  result.rgba.data() + destinationOffset);
+        (static_cast<std::size_t>(destinationY + row) * width +
+         destinationX) * 4U;
+      std::memcpy(result.rgba.data() + destinationOffset,
+                  surface->pixels.data() + sourceOffset, rowBytes);
     }
   }
   return result;
@@ -1402,6 +1435,7 @@ bool CanvasStore::release(CanvasHandle handle) {
   surface->generation = static_cast<std::uint16_t>(
     (surface->generation + 1U) & generationMask);
   if (surface->generation == 0) surface->generation = 1;
+  freeSurfaceSlots_.push_back(static_cast<std::size_t>(surface - surfaces_.data()));
   --liveCount_;
   return true;
 }
