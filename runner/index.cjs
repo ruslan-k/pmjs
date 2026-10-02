@@ -263,11 +263,24 @@ async function run(input, hooks = {}) {
   let lastTelemetryFramesAt = 0;
   let lastTelemetryLogic = null;
   let lastTelemetryPlayer = null;
+  const configuredTimingSampleEvery = Number(
+    hostProcess.env.PMJS_TELEMETRY_TIMING_SAMPLE_EVERY || 4);
+  const telemetryTimingSampleEvery = Number.isSafeInteger(configuredTimingSampleEvery) &&
+      configuredTimingSampleEvery >= 1 && configuredTimingSampleEvery <= 120
+    ? configuredTimingSampleEvery : 4;
+  let telemetryTimingFrame = 0;
   let telemetryPhaseSamples = 0;
+  let telemetryPhaseBeginMs = 0;
   let telemetryPhaseTickMs = 0;
   let telemetryPhaseRenderMs = 0;
   let telemetryPhaseNativeMs = 0;
+  let telemetryPhaseAfterMs = 0;
   let telemetryPhaseSwapMs = 0;
+  let telemetryPhaseMaxTotalMs = 0;
+  let telemetryPhaseMaxTickMs = 0;
+  let telemetryPhaseMaxNativeMs = 0;
+  let telemetryPhaseMaxSwapMs = 0;
+  let lastTelemetryRendererStats = null;
   function reportMemoryTelemetry(now) {
     if (!memoryTelemetryEnabled || now < nextMemoryTelemetry) return;
     nextMemoryTelemetry = now + memoryTelemetryMs;
@@ -340,21 +353,57 @@ async function run(input, hooks = {}) {
         },
         frameTimingMs: telemetryPhaseSamples > 0 ? {
           samples: telemetryPhaseSamples,
+          sampleEvery: telemetryTimingSampleEvery,
+          begin: Math.round(telemetryPhaseBeginMs / telemetryPhaseSamples * 100) / 100,
           tick: Math.round(telemetryPhaseTickMs / telemetryPhaseSamples * 100) / 100,
           render: Math.round(telemetryPhaseRenderMs / telemetryPhaseSamples * 100) / 100,
           native: Math.round(telemetryPhaseNativeMs / telemetryPhaseSamples * 100) / 100,
+          afterNative: Math.round(telemetryPhaseAfterMs / telemetryPhaseSamples * 100) / 100,
           swap: Math.round(telemetryPhaseSwapMs / telemetryPhaseSamples * 100) / 100,
-          total: Math.round((telemetryPhaseTickMs + telemetryPhaseRenderMs +
-            telemetryPhaseNativeMs + telemetryPhaseSwapMs) /
-            telemetryPhaseSamples * 100) / 100
+          total: Math.round((telemetryPhaseBeginMs + telemetryPhaseTickMs +
+            telemetryPhaseRenderMs + telemetryPhaseNativeMs +
+            telemetryPhaseAfterMs + telemetryPhaseSwapMs) /
+            telemetryPhaseSamples * 100) / 100,
+          maxTotal: Math.round(telemetryPhaseMaxTotalMs * 100) / 100,
+          maxTick: Math.round(telemetryPhaseMaxTickMs * 100) / 100,
+          maxNative: Math.round(telemetryPhaseMaxNativeMs * 100) / 100,
+          maxSwap: Math.round(telemetryPhaseMaxSwapMs * 100) / 100
         } : null,
         rendererStats: stats
       };
+      if (stats && lastTelemetryRendererStats &&
+          typeof stats.frames === 'number' &&
+          stats.frames > lastTelemetryRendererStats.frames) {
+        const frameDelta = stats.frames - lastTelemetryRendererStats.frames;
+        snapshot.rendererPerFrame = {
+          commands: Math.round((stats.commands - lastTelemetryRendererStats.commands) /
+            frameDelta * 100) / 100,
+          drawCalls: Math.round((stats.drawCalls - lastTelemetryRendererStats.drawCalls) /
+            frameDelta * 100) / 100,
+          bufferUploads: Math.round((stats.bufferUploads -
+            lastTelemetryRendererStats.bufferUploads) / frameDelta * 100) / 100,
+          filterDrawCalls: Math.round((stats.filterDrawCalls -
+            lastTelemetryRendererStats.filterDrawCalls) / frameDelta * 100) / 100,
+          baseSpriteDrawCalls: Math.round((stats.baseSpriteDrawCalls -
+            lastTelemetryRendererStats.baseSpriteDrawCalls) / frameDelta * 100) / 100,
+          effectSpriteDrawCalls: Math.round((stats.effectSpriteDrawCalls -
+            lastTelemetryRendererStats.effectSpriteDrawCalls) / frameDelta * 100) / 100,
+          tileDrawCalls: Math.round((stats.tileDrawCalls -
+            lastTelemetryRendererStats.tileDrawCalls) / frameDelta * 100) / 100
+        };
+      }
+      if (stats) lastTelemetryRendererStats = stats;
       telemetryPhaseSamples = 0;
+      telemetryPhaseBeginMs = 0;
       telemetryPhaseTickMs = 0;
       telemetryPhaseRenderMs = 0;
       telemetryPhaseNativeMs = 0;
+      telemetryPhaseAfterMs = 0;
       telemetryPhaseSwapMs = 0;
+      telemetryPhaseMaxTotalMs = 0;
+      telemetryPhaseMaxTickMs = 0;
+      telemetryPhaseMaxNativeMs = 0;
+      telemetryPhaseMaxSwapMs = 0;
       if (memoryTelemetryDetailEnabled) {
         snapshot.renderer = typeof native.render.memory === 'function'
           ? native.render.memory() : null;
@@ -395,23 +444,42 @@ async function run(input, hooks = {}) {
           globalThis.__pmjsReceiveInput(native.input.snapshot());
         }
         const now = performance.now();
+        const sampleFrameTiming = memoryTelemetryEnabled &&
+          (++telemetryTimingFrame % telemetryTimingSampleEvery === 0);
+        let phaseStart = sampleFrameTiming ? performance.now() : 0;
         native.beginFrame();
+        let phaseBeginEnd = sampleFrameTiming ? performance.now() : 0;
         globalThis.__pmjsTick(now);
-        const phaseTickEnd = performance.now();
+        let phaseTickEnd = sampleFrameTiming ? performance.now() : 0;
         globalThis.__pmjsRender(now);
-        const phaseRenderEnd = performance.now();
+        let phaseRenderEnd = sampleFrameTiming ? performance.now() : 0;
         native.renderFrame();
-        const phaseNativeEnd = performance.now();
+        let phaseNativeEnd = sampleFrameTiming ? performance.now() : 0;
         if (typeof globalThis.__pmjsAfterNativeRender === 'function') {
           globalThis.__pmjsAfterNativeRender();
         }
+        let phaseAfterEnd = sampleFrameTiming ? performance.now() : 0;
         native.swapFrame();
-        if (memoryTelemetryEnabled) {
+        if (sampleFrameTiming) {
+          const phaseSwapEnd = performance.now();
+          const beginMs = phaseBeginEnd - phaseStart;
+          const tickMs = phaseTickEnd - phaseBeginEnd;
+          const renderMs = phaseRenderEnd - phaseTickEnd;
+          const nativeMs = phaseNativeEnd - phaseRenderEnd;
+          const afterMs = phaseAfterEnd - phaseNativeEnd;
+          const swapMs = phaseSwapEnd - phaseAfterEnd;
+          const totalMs = phaseSwapEnd - phaseStart;
           telemetryPhaseSamples++;
-          telemetryPhaseTickMs += phaseTickEnd - now;
-          telemetryPhaseRenderMs += phaseRenderEnd - phaseTickEnd;
-          telemetryPhaseNativeMs += phaseNativeEnd - phaseRenderEnd;
-          telemetryPhaseSwapMs += performance.now() - phaseNativeEnd;
+          telemetryPhaseBeginMs += beginMs;
+          telemetryPhaseTickMs += tickMs;
+          telemetryPhaseRenderMs += renderMs;
+          telemetryPhaseNativeMs += nativeMs;
+          telemetryPhaseAfterMs += afterMs;
+          telemetryPhaseSwapMs += swapMs;
+          telemetryPhaseMaxTotalMs = Math.max(telemetryPhaseMaxTotalMs, totalMs);
+          telemetryPhaseMaxTickMs = Math.max(telemetryPhaseMaxTickMs, tickMs);
+          telemetryPhaseMaxNativeMs = Math.max(telemetryPhaseMaxNativeMs, nativeMs);
+          telemetryPhaseMaxSwapMs = Math.max(telemetryPhaseMaxSwapMs, swapMs);
         }
         if (memoryTelemetryEnabled && now >= nextMemoryTelemetry) {
           reportMemoryTelemetry(now);
