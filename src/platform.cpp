@@ -549,36 +549,58 @@ void Platform::consumePressed() {
   keyEvents_.clear();
 }
 
-std::vector<Platform::GamepadState> Platform::gamepads() const {
-  std::vector<GamepadState> result;
+void Platform::fillGamepads(std::vector<GamepadState>& result) const {
+  result.resize(controllers_.size());
   for (std::size_t index = 0; index < controllers_.size(); ++index) {
+    GamepadState& pad = result[index];
+    pad.index = static_cast<int>(index);
+    pad.buttonsDown.clear();
+    pad.buttonsPressed.clear();
     auto* controller = controllers_[index];
     if (!controller) {
-      result.push_back({static_cast<int>(index), -1, false, "", {}, {}, {}});
+      pad.instance = -1;
+      pad.connected = false;
+      pad.id.clear();
+      pad.axes.clear();
       continue;
     }
-    const int instance = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller));
+    pad.instance = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller));
+    pad.connected = true;
     const char* name = SDL_GameControllerName(controller);
-    GamepadState pad{static_cast<int>(index), instance, true, name ? name : "Game Controller", {}, {}, {}};
+    pad.id = name ? name : "Game Controller";
     if (!windowFocused_) {
-      pad.axes = {0, 0, 0, 0};
-      result.push_back(std::move(pad));
+      pad.axes.resize(4);
+      std::fill(pad.axes.begin(), pad.axes.end(), 0.0);
       continue;
     }
     for (int button = 0; button < SDL_CONTROLLER_BUTTON_MAX; ++button) {
       const int mapped = standardGamepadButton(button);
-      if (mapped >= 0 && SDL_GameControllerGetButton(controller, static_cast<SDL_GameControllerButton>(button)))
+      if (mapped >= 0 && SDL_GameControllerGetButton(
+          controller, static_cast<SDL_GameControllerButton>(button))) {
         pad.buttonsDown.push_back(mapped);
+      }
     }
     if (SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8192)
       pad.buttonsDown.push_back(6);
     if (SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8192)
       pad.buttonsDown.push_back(7);
-    for (const auto& entry : gamepadPressed_) if (entry.first == instance) pad.buttonsPressed = entry.second;
-    pad.axes = {stickAxis(controller, SDL_CONTROLLER_AXIS_LEFTX), stickAxis(controller, SDL_CONTROLLER_AXIS_LEFTY),
-      stickAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX), stickAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY)};
-    result.push_back(std::move(pad));
+    for (const auto& entry : gamepadPressed_) {
+      if (entry.first == pad.instance) {
+        pad.buttonsPressed.assign(entry.second.begin(), entry.second.end());
+        break;
+      }
+    }
+    pad.axes.resize(4);
+    pad.axes[0] = stickAxis(controller, SDL_CONTROLLER_AXIS_LEFTX);
+    pad.axes[1] = stickAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
+    pad.axes[2] = stickAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX);
+    pad.axes[3] = stickAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY);
   }
+}
+
+std::vector<Platform::GamepadState> Platform::gamepads() const {
+  std::vector<GamepadState> result;
+  fillGamepads(result);
   return result;
 }
 
