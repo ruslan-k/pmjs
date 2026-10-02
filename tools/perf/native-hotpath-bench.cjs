@@ -38,6 +38,10 @@ function sample(name, iterations, fn) {
 
 const results = [];
 
+results.push(sample('napi-four-args', 250000, () => {
+  native.render.setClearColor(0.1, 0.2, 0.3, 1);
+}));
+
 const canvas = native.canvas.create(256, 256);
 // Force deferred canvas realization so these measurements cover the CPU pixel
 // hot paths rather than command queuing.
