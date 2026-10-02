@@ -603,6 +603,17 @@ CanvasContext2D.prototype.fillRect = function(x, y, width, height) {
   var rectangle = axisAlignedRect(this, x, y, width, height);
   if (rectangle && fillAxisAlignedRadialGradient(this, rectangle, this.fillStyle)) return;
   if (rectangle && fillAxisAlignedLinearGradient(this, rectangle, this.fillStyle)) return;
+  if (rectangle && !this._clipPaths.length &&
+      typeof this.fillStyle !== 'object' &&
+      this.globalCompositeOperation === 'lighter' &&
+      NativeHost.canvas &&
+      typeof NativeHost.canvas.fillRectAdditive === 'function') {
+    var additiveCanvas = this.canvas._ensureNativeCanvas();
+    NativeHost.canvas.fillRectAdditive(additiveCanvas.handle,
+      rectangle.x, rectangle.y, rectangle.width, rectangle.height,
+      colorWithGlobalAlpha(this.fillStyle, this.globalAlpha));
+    return;
+  }
   if (!rectangle || this._clipPaths.length || typeof this.fillStyle === 'object' ||
       this.globalCompositeOperation !== 'source-over') {
     paintAffineRectangle(this, x, y, width, height,
