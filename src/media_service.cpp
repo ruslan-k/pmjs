@@ -169,14 +169,18 @@ struct MediaService::Impl {
     std::uint64_t seenWake = workerWakeSerial.load(std::memory_order_acquire);
     while (!shuttingDown.load(std::memory_order_acquire)) {
       bool hasPlayingStream = false;
-      const auto voices = snapshot();
-      for (const auto& voice : *voices) {
-        if (!voice->decoder) continue;
-        {
-          std::lock_guard lock(voice->mutex);
-          hasPlayingStream = hasPlayingStream || voice->mix.playing;
+      {
+        // Do not retain the published voice snapshot while sleeping. Released
+        // sample voices must be destructible immediately after release().
+        const auto voiceList = snapshot();
+        for (const auto& voice : *voiceList) {
+          if (!voice->decoder) continue;
+          {
+            std::lock_guard lock(voice->mutex);
+            hasPlayingStream = hasPlayingStream || voice->mix.playing;
+          }
+          fill(voice);
         }
-        fill(voice);
       }
 
       std::unique_lock waitLock(workerWaitMutex);
