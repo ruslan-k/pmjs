@@ -29,8 +29,11 @@
   };
 
   var rafQueue = [];
+  var rafDrainQueue = [];
   var cancelledRafs = new Set();
   var timers = new Map();
+  var dueTimers = [];
+  var nextTimerDeadline = Infinity;
 
   var schedulerNow = 0;
   var draining = false;
@@ -68,16 +71,20 @@
 
   function setTimeoutCompat(callback, delay) {
     var id = nextId++;
-    var args = [];
-    for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
-
+    var args = null;
+    if (arguments.length > 2) {
+      args = [];
+      for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
+    }
+    var deadline = clockNow() + Math.max(0, Number(delay) || 0);
     timers.set(id, {
       id: id,
       callback: callback,
       args: args,
-      deadline: clockNow() + Math.max(0, Number(delay) || 0),
+      deadline: deadline,
       interval: 0
     });
+    if (deadline < nextTimerDeadline) nextTimerDeadline = deadline;
 
     return id;
   }
@@ -89,16 +96,20 @@
   function setIntervalCompat(callback, delay) {
     var interval = Math.max(1, Number(delay) || 0);
     var id = nextId++;
-    var args = [];
-    for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
-
+    var args = null;
+    if (arguments.length > 2) {
+      args = [];
+      for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
+    }
+    var deadline = clockNow() + interval;
     timers.set(id, {
       id: id,
       callback: callback,
       args: args,
-      deadline: clockNow() + interval,
+      deadline: deadline,
       interval: interval
     });
+    if (deadline < nextTimerDeadline) nextTimerDeadline = deadline;
 
     return id;
   }
@@ -108,20 +119,26 @@
   }
 
   function drainTimers(now) {
-    var due = [];
+    // Most frames have no timer due. Avoid a Map walk, temporary array and sort
+    // on that common path.
+    if (now < nextTimerDeadline) return;
 
+    dueTimers.length = 0;
+    nextTimerDeadline = Infinity;
     timers.forEach(function(timer) {
       if (timer.deadline <= now) {
-        due.push(timer);
+        dueTimers.push(timer);
+      } else if (timer.deadline < nextTimerDeadline) {
+        nextTimerDeadline = timer.deadline;
       }
     });
 
-    due.sort(function(a, b) {
+    dueTimers.sort(function(a, b) {
       return a.deadline - b.deadline || a.id - b.id;
     });
 
-    for (var i = 0; i < due.length; i++) {
-      var timer = due[i];
+    for (var i = 0; i < dueTimers.length; i++) {
+      var timer = dueTimers[i];
 
       if (!timers.has(timer.id)) continue;
 
@@ -129,6 +146,7 @@
         do {
           timer.deadline += timer.interval;
         } while (timer.deadline <= now);
+        if (timer.deadline < nextTimerDeadline) nextTimerDeadline = timer.deadline;
       } else {
         timers.delete(timer.id);
       }
@@ -143,11 +161,16 @@
         reportAsyncError(error);
       }
     }
+    dueTimers.length = 0;
   }
 
   function drainAnimationFrames(now) {
+    // Double-buffer the RAF queues instead of allocating a new array every
+    // rendered frame.
     var callbacks = rafQueue;
-    rafQueue = [];
+    rafQueue = rafDrainQueue;
+    rafDrainQueue = callbacks;
+    rafQueue.length = 0;
 
     for (var i = 0; i < callbacks.length; i++) {
       var entry = callbacks[i];
@@ -160,6 +183,7 @@
       }
       cancelledRafs.delete(entry.id);
     }
+    callbacks.length = 0;
     cancelledRafs.clear();
   }
 
