@@ -4,7 +4,12 @@ namespace pmjs::addon {
 namespace {
 constexpr std::size_t maxEncodedImageBytes = 64U * 1024U * 1024U;
 
-std::vector<std::uint8_t> encodedImageBytes(napi_env env, napi_value value) {
+struct EncodedImageView {
+  const std::uint8_t* data = nullptr;
+  std::size_t size = 0;
+};
+
+EncodedImageView encodedImageView(napi_env env, napi_value value) {
   bool isArrayBuffer = false;
   check(env, napi_is_arraybuffer(env, value, &isArrayBuffer),
         "cannot inspect encoded image bytes");
@@ -31,8 +36,12 @@ std::vector<std::uint8_t> encodedImageBytes(napi_env env, napi_value value) {
   if (size == 0 || size > maxEncodedImageBytes) {
     throw std::runtime_error("encoded image exceeds the 64 MiB limit or is empty");
   }
-  const auto* begin = static_cast<const std::uint8_t*>(data);
-  return std::vector<std::uint8_t>(begin, begin + size);
+  return {static_cast<const std::uint8_t*>(data), size};
+}
+
+std::vector<std::uint8_t> encodedImageBytes(napi_env env, napi_value value) {
+  const auto view = encodedImageView(env, value);
+  return std::vector<std::uint8_t>(view.data, view.data + view.size);
 }
 }
 
@@ -51,8 +60,8 @@ napi_value loadImage(napi_env env, napi_callback_info info) try {
 napi_value loadImageBytes(napi_env env, napi_callback_info info) try {
   auto args = arguments(env, info, 2);
   State& value = host(env);
-  auto bytes = encodedImageBytes(env, args.at(0));
-  auto pixels = pmjs::ImageStore::decodeMemory(bytes.data(), bytes.size());
+  const auto bytes = encodedImageView(env, args.at(0));
+  auto pixels = pmjs::ImageStore::decodeMemory(bytes.data, bytes.size);
   auto image = pixels ? value.images.installDecodedMemory(
     std::move(*pixels), args.size() > 1 && asBoolean(env, args.at(1))) : std::nullopt;
   if (!image) throw std::runtime_error("cannot decode image bytes");
