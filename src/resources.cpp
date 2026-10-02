@@ -322,12 +322,17 @@ std::optional<ImageInfo> ImageStore::createRgba(int width, int height,
   }
 
   std::size_t index = 0;
-  while (index < slots_.size() && slots_[index].live) ++index;
-  if (index >= indexMask) {
-    glDeleteTextures(1, &texture);
-    return std::nullopt;
+  if (!freeSlots_.empty()) {
+    index = freeSlots_.back();
+    freeSlots_.pop_back();
+  } else {
+    index = slots_.size();
+    if (index >= indexMask) {
+      glDeleteTextures(1, &texture);
+      return std::nullopt;
+    }
+    slots_.emplace_back();
   }
-  if (index == slots_.size()) slots_.emplace_back();
   auto& slot = slots_[index];
   slot.texture = texture;
   slot.width = width;
@@ -542,6 +547,7 @@ void ImageStore::destroySlot(std::size_t index) {
   slot.live = false;
   slot.generation = static_cast<std::uint16_t>((slot.generation + 1U) & generationMask);
   if (slot.generation == 0) slot.generation = 1;
+  freeSlots_.push_back(index);
   --liveCount_;
 }
 
