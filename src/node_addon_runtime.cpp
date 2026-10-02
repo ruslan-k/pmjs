@@ -82,6 +82,20 @@ napi_value monotonicNow(napi_env env, napi_callback_info) try {
   return nullptr;
 }
 
+napi_value windowStateBits(napi_env env, napi_callback_info) try {
+  const auto& platform = host(env).platform;
+  const std::uint32_t bits =
+    (platform.windowFocused() ? 1U : 0U) |
+    (platform.windowVisible() ? 2U : 0U);
+  return uint32(env, bits);
+} catch (const std::exception& error) {
+  napi_throw_error(env, nullptr, error.what());
+  return nullptr;
+} catch (...) {
+  napi_throw_error(env, nullptr, "windowStateBits failed");
+  return nullptr;
+}
+
 napi_value windowState(napi_env env, napi_callback_info) try {
   const auto& platform = host(env).platform;
   napi_value result;
@@ -316,6 +330,7 @@ void registerRuntimeBindings(napi_env env, napi_value exports) {
   method(env, runtime, "env", environment);
   method(env, runtime, "monotonicNow", monotonicNow);
   method(env, runtime, "windowState", windowState);
+  method(env, runtime, "windowStateBits", windowStateBits);
   method(env, runtime, "displaySize", displaySize);
   method(env, runtime, "windowSize", windowSize);
   method(env, runtime, "setWindowTitle", setWindowTitle);
