@@ -32,6 +32,7 @@ class Platform {
   const std::vector<KeyEvent>& keyEvents() const { return keyEvents_; }
   void clearKeyEvents() { keyEvents_.clear(); }
   std::vector<GamepadState> gamepads() const;
+  void fillGamepads(std::vector<GamepadState>& result) const;
   bool consumePress(const std::string& action);
   std::uint32_t inputState() const;
   bool windowFocused() const { return windowFocused_; }
