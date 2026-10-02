@@ -283,10 +283,114 @@ async function run(input, hooks = {}) {
   let lastTelemetryRendererStats = null;
   let sceneWrapsInstalled = false;
   let sceneTimingSampleActive = false;
+  const logicProfileEnabled = hostProcess.env.PMJS_LOGIC_PROFILE === '1';
+  const configuredLogicProfileEvery = Number(
+    hostProcess.env.PMJS_LOGIC_PROFILE_EVERY || 8);
+  const logicProfileEvery = Number.isSafeInteger(configuredLogicProfileEvery) &&
+      configuredLogicProfileEvery >= 1 && configuredLogicProfileEvery <= 120
+    ? configuredLogicProfileEvery : 8;
+  let logicProfileFrame = 0;
+  let logicProfileSampleActive = false;
+  let logicProfileInstalled = false;
+  const logicProfileStats = Object.create(null);
   let sceneUpdateMs = 0;
   let sceneUpdateCalls = 0;
   let sceneRenderMs = 0;
   let sceneRenderCalls = 0;
+  function logicProfileRecord(name, elapsed) {
+    let item = logicProfileStats[name];
+    if (!item) item = logicProfileStats[name] = { calls: 0, totalMs: 0, maxMs: 0 };
+    item.calls++;
+    item.totalMs += elapsed;
+    if (elapsed > item.maxMs) item.maxMs = elapsed;
+  }
+  function installLogicProfileWrap(target, method, name) {
+    if (!target || typeof target[method] !== 'function') return false;
+    const original = target[method];
+    if (original.__pmjsLogicProfileWrapped) return true;
+    function wrappedLogicProfileMethod() {
+      if (!logicProfileSampleActive) return original.apply(this, arguments);
+      const started = performance.now();
+      try {
+        return original.apply(this, arguments);
+      } finally {
+        logicProfileRecord(name, performance.now() - started);
+      }
+    }
+    wrappedLogicProfileMethod.__pmjsLogicProfileWrapped = true;
+    wrappedLogicProfileMethod.__pmjsLogicProfileOriginal = original;
+    target[method] = wrappedLogicProfileMethod;
+    return true;
+  }
+  function installLogicProfileWraps() {
+    if (!logicProfileEnabled || logicProfileInstalled) return logicProfileInstalled;
+    const specs = [
+      ['Game_Map', 'update', 'Game_Map.update'],
+      ['Game_Map', 'refreshIfNeeded', 'Game_Map.refreshIfNeeded'],
+      ['Game_Map', 'updateInterpreter', 'Game_Map.updateInterpreter'],
+      ['Game_Map', 'updateScroll', 'Game_Map.updateScroll'],
+      ['Game_Map', 'updateEvents', 'Game_Map.updateEvents'],
+      ['Game_Map', 'updateVehicles', 'Game_Map.updateVehicles'],
+      ['Game_Map', 'updateParallax', 'Game_Map.updateParallax'],
+      ['Game_Event', 'update', 'Game_Event.update'],
+      ['Game_CommonEvent', 'update', 'Game_CommonEvent.update'],
+      ['Game_Interpreter', 'update', 'Game_Interpreter.update'],
+      ['Game_Player', 'update', 'Game_Player.update'],
+      ['Game_Followers', 'update', 'Game_Followers.update'],
+      ['Scene_Map', 'update', 'Scene_Map.update'],
+      ['Scene_Map', 'updateMain', 'Scene_Map.updateMain'],
+      ['Scene_Map', 'updateMainMultiply', 'Scene_Map.updateMainMultiply'],
+      ['Spriteset_Map', 'update', 'Spriteset_Map.update'],
+      ['Spriteset_Base', 'update', 'Spriteset_Base.update'],
+      ['Tilemap', 'update', 'Tilemap.update'],
+      ['Weather', 'update', 'Weather.update'],
+      ['WindowLayer', 'update', 'WindowLayer.update'],
+      ['Lightmask', '_updateMask', 'Lightmask._updateMask']
+    ];
+    let installed = 0;
+    for (const spec of specs) {
+      const ctor = globalThis[spec[0]];
+      if (ctor && ctor.prototype &&
+          installLogicProfileWrap(ctor.prototype, spec[1], spec[2])) {
+        installed++;
+      }
+    }
+    if (globalThis.SceneManager) {
+      const managerSpecs = [
+        ['updateInputData', 'SceneManager.updateInputData'],
+        ['changeScene', 'SceneManager.changeScene'],
+        ['updateScene', 'SceneManager.updateScene'],
+        ['renderScene', 'SceneManager.renderScene']
+      ];
+      for (const spec of managerSpecs) {
+        if (installLogicProfileWrap(globalThis.SceneManager, spec[0], spec[1])) {
+          installed++;
+        }
+      }
+    }
+    logicProfileInstalled = installed > 0;
+    if (logicProfileInstalled) {
+      console.log('[pmjs] logic profiler enabled methods=' + installed +
+        ' sample_every=' + logicProfileEvery);
+    }
+    return logicProfileInstalled;
+  }
+  function logicProfileSnapshot() {
+    const rows = Object.keys(logicProfileStats).map(name => {
+      const value = logicProfileStats[name];
+      return {
+        name,
+        calls: value.calls,
+        totalMs: Math.round(value.totalMs * 100) / 100,
+        avgMs: value.calls > 0
+          ? Math.round(value.totalMs / value.calls * 1000) / 1000 : 0,
+        maxMs: Math.round(value.maxMs * 1000) / 1000
+      };
+    }).sort((left, right) => right.totalMs - left.totalMs);
+    for (const name of Object.keys(logicProfileStats)) delete logicProfileStats[name];
+    return rows;
+  }
+
   function installSceneTimingWraps() {
     const sceneManager = globalThis.SceneManager;
     if (!sceneManager || typeof sceneManager.updateScene !== 'function' ||
@@ -431,6 +535,12 @@ async function run(input, hooks = {}) {
         };
       }
       if (stats) lastTelemetryRendererStats = stats;
+      if (logicProfileEnabled && logicProfileInstalled) {
+        snapshot.logicProfile = {
+          sampleEvery: logicProfileEvery,
+          methods: logicProfileSnapshot()
+        };
+      }
       if (sceneWrapsInstalled && telemetryPhaseSamples > 0) {
         snapshot.sceneTimingMs = {
           frames: telemetryPhaseSamples,
@@ -495,6 +605,9 @@ async function run(input, hooks = {}) {
         if (memoryTelemetryEnabled && !sceneWrapsInstalled) {
           sceneWrapsInstalled = installSceneTimingWraps();
         }
+        if (logicProfileEnabled && !logicProfileInstalled) {
+          installLogicProfileWraps();
+        }
         if (typeof globalThis.__pmjsUpdateWindowStateBits === 'function' &&
             typeof native.runtime.windowStateBits === 'function') {
           globalThis.__pmjsUpdateWindowStateBits(native.runtime.windowStateBits());
@@ -509,6 +622,8 @@ async function run(input, hooks = {}) {
         const sampleFrameTiming = memoryTelemetryEnabled &&
           (++telemetryTimingFrame % telemetryTimingSampleEvery === 0);
         sceneTimingSampleActive = sampleFrameTiming;
+        logicProfileSampleActive = logicProfileEnabled && logicProfileInstalled &&
+          (++logicProfileFrame % logicProfileEvery === 0);
         let phaseStart = sampleFrameTiming ? performance.now() : 0;
         native.beginFrame();
         let phaseBeginEnd = sampleFrameTiming ? performance.now() : 0;
