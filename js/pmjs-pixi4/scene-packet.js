@@ -152,9 +152,12 @@ function nativePlainSpriteBinding(node) {
     return null;
   }
   var filters = nativeSceneFilters(node);
-  if (filters && filters.some(function(filter) {
-    return filter && filter.enabled !== false;
-  })) return null;
+  if (filters) {
+    for (var filterIndex = 0; filterIndex < filters.length; filterIndex++) {
+      var filter = filters[filterIndex];
+      if (filter && filter.enabled !== false) return null;
+    }
+  }
   var blendMode = nativeSceneBlendMode(node);
   if (blendMode < 0) return null;
   var texture = node.texture;
