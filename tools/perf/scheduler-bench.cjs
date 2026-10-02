@@ -89,6 +89,22 @@ function run(filename, iterations) {
       c.pmjsDrainScheduler(state.clock);
     });
 
+  // Model resume after a long suspend / debugger stop. A correct interval
+  // fires once and advances to the first future deadline; the optimized
+  // scheduler must do that in O(1), not one loop per missed millisecond.
+  const stalledIterations = 100;
+  const stalled = measure(filename, stalledIterations,
+    (_runtime, c) => {
+      const state = { noop() {}, clock: 0 };
+      c.setInterval(state.noop, 1);
+      return state;
+    },
+    (runtime, c, state) => {
+      state.clock += 10000;
+      runtime.setClock(state.clock);
+      c.pmjsDrainScheduler(state.clock);
+    });
+
   return {
     benchmark: 'scheduler',
     iterations,
@@ -99,7 +115,10 @@ function run(filename, iterations) {
     raf_samples_ns_per_frame: raf.samples,
     timer_iterations: activeIterations,
     timer_median_ns_per_tick: timer.median,
-    timer_samples_ns_per_tick: timer.samples
+    timer_samples_ns_per_tick: timer.samples,
+    stalled_interval_iterations: stalledIterations,
+    stalled_interval_median_ns_per_tick: stalled.median,
+    stalled_interval_samples_ns_per_tick: stalled.samples
   };
 }
 
