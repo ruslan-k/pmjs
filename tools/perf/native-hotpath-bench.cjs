@@ -62,6 +62,10 @@ results.push(sample('canvas-readback-256', 120, () => {
   if (pixels.length !== 256 * 256 * 4) throw new Error('bad readback');
 }));
 
+results.push(sample('canvas-blur-256', 12, () => {
+  native.canvas.blur(canvas.handle);
+}));
+
 function slotRound() {
   const handles = [];
   for (let i = 0; i < 4096; i++) handles.push(native.canvas.create(1, 1).handle);
