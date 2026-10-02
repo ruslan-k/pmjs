@@ -184,34 +184,9 @@ Renderer::Renderer(int width, int height, ImageStore& images)
     throw std::runtime_error("letterbox framebuffer is incomplete");
   }
 
-  const auto createTarget = [&](std::uint32_t& texture,
-                                  std::uint32_t& framebuffer) {
-      glGenTextures(1, &texture);
-      glBindTexture(GL_TEXTURE_2D, texture);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA,
-                   GL_UNSIGNED_BYTE, nullptr);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-      glGenFramebuffers(1, &framebuffer);
-      glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                             GL_TEXTURE_2D, texture, 0);
-      ++stats_.framebufferChecks;
-      if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        throw std::runtime_error("renderer framebuffer is incomplete");
-      }
-      ++stats_.rendererTargetCreates;
-  };
-  createTarget(sceneTexture_, sceneFramebuffer_);
-  createTarget(offscreenTexture_, offscreenFramebuffer_);
-  createTarget(filterTexture_, filterFramebuffer_);
-  createTarget(toneOverlayTexture_, toneOverlayFramebuffer_);
-  createTarget(bloomTexture_, bloomFramebuffer_);
-  for (std::size_t index = 0; index < groupFramebuffers_.size(); ++index) {
-    createTarget(groupTextures_[index], groupFramebuffers_[index]);
-  }
+  // The scene target is always needed. The other eight full-size RGBA
+  // targets are created on demand by the paths that actually need them.
+  ensureTarget(sceneTexture_, sceneFramebuffer_);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
