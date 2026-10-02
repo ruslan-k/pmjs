@@ -307,7 +307,8 @@ const ImagePixels* ImageStore::readPixels(ImageHandle handle) const {
     if (slot.cachedPixels) cpuBytes_ += slot.cachedPixels->rgba.capacity();
   }
   slot.cpuPixelFrames = 60;
-  transientCpuPixelsActive_ = slot.cachedPixels.has_value();
+  transientCpuPixelsActive_ =
+    transientCpuPixelsActive_ || slot.cachedPixels.has_value();
   return slot.cachedPixels ? &*slot.cachedPixels : nullptr;
 }
 
