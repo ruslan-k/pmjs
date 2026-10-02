@@ -125,6 +125,50 @@ results.push(sample('scene-render-512', 120, () => {
   native.scene.submit(native.scene.packetVersion, metadata, values, count);
   native.renderFrame();
 }));
+
+// Stress bounded-filter bookkeeping with many disjoint sprites. This models
+// RPG Maker maps/lighting groups where a filter encloses hundreds of display
+// objects and catches accidental O(n^2) region compaction.
+const filteredSprites = 512;
+const filteredCount = filteredSprites + 2;
+const metadataStride = native.scene.schema.metadataStride;
+const filterMetadata = new Uint32Array(filteredCount * metadataStride);
+const filterValues = new Float32Array(filteredCount * stride);
+function initNode(index, kind, resource, blend) {
+  const mo = index * metadataStride;
+  filterMetadata[mo] = kind;
+  filterMetadata[mo + 1] = 0xffffffff;
+  filterMetadata[mo + 2] = resource;
+  filterMetadata[mo + 3] = 0xffffff;
+  filterMetadata[mo + 4] = blend || 0;
+  const vo = index * stride;
+  filterValues[vo] = 1;
+  filterValues[vo + 3] = 1;
+  filterValues[vo + 6] = 1;
+  return vo;
+}
+// filterBegin + alpha filter (kind 20) has zero padding, enabling region bounds.
+let vo = initNode(0, 6, 0, 20);
+filterValues[vo + 7] = 1;
+filterValues[vo + 33] = 1;
+for (let i = 0; i < filteredSprites; i++) {
+  vo = initNode(i + 1, 1, image.handle, 0);
+  filterValues[vo + 4] = (i % 32) * 4;
+  filterValues[vo + 5] = Math.floor(i / 32) * 4;
+  filterValues[vo + 9] = 0;
+  filterValues[vo + 10] = 0;
+  filterValues[vo + 11] = 2;
+  filterValues[vo + 12] = 2;
+  filterValues[vo + 13] = 2;
+  filterValues[vo + 14] = 2;
+}
+initNode(filteredCount - 1, 7, 0, 0);
+results.push(sample('scene-filter-bounds-512', 80, () => {
+  native.beginFrame();
+  native.scene.submit(native.scene.packetVersion,
+    filterMetadata, filterValues, filteredCount);
+  native.renderFrame();
+}));
 native.beginFrame();
 
 native.images.release(image.handle);
