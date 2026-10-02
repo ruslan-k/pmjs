@@ -6,12 +6,11 @@ globalThis.top = globalThis;
 globalThis.parent = globalThis;
 globalThis.focus = function() {};
 var nativeWindowState = { focused: true, visible: true };
-globalThis.__pmjsUpdateWindowState = function(state) {
-  if (!state || typeof state !== 'object') return;
+function applyNativeWindowState(focused, visible) {
   var wasFocused = nativeWindowState.focused;
   var wasVisible = nativeWindowState.visible;
-  nativeWindowState.focused = state.focused !== false;
-  nativeWindowState.visible = state.visible !== false;
+  nativeWindowState.focused = focused;
+  nativeWindowState.visible = visible;
   if (wasFocused && !nativeWindowState.focused) {
     pendingKeyReleases.length = 0;
     pendingPadReleases.length = 0;
@@ -32,6 +31,14 @@ globalThis.__pmjsUpdateWindowState = function(state) {
       typeof globalThis.document.dispatchEvent === 'function') {
     globalThis.document.dispatchEvent({ type: 'visibilitychange', target: document });
   }
+}
+globalThis.__pmjsUpdateWindowState = function(state) {
+  if (!state || typeof state !== 'object') return;
+  applyNativeWindowState(state.focused !== false, state.visible !== false);
+};
+globalThis.__pmjsUpdateWindowStateBits = function(bits) {
+  bits = Number(bits) >>> 0;
+  applyNativeWindowState((bits & 1) !== 0, (bits & 2) !== 0);
 };
 var nativeLogicalWidth = (globalThis.__pmjsGameInfo && Number(globalThis.__pmjsGameInfo.width)) ||
   Number(NativeHost.runtime.env('PMJS_GAME_WIDTH') || 640);
