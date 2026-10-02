@@ -196,6 +196,7 @@ class CanvasStore {
     int dirtyY0 = 0;
     int dirtyX1 = 0;
     int dirtyY1 = 0;
+    bool dirty = false;
     bool live = false;
   };
 
@@ -224,13 +225,15 @@ class CanvasStore {
                          std::uint8_t coverage);
   static void blendPixelAdditive(Surface& surface, int x, int y,
                                  std::uint32_t rgba);
-  static void markDirty(Surface& surface, int x, int y, int width, int height);
+  void markDirty(Surface& surface, int x, int y, int width, int height);
 
   ImageStore& images_;
   std::unique_ptr<FontState> fonts_;
   std::vector<Surface> surfaces_;
   std::vector<std::size_t> freeSurfaceSlots_;
   std::size_t liveCount_ = 0;
+  std::size_t cpuBytes_ = 0;
+  std::size_t dirtySurfaceCount_ = 0;
   std::size_t peakCpuBytes_ = 0;
   std::size_t peakLiveCount_ = 0;
 };
