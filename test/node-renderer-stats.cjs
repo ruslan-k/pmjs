@@ -55,7 +55,7 @@ native.renderFrame();
 
 const stats = native.render.stats();
 if (!Array.isArray(stats.filterApplications) ||
-    stats.filterApplications.length !== 30 ||
+    stats.filterApplications.length !== 31 ||
     stats.filterApplications[3] !== 1) {
   throw new Error('alpha-mask application was not attributed: ' +
     JSON.stringify(stats));
