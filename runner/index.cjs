@@ -262,6 +262,12 @@ async function run(input, hooks = {}) {
   let lastTelemetryFrames = null;
   let lastTelemetryFramesAt = 0;
   let lastTelemetryLogic = null;
+  let lastTelemetryPlayer = null;
+  let telemetryPhaseSamples = 0;
+  let telemetryPhaseTickMs = 0;
+  let telemetryPhaseRenderMs = 0;
+  let telemetryPhaseNativeMs = 0;
+  let telemetryPhaseSwapMs = 0;
   function reportMemoryTelemetry(now) {
     if (!memoryTelemetryEnabled || now < nextMemoryTelemetry) return;
     nextMemoryTelemetry = now + memoryTelemetryMs;
@@ -291,6 +297,29 @@ async function run(input, hooks = {}) {
           logicDebtMs = sceneManager._accumulator * 1000;
         }
       }
+      let playerTilesPerSec = null;
+      let playerPxPerSec = null;
+      let playerMoving = null;
+      let playerSpeed = null;
+      const player = globalThis.$gamePlayer;
+      if (player && typeof player._realX === 'number' &&
+          typeof player._realY === 'number') {
+        if (lastTelemetryPlayer !== null && now > lastTelemetryPlayer.at) {
+          const seconds = (now - lastTelemetryPlayer.at) / 1000;
+          const dx = Math.abs(player._realX - lastTelemetryPlayer.x);
+          const dy = Math.abs(player._realY - lastTelemetryPlayer.y);
+          const tileWidth = globalThis.$gameMap &&
+              typeof globalThis.$gameMap.tileWidth === 'function'
+            ? globalThis.$gameMap.tileWidth() : 48;
+          playerTilesPerSec = Math.round(((dx + dy) / seconds) * 1000) / 1000;
+          playerPxPerSec = Math.round(((dx + dy) * tileWidth / seconds) * 10) / 10;
+        }
+        lastTelemetryPlayer = { x: player._realX, y: player._realY, at: now };
+        playerMoving = typeof player.isMoving === 'function'
+          ? player.isMoving() : null;
+        playerSpeed = typeof player._moveSpeed === 'number'
+          ? player._moveSpeed : null;
+      }
       const snapshot = {
         uptimeMs: Math.round(now),
         fps: fps === null ? null : Math.round(fps * 10) / 10,
@@ -298,6 +327,10 @@ async function run(input, hooks = {}) {
           : Math.round(logicRatio * 1000) / 1000,
         logicDebtMs: logicDebtMs === null ? null
           : Math.round(logicDebtMs * 10) / 10,
+        playerTilesPerSec: playerTilesPerSec,
+        playerPxPerSec: playerPxPerSec,
+        playerMoving: playerMoving,
+        playerSpeed: playerSpeed,
         process: {
           rss: usage.rss,
           heapTotal: usage.heapTotal,
@@ -305,8 +338,23 @@ async function run(input, hooks = {}) {
           external: usage.external,
           arrayBuffers: usage.arrayBuffers
         },
+        frameTimingMs: telemetryPhaseSamples > 0 ? {
+          samples: telemetryPhaseSamples,
+          tick: Math.round(telemetryPhaseTickMs / telemetryPhaseSamples * 100) / 100,
+          render: Math.round(telemetryPhaseRenderMs / telemetryPhaseSamples * 100) / 100,
+          native: Math.round(telemetryPhaseNativeMs / telemetryPhaseSamples * 100) / 100,
+          swap: Math.round(telemetryPhaseSwapMs / telemetryPhaseSamples * 100) / 100,
+          total: Math.round((telemetryPhaseTickMs + telemetryPhaseRenderMs +
+            telemetryPhaseNativeMs + telemetryPhaseSwapMs) /
+            telemetryPhaseSamples * 100) / 100
+        } : null,
         rendererStats: stats
       };
+      telemetryPhaseSamples = 0;
+      telemetryPhaseTickMs = 0;
+      telemetryPhaseRenderMs = 0;
+      telemetryPhaseNativeMs = 0;
+      telemetryPhaseSwapMs = 0;
       if (memoryTelemetryDetailEnabled) {
         snapshot.renderer = typeof native.render.memory === 'function'
           ? native.render.memory() : null;
@@ -349,12 +397,22 @@ async function run(input, hooks = {}) {
         const now = performance.now();
         native.beginFrame();
         globalThis.__pmjsTick(now);
+        const phaseTickEnd = performance.now();
         globalThis.__pmjsRender(now);
+        const phaseRenderEnd = performance.now();
         native.renderFrame();
+        const phaseNativeEnd = performance.now();
         if (typeof globalThis.__pmjsAfterNativeRender === 'function') {
           globalThis.__pmjsAfterNativeRender();
         }
         native.swapFrame();
+        if (memoryTelemetryEnabled) {
+          telemetryPhaseSamples++;
+          telemetryPhaseTickMs += phaseTickEnd - now;
+          telemetryPhaseRenderMs += phaseRenderEnd - phaseTickEnd;
+          telemetryPhaseNativeMs += phaseNativeEnd - phaseRenderEnd;
+          telemetryPhaseSwapMs += performance.now() - phaseNativeEnd;
+        }
         if (memoryTelemetryEnabled && now >= nextMemoryTelemetry) {
           reportMemoryTelemetry(now);
         }
