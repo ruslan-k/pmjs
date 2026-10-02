@@ -13,7 +13,6 @@
       pendingTasks[pendingTaskHead++]();
       count++;
     }
-    // Avoid repeated Array.shift() reindexing while bounding retained callbacks.
     if (pendingTaskHead >= pendingTasks.length) {
       pendingTasks.length = 0;
       pendingTaskHead = 0;
@@ -31,8 +30,11 @@
   var rafQueue = [];
   var rafDrainQueue = [];
   var cancelledRafs = new Set();
+
   var timers = new Map();
-  var dueTimers = [];
+  var timerHeap = [];
+  var deferredTimers = [];
+  var drainingTimers = false;
   var nextTimerDeadline = Infinity;
 
   var schedulerNow = 0;
@@ -44,6 +46,71 @@
 
   function reportAsyncError(error) {
     console.error('[pmjs] async error:', error);
+  }
+
+  function timerLess(a, b) {
+    return a.deadline < b.deadline ||
+      (a.deadline === b.deadline && a.id < b.id);
+  }
+
+  function heapPush(timer) {
+    var index = timerHeap.length;
+    timerHeap.push(timer);
+    while (index > 0) {
+      var parent = (index - 1) >> 1;
+      var parentTimer = timerHeap[parent];
+      if (!timerLess(timer, parentTimer)) break;
+      timerHeap[index] = parentTimer;
+      index = parent;
+    }
+    timerHeap[index] = timer;
+  }
+
+  function heapPop() {
+    var first = timerHeap[0];
+    var last = timerHeap.pop();
+    if (timerHeap.length !== 0) {
+      var index = 0;
+      while (true) {
+        var left = index * 2 + 1;
+        if (left >= timerHeap.length) break;
+        var right = left + 1;
+        var child = left;
+        if (right < timerHeap.length &&
+            timerLess(timerHeap[right], timerHeap[left])) {
+          child = right;
+        }
+        if (!timerLess(timerHeap[child], last)) break;
+        timerHeap[index] = timerHeap[child];
+        index = child;
+      }
+      timerHeap[index] = last;
+    }
+    return first;
+  }
+
+  function pruneTimerHeap() {
+    while (timerHeap.length) {
+      var timer = timerHeap[0];
+      if (timers.get(timer.id) === timer) break;
+      heapPop();
+    }
+  }
+
+  function refreshTimerDeadline() {
+    pruneTimerHeap();
+    nextTimerDeadline = timerHeap.length ? timerHeap[0].deadline : Infinity;
+  }
+
+  function queueTimer(timer) {
+    if (drainingTimers) {
+      deferredTimers.push(timer);
+    } else {
+      heapPush(timer);
+      if (timer.deadline < nextTimerDeadline) {
+        nextTimerDeadline = timer.deadline;
+      }
+    }
   }
 
   function requestAnimationFrameCompat(callback) {
@@ -69,110 +136,105 @@
     }
   }
 
+  function timerArgs(start, argsLike) {
+    if (argsLike.length <= start) return null;
+    var args = new Array(argsLike.length - start);
+    for (var i = start; i < argsLike.length; i++) args[i - start] = argsLike[i];
+    return args;
+  }
+
   function setTimeoutCompat(callback, delay) {
     var id = nextId++;
-    var args = null;
-    if (arguments.length > 2) {
-      args = [];
-      for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
-    }
-    var deadline = clockNow() + Math.max(0, Number(delay) || 0);
-    timers.set(id, {
+    var timer = {
       id: id,
       callback: callback,
-      args: args,
-      deadline: deadline,
+      args: timerArgs(2, arguments),
+      deadline: clockNow() + Math.max(0, Number(delay) || 0),
       interval: 0
-    });
-    if (deadline < nextTimerDeadline) nextTimerDeadline = deadline;
-
+    };
+    timers.set(id, timer);
+    queueTimer(timer);
     return id;
   }
 
   function clearTimeoutCompat(id) {
-    timers.delete(id);
+    if (timers.delete(id) && timerHeap.length && timerHeap[0].id === id) {
+      refreshTimerDeadline();
+    }
   }
 
   function setIntervalCompat(callback, delay) {
     var interval = Math.max(1, Number(delay) || 0);
     var id = nextId++;
-    var args = null;
-    if (arguments.length > 2) {
-      args = [];
-      for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
-    }
-    var deadline = clockNow() + interval;
-    timers.set(id, {
+    var timer = {
       id: id,
       callback: callback,
-      args: args,
-      deadline: deadline,
+      args: timerArgs(2, arguments),
+      deadline: clockNow() + interval,
       interval: interval
-    });
-    if (deadline < nextTimerDeadline) nextTimerDeadline = deadline;
-
+    };
+    timers.set(id, timer);
+    queueTimer(timer);
     return id;
   }
 
   function clearIntervalCompat(id) {
-    timers.delete(id);
+    clearTimeoutCompat(id);
+  }
+
+  function invokeTimer(timer) {
+    if (typeof timer.callback === 'function') {
+      if (timer.args === null) timer.callback.call(globalThis);
+      else timer.callback.apply(globalThis, timer.args);
+    } else if (typeof timer.callback === 'string') {
+      (0, eval)(timer.callback);
+    }
   }
 
   function drainTimers(now) {
-    // Most frames have no timer due. Avoid a Map walk, temporary array and sort
-    // on that common path.
     if (now < nextTimerDeadline) return;
 
-    dueTimers.length = 0;
-    nextTimerDeadline = Infinity;
-    timers.forEach(function(timer) {
-      if (timer.deadline <= now) {
-        dueTimers.push(timer);
-      } else if (timer.deadline < nextTimerDeadline) {
-        nextTimerDeadline = timer.deadline;
-      }
-    });
+    drainingTimers = true;
+    try {
+      while (true) {
+        pruneTimerHeap();
+        if (timerHeap.length === 0 || timerHeap[0].deadline > now) break;
 
-    dueTimers.sort(function(a, b) {
-      return a.deadline - b.deadline || a.id - b.id;
-    });
+        var timer = heapPop();
+        if (timers.get(timer.id) !== timer) continue;
 
-    for (var i = 0; i < dueTimers.length; i++) {
-      var timer = dueTimers[i];
-
-      if (!timers.has(timer.id)) continue;
-
-      if (timer.interval > 0) {
-        do {
-          timer.deadline += timer.interval;
-        } while (timer.deadline <= now);
-        if (timer.deadline < nextTimerDeadline) nextTimerDeadline = timer.deadline;
-      } else {
-        timers.delete(timer.id);
-      }
-
-      try {
-        if (typeof timer.callback === 'function') {
-          timer.callback.apply(globalThis, timer.args);
-        } else if (typeof timer.callback === 'string') {
-          (0, eval)(timer.callback);
+        if (timer.interval > 0) {
+          do {
+            timer.deadline += timer.interval;
+          } while (timer.deadline <= now);
+          heapPush(timer);
+        } else {
+          timers.delete(timer.id);
         }
-      } catch (error) {
-        reportAsyncError(error);
+
+        try {
+          invokeTimer(timer);
+        } catch (error) {
+          reportAsyncError(error);
+        }
       }
+    } finally {
+      drainingTimers = false;
+      for (var i = 0; i < deferredTimers.length; i++) {
+        var timer = deferredTimers[i];
+        if (timers.get(timer.id) === timer) heapPush(timer);
+      }
+      deferredTimers.length = 0;
+      refreshTimerDeadline();
     }
-    dueTimers.length = 0;
   }
 
   function drainAnimationFrames(now) {
-    // Zero-RAF frames dominate menus and many event-heavy RPG scenes. Avoid
-    // even swapping the retained queues on that path.
     if (rafQueue.length === 0) {
       if (cancelledRafs.size) cancelledRafs.clear();
       return;
     }
-    // Double-buffer the RAF queues instead of allocating a new array every
-    // rendered frame.
+
     var callbacks = rafQueue;
     rafQueue = rafDrainQueue;
     rafDrainQueue = callbacks;
@@ -180,23 +242,23 @@
 
     for (var i = 0; i < callbacks.length; i++) {
       var entry = callbacks[i];
-      if (!entry.cancelled && !cancelledRafs.has(entry.id)) {
+      var cancelled = entry.cancelled ||
+        (cancelledRafs.size !== 0 && cancelledRafs.has(entry.id));
+      if (!cancelled) {
         try {
           entry.callback(now);
         } catch (error) {
           reportAsyncError(error);
         }
       }
-      cancelledRafs.delete(entry.id);
+      if (cancelledRafs.size !== 0) cancelledRafs.delete(entry.id);
     }
     callbacks.length = 0;
-    cancelledRafs.clear();
+    if (cancelledRafs.size) cancelledRafs.clear();
   }
 
   function pmjsDrainScheduler(now) {
     if (typeof now !== 'number') now = performance.now();
-    // Nothing can observe schedulerNow/draining when neither a timer nor RAF
-    // callback can run.
     if (now < nextTimerDeadline && rafQueue.length === 0 &&
         cancelledRafs.size === 0) return;
     schedulerNow = now;
@@ -211,12 +273,10 @@
 
   globalThis.requestAnimationFrame = requestAnimationFrameCompat;
   globalThis.cancelAnimationFrame = cancelAnimationFrameCompat;
-
   globalThis.setTimeout = setTimeoutCompat;
   globalThis.clearTimeout = clearTimeoutCompat;
   globalThis.setInterval = setIntervalCompat;
   globalThis.clearInterval = clearIntervalCompat;
-
   globalThis.pmjsDrainScheduler = pmjsDrainScheduler;
 
   if (typeof window !== 'undefined') {
