@@ -53,6 +53,19 @@ napi_value fillRect(napi_env env, napi_callback_info info) try {
   return undefined(env);
 } catch (const std::exception& error) { napi_throw_range_error(env,nullptr,error.what()); return nullptr; }
 
+napi_value fillRectAdditive(napi_env env, napi_callback_info info) try {
+  auto a = arguments(env, info, 6);
+  if (!host(env).canvases.fillRectAdditive(
+        asUint32(env, a.at(0)), asInt32(env, a.at(1)), asInt32(env, a.at(2)),
+        asInt32(env, a.at(3)), asInt32(env, a.at(4)), asUint32(env, a.at(5)))) {
+    throw std::runtime_error("invalid canvas");
+  }
+  return undefined(env);
+} catch (const std::exception& error) {
+  napi_throw_range_error(env, nullptr, error.what());
+  return nullptr;
+}
+
 napi_value fillRadialGradient(napi_env env, napi_callback_info info) try {
   auto a = arguments(env, info, 12);
   bool offsetsArray = false, colorsArray = false;
@@ -357,6 +370,7 @@ void registerCanvasBindings(napi_env env, napi_value exports) {
     captureSceneRawPremultiplied);
   method(env, canvas, "captureDrawable", captureDrawable);
   method(env, canvas, "fillRect", fillRect);
+  method(env, canvas, "fillRectAdditive", fillRectAdditive);
   method(env, canvas, "fillRadialGradient", fillRadialGradient);
   method(env, canvas, "clear", clearCanvas);
   method(env, canvas, "clearRect", clearRect);
