@@ -1,4 +1,5 @@
 #include "renderer_shader_source.hpp"
+#include "renderer_shaders.hpp"
 
 #include <iostream>
 #include <string>
@@ -23,9 +24,35 @@ void expectNotContains(const std::string& value, const std::string& unexpected,
   }
 }
 
+
+void expectMaliSafeBuiltin(const char* source, const char* label) {
+  if (!source || std::string(source).rfind("#version 300 es", 0) != 0) {
+    std::cerr << "FAIL: " << label << " does not start with #version at byte 0\n";
+    ++failures;
+    return;
+  }
+  if (std::string(source).find("uniform vec2 textureSize;") != std::string::npos) {
+    std::cerr << "FAIL: " << label << " still declares colliding textureSize uniform\n";
+    ++failures;
+  }
+}
+
 }  // namespace
 
 int main() {
+
+  using namespace pmjs::renderer_shaders;
+  expectMaliSafeBuiltin(primitiveSurfaceFragmentSource, "primitiveSurfaceFragmentSource");
+  expectMaliSafeBuiltin(vertexSource, "vertexSource");
+  expectMaliSafeBuiltin(fragmentSource, "fragmentSource");
+  expectMaliSafeBuiltin(tileVertexSource, "tileVertexSource");
+  expectMaliSafeBuiltin(tileFragmentSource, "tileFragmentSource");
+  expectMaliSafeBuiltin(simpleFragmentSource, "simpleFragmentSource");
+  expectMaliSafeBuiltin(generatedTextureFragmentSource, "generatedTextureFragmentSource");
+  expectMaliSafeBuiltin(spriteEffectFragmentSource, "spriteEffectFragmentSource");
+  expectMaliSafeBuiltin(presentationVertexSource, "presentationVertexSource");
+  expectMaliSafeBuiltin(presentationFragmentSource, "presentationFragmentSource");
+
   const std::string source =
       " \n\t#version 300 es\n"
       "precision highp float;\n"
