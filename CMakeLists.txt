@@ -98,6 +98,25 @@ target_compile_options(pmjs_native PRIVATE ${PMJS_BASE_COMPILE_OPTIONS})
 target_link_libraries(pmjs_native PRIVATE pmjs_runtime)
 set_target_properties(pmjs_native PROPERTIES PREFIX "" SUFFIX ".node")
 
+# Low-resource Release builds: let the linker discard unreachable functions/data
+# and enable cross-TU optimization only when the active toolchain proves it can.
+if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(pmjs_runtime PRIVATE
+    "$<$<CONFIG:Release>:-ffunction-sections;-fdata-sections>")
+  target_compile_options(pmjs_native PRIVATE
+    "$<$<CONFIG:Release>:-ffunction-sections;-fdata-sections>")
+  target_link_options(pmjs_native PRIVATE "$<$<CONFIG:Release>:-Wl,--gc-sections>")
+
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT PMJS_IPO_SUPPORTED OUTPUT PMJS_IPO_ERROR)
+  if(PMJS_IPO_SUPPORTED)
+    set_property(TARGET pmjs_runtime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    set_property(TARGET pmjs_native PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+  else()
+    message(STATUS "PMJS Release IPO unavailable: ${PMJS_IPO_ERROR}")
+  endif()
+endif()
+
 if(PMJS_ENABLE_SANITIZERS)
   set(PMJS_SANITIZER_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_compile_options(pmjs_runtime PRIVATE ${PMJS_SANITIZER_FLAGS})
