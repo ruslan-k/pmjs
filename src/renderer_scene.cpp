@@ -29,6 +29,11 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
 
   const std::size_t originalCommandCount = frame_.commands.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
+  // A scene packet can emit at most one command per node. Reserve once at the
+  // packet boundary instead of repeatedly growing the retained command vector.
+  if (frame_.commands.capacity() < originalCommandCount + nodeCount) {
+    frame_.commands.reserve(originalCommandCount + nodeCount);
+  }
   const auto build = [&]() -> bool {
 
   struct SceneState {
@@ -39,7 +44,16 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     ImageHandle maskImage = 0;
     std::array<float, 6> maskTransform{};
   };
-  std::vector<SceneState> states(nodeCount);
+  // Scene submission is a per-frame hot path. Reuse its state buffer so a
+  // large map does not malloc/free the same block every frame. Drop an
+  // excessively oversized buffer after a scene-size collapse to keep the
+  // low-memory target bounded.
+  static thread_local std::vector<SceneState> states;
+  if (states.capacity() > 1024 && nodeCount * 4 < states.capacity()) {
+    std::vector<SceneState>().swap(states);
+  }
+  states.clear();
+  states.resize(nodeCount);
   std::size_t filterDepth = 0;
   for (std::size_t index = 0; index < nodeCount; ++index) {
     const std::size_t metadataOffset = index * metadataStride;
