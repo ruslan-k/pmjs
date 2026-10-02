@@ -59,3 +59,29 @@ PMJS uses the following software
 - [FFmpeg](https://ffmpeg.org/) for audio and video decoding
 
 The build and test workflow uses CMake, pkg-config, ESLint, and Xvfb.
+
+
+## On-device performance profiling
+
+Use `tools/profile-device.sh` to profile a real game launch on the target handheld. It only requires a POSIX shell plus Linux `/proc` and `/sys`; optional `perf stat` counters are collected automatically when the kernel permits them.
+
+```sh
+# Profile the normal launcher at 1-second intervals.
+./tools/profile-device.sh -- ./example/run-game.sh /path/to/game /path/to/saves
+
+# PortMaster-style launcher, sampling twice per second.
+./tools/profile-device.sh -i 0.5 -o ./profiles/device-run -- ./MyGame.sh
+
+# On minimal firmware where perf_event_open is unavailable.
+./tools/profile-device.sh --no-perf -- ./MyGame.sh
+```
+
+The output directory contains:
+
+- `samples.csv`: CPU %, RSS/HWM/PSS, threads, file descriptors, I/O bytes, context switches, free memory/swap, average CPU frequency, detected Mali/GPU devfreq, maximum thermal-zone temperature, and system load over time.
+- `summary.txt`: aggregate peak/average values and the game exit code.
+- `game.log`: game/launcher stdout and stderr.
+- `device.txt`: kernel, CPU, initial memory, devfreq, and thermal metadata.
+- `perf-stat.txt`: hardware/software perf counters when `perf` is installed and allowed.
+
+The profiler follows child processes, so it can wrap the existing PortMaster shell launcher rather than requiring the final Node process to be invoked directly.
