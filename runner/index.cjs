@@ -247,6 +247,8 @@ async function run(input, hooks = {}) {
   const period = timing.renderPeriod;
   let deadline = timing.uncapped ? 0 : native.runtime.monotonicNow() + period;
   const memoryTelemetryEnabled = hostProcess.env.PMJS_MEMORY_TELEMETRY === '1';
+  const memoryTelemetryDetailEnabled =
+    hostProcess.env.PMJS_MEMORY_TELEMETRY_DETAIL === '1';
   const configuredTelemetryMs = Number(
     hostProcess.env.PMJS_MEMORY_TELEMETRY_MS || 5000);
   const memoryTelemetryMs = Number.isFinite(configuredTelemetryMs) &&
@@ -298,13 +300,17 @@ async function run(input, hooks = {}) {
           external: usage.external,
           arrayBuffers: usage.arrayBuffers
         },
-        renderer: typeof native.render.memory === 'function'
-          ? native.render.memory() : null,
-        images: native.images && typeof native.images.memory === 'function'
-          ? native.images.memory(5) : null,
-        canvases: native.canvas && typeof native.canvas.memory === 'function'
-          ? native.canvas.memory() : null,
         rendererStats: stats
+      };
+      if (memoryTelemetryDetailEnabled) {
+        snapshot.renderer = typeof native.render.memory === 'function'
+          ? native.render.memory() : null;
+        snapshot.images = native.images &&
+            typeof native.images.memory === 'function'
+          ? native.images.memory(5) : null;
+        snapshot.canvases = native.canvas &&
+            typeof native.canvas.memory === 'function'
+          ? native.canvas.memory() : null;
       };
       console.log('[pmjs-memory] ' + JSON.stringify(snapshot));
     } catch (error) {
@@ -344,7 +350,9 @@ async function run(input, hooks = {}) {
           globalThis.__pmjsAfterNativeRender();
         }
         native.swapFrame();
-        reportMemoryTelemetry(now);
+        if (memoryTelemetryEnabled && now >= nextMemoryTelemetry) {
+          reportMemoryTelemetry(now);
+        }
         if (!timing.uncapped) {
           const monotonicNow = native.runtime.monotonicNow();
           deadline = advanceDeadline(deadline, monotonicNow, period);
