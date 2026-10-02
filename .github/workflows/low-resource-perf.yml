@@ -47,6 +47,11 @@ jobs:
           cmake --build /tmp/pmjs-base/build --target pmjs_native -j2
           cmake --build "$GITHUB_WORKSPACE/build" -j2
 
+      - name: Record native binary sizes
+        run: |
+          stat -c '%s' /tmp/pmjs-base/build/pmjs_native.node > /tmp/native-size-before.txt
+          stat -c '%s' "$GITHUB_WORKSPACE/build/pmjs_native.node" > /tmp/native-size-after.txt
+
       - name: Run optimized test suite
         run: |
           ctest --test-dir "$GITHUB_WORKSPACE/build" --output-on-failure -j2
@@ -155,6 +160,11 @@ jobs:
               before_mb = b['startup_render_target_bytes'] / (1024 * 1024)
               after_mb = a['startup_render_target_bytes'] / (1024 * 1024)
               print(f"render_targets_startup_mb: before={before_mb:.3f} after={after_mb:.3f} delta={pct(before_mb,after_mb):+.1f}%")
+          with open('/tmp/native-size-before.txt') as f:
+              before_size = int(f.read().strip())
+          with open('/tmp/native-size-after.txt') as f:
+              after_size = int(f.read().strip())
+          print(f"native_binary_mb: before={before_size/(1024*1024):.3f} after={after_size/(1024*1024):.3f} delta={pct(before_size,after_size):+.1f}%")
           print(f"rss_mb: before={b['rss_mb']:.1f} after={a['rss_mb']:.1f} delta={pct(b['rss_mb'],a['rss_mb']):+.1f}%")
           PY
 
