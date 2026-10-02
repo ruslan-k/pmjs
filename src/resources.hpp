@@ -88,8 +88,11 @@ class ImageStore {
   std::size_t liveCount() const { return liveCount_; }
   std::size_t gpuBytes() const { return gpuBytes_; }
   std::size_t peakGpuBytes() const { return peakGpuBytes_; }
-  std::size_t cpuBytes() const;
-  void setWarmBudgetBytes(std::size_t bytes) { warmBudgetBytes_ = bytes; }
+  std::size_t cpuBytes() const { return cpuBytes_; }
+  void setWarmBudgetBytes(std::size_t bytes) {
+    warmBudgetBytes_ = bytes;
+    warmBudgetDirty_ = true;
+  }
   std::size_t warmBudgetBytes() const { return warmBudgetBytes_; }
   std::size_t warmBytes() const;
   std::size_t warmCount() const;
@@ -133,8 +136,11 @@ class ImageStore {
   std::unordered_map<std::string, ImageHandle> pathCache_;
   std::size_t liveCount_ = 0;
   std::size_t gpuBytes_ = 0;
+  mutable std::size_t cpuBytes_ = 0;
   std::size_t peakGpuBytes_ = 0;
   std::size_t warmBudgetBytes_ = defaultWarmBudgetBytes;
+  mutable bool transientCpuPixelsActive_ = false;
+  bool warmBudgetDirty_ = false;
   std::uint64_t useSerial_ = 0;
   std::uint64_t cacheHits_ = 0;
   std::uint64_t warmHits_ = 0;
