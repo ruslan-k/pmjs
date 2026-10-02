@@ -191,13 +191,17 @@ test('timing config pins MV logic at 60 Hz and validates render rates', () => {
   assert.throws(() => parseTimingConfig({ PMJS_LOGIC_HZ: '30' }), /PMJS_LOGIC_HZ/);
   assert.deepEqual(parseTimingConfig({ PMJS_LOGIC_HZ: '60' }).logicHz, 60);
 });
-test('uncapped render defaults the swap interval to 0 unless set', () => {
-  assert.equal(resolveSwapDefault({}, parseTimingConfig({})), null);
-  assert.equal(resolveSwapDefault({ PMJS_SWAP_INTERVAL: '1' },
-    parseTimingConfig({ PMJS_RENDER_HZ: '0' })), null);
+test('runner pacing defaults the swap interval to 0 unless explicitly set', () => {
+  assert.equal(resolveSwapDefault({}, parseTimingConfig({})), '0');
+  assert.equal(resolveSwapDefault({}, parseTimingConfig({ PMJS_RENDER_HZ: '30' })), '0');
+  assert.equal(resolveSwapDefault({}, parseTimingConfig({ PMJS_RENDER_HZ: '120' })), '0');
   assert.equal(resolveSwapDefault({}, parseTimingConfig({ PMJS_RENDER_HZ: '0' })), '0');
   assert.equal(resolveSwapDefault({ PMJS_SWAP_INTERVAL: '' },
     parseTimingConfig({ PMJS_UNCAPPED: '1' })), '0');
+  assert.equal(resolveSwapDefault({ PMJS_SWAP_INTERVAL: '1' },
+    parseTimingConfig({})), null);
+  assert.equal(resolveSwapDefault({ PMJS_SWAP_INTERVAL: '-1' },
+    parseTimingConfig({})), null);
 });
 test('overdue scheduler skips expired deadlines without adding a full-period sleep', () => {
   const period = 1000 / 60;
