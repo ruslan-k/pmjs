@@ -90,8 +90,9 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       values[valueOffset + 2], values[valueOffset + 3],
       values[valueOffset + 4], values[valueOffset + 5]
     };
-    const SceneState parent = parentIndex == noParent
-      ? SceneState{} : states[parentIndex];
+    static const SceneState rootState{};
+    const SceneState& parent = parentIndex == noParent
+      ? rootState : states[parentIndex];
     SceneState& state = states[index];
     state.world = {
       parent.world[0] * local[0] + parent.world[2] * local[1],
