@@ -13,6 +13,12 @@ if ((center & 255) < 220) throw new Error(`gradient center is too transparent: $
 if ((corner & 255) !== 0) throw new Error(`gradient corner should be transparent: ${corner}`);
 
 native.canvas.fillRect(canvas.handle, 0, 0, 20, 20, 0x202020ff);
+native.canvas.fillRectAdditive(canvas.handle, 2, 2, 4, 4, 0x80808080);
+const additiveRect = native.canvas.pixel(canvas.handle, 3, 3);
+if (((additiveRect >>> 24) & 255) <= 0x20 || ((additiveRect >>> 16) & 255) <= 0x20) {
+  throw new Error(`additive rectangle did not brighten destination: ${additiveRect}`);
+}
+native.canvas.fillRect(canvas.handle, 0, 0, 20, 20, 0x202020ff);
 native.canvas.fillRadialGradient(canvas.handle, 0, 0, 20, 20,
   10, 10, 0, 10, [0, 1], [0x80808080, 0x00000000], true);
 const additiveCenter = native.canvas.pixel(canvas.handle, 10, 10);
