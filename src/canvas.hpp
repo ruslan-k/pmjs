@@ -76,6 +76,8 @@ class CanvasStore {
                                        std::vector<std::uint8_t> pixels);
   bool fillRect(CanvasHandle handle, int x, int y, int width, int height,
                 std::uint32_t rgba);
+  bool fillRectAdditive(CanvasHandle handle, int x, int y, int width, int height,
+                        std::uint32_t rgba);
   bool fillRadialGradient(CanvasHandle handle, int x, int y, int width, int height,
                           float centerX, float centerY, float innerRadius,
                           float outerRadius, const std::vector<float>& offsets,
@@ -210,6 +212,8 @@ class CanvasStore {
 
   void fillRectNow(Surface& surface, int x, int y, int width, int height,
                    std::uint32_t rgba);
+  void fillRectAdditiveNow(Surface& surface, int x, int y, int width, int height,
+                           std::uint32_t rgba);
   void clearNow(Surface& surface);
   void clearRectNow(Surface& surface, int x, int y, int width, int height);
   bool drawImageNow(Surface& destinationSurface, std::uint32_t source,
