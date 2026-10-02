@@ -572,13 +572,16 @@ function nativeSceneFilterMarker(kind, filterKind, resource, parameters,
   var index = nativeSceneRecord(parentIndex, kind, resource || 0, 0xffffff,
     filterKind || 0, nativeIdentityTransform, 1, clip, 0, null);
   if (kind === 6 && parameters) {
-    nativeSceneValues.set(parameters.slice(0, 10),
-      index * nativeSceneValueStride + 7);
-    nativeSceneValues.set(parameters.slice(10, 21),
-      index * nativeSceneValueStride + 22);
+    var valueOffset = index * nativeSceneValueStride;
+    // Avoid two Array.slice allocations per filter marker per frame.
+    for (var first = 0; first < 10; first++) {
+      nativeSceneValues[valueOffset + 7 + first] = parameters[first];
+    }
+    for (var second = 10; second < 21; second++) {
+      nativeSceneValues[valueOffset + 22 + second - 10] = parameters[second];
+    }
 
-    nativeSceneValues[index * nativeSceneValueStride + 33] =
-      nativeSceneFilterResolution;
+    nativeSceneValues[valueOffset + 33] = nativeSceneFilterResolution;
   }
 }
 
