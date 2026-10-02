@@ -891,6 +891,7 @@ bool CanvasStore::realizeSurface(Surface& surface) {
   const std::size_t expected = static_cast<std::size_t>(surface.width) *
                                static_cast<std::size_t>(surface.height) * 4U;
   surface.pixels.assign(expected, 0);
+  cpuBytes_ += surface.pixels.size();
 
   auto pendingCommands = std::move(surface.commands);
   surface.commands.clear();
@@ -921,12 +922,23 @@ bool CanvasStore::realizeSurface(Surface& surface) {
   const auto image = images_.createRgba(surface.width, surface.height,
                                         surface.pixels.data());
   if (!image) {
+    cpuBytes_ -= surface.pixels.size();
     std::vector<std::uint8_t>().swap(surface.pixels);
+    if (surface.dirty) {
+      surface.dirty = false;
+      --dirtySurfaceCount_;
+    }
+    surface.dirtyX0 = surface.dirtyY0 = 0;
+    surface.dirtyX1 = surface.dirtyY1 = 0;
     surface.state = SurfaceState::Deferred;
     return false;
   }
   surface.image = image->handle;
   surface.state = SurfaceState::Realized;
+  if (surface.dirty) {
+    surface.dirty = false;
+    --dirtySurfaceCount_;
+  }
   surface.dirtyX0 = surface.dirtyY0 = 0;
   surface.dirtyX1 = surface.dirtyY1 = 0;
 
@@ -1019,6 +1031,7 @@ std::optional<CanvasInfo> CanvasStore::create(int width, int height) {
   surface.commands.clear();
   surface.dirtyX0 = surface.dirtyY0 = 0;
   surface.dirtyX1 = surface.dirtyY1 = 0;
+  surface.dirty = false;
   surface.live = true;
   ++liveCount_;
   peakLiveCount_ = std::max(peakLiveCount_, liveCount_);
@@ -1049,9 +1062,11 @@ std::optional<CanvasInfo> CanvasStore::createRgba(
   surface.height = height;
   surface.state = SurfaceState::Realized;
   surface.pixels = std::move(pixels);
+  cpuBytes_ += surface.pixels.size();
   surface.commands.clear();
   surface.dirtyX0 = surface.dirtyY0 = 0;
   surface.dirtyX1 = surface.dirtyY1 = 0;
+  surface.dirty = false;
   surface.live = true;
   ++liveCount_;
   peakLiveCount_ = std::max(peakLiveCount_, liveCount_);
@@ -1213,6 +1228,10 @@ void CanvasStore::markDirty(Surface& surface, int x, int y, int width,
   const int y1 = static_cast<int>(std::clamp<std::int64_t>(
     static_cast<std::int64_t>(y) + height, 0, surface.height));
   if (x1 <= x0 || y1 <= y0) return;
+  if (!surface.dirty) {
+    surface.dirty = true;
+    ++dirtySurfaceCount_;
+  }
   if (surface.dirtyX1 <= surface.dirtyX0 || surface.dirtyY1 <= surface.dirtyY0) {
     surface.dirtyX0 = x0;
     surface.dirtyY0 = y0;
@@ -1428,7 +1447,12 @@ bool CanvasStore::release(CanvasHandle handle) {
   surface->width = 0;
   surface->height = 0;
   surface->state = SurfaceState::Deferred;
+  cpuBytes_ -= surface->pixels.size();
   std::vector<std::uint8_t>().swap(surface->pixels);
+  if (surface->dirty) {
+    surface->dirty = false;
+    --dirtySurfaceCount_;
+  }
   surface->dirtyX0 = surface->dirtyY0 = 0;
   surface->dirtyX1 = surface->dirtyY1 = 0;
   surface->live = false;
@@ -1452,6 +1476,7 @@ std::optional<ImageHandle> CanvasStore::imageHandle(CanvasHandle handle) const {
 }
 
 void CanvasStore::uploadDirty() {
+  if (dirtySurfaceCount_ == 0) return;
   for (auto& surface : surfaces_) {
     if (!surface.live || surface.state != SurfaceState::Realized ||
         surface.dirtyX1 <= surface.dirtyX0 ||
@@ -1465,16 +1490,16 @@ void CanvasStore::uploadDirty() {
         surface.width)) {
       surface.dirtyX0 = surface.dirtyY0 = 0;
       surface.dirtyX1 = surface.dirtyY1 = 0;
+      if (surface.dirty) {
+        surface.dirty = false;
+        --dirtySurfaceCount_;
+      }
     }
   }
 }
 
 std::size_t CanvasStore::cpuBytes() const {
-  std::size_t result = 0;
-  for (const auto& surface : surfaces_) {
-    if (surface.live) result += surface.pixels.size();
-  }
-  return result;
+  return cpuBytes_;
 }
 
 std::size_t CanvasStore::capacityBytes() const {
