@@ -47,14 +47,17 @@ napi_value string(napi_env env, const std::string& input) {
   return value;
 }
 
-std::vector<napi_value> arguments(napi_env env, napi_callback_info info,
-                                  std::size_t limit) {
-  std::vector<napi_value> values(limit);
-  std::size_t count = limit;
-  check(env, napi_get_cb_info(env, info, &count, values.data(), nullptr, nullptr),
+Arguments arguments(napi_env env, napi_callback_info info,
+                    std::size_t limit) {
+  Arguments result;
+  if (limit > result.values.size()) {
+    throw std::runtime_error("too many native arguments requested");
+  }
+  result.count = limit;
+  check(env, napi_get_cb_info(env, info, &result.count, result.values.data(),
+                              nullptr, nullptr),
         "cannot read arguments");
-  values.resize(count);
-  return values;
+  return result;
 }
 
 double asNumber(napi_env env, napi_value value) {
