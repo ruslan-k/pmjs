@@ -93,6 +93,47 @@ void Renderer::setDrawableSize(int width, int height) {
   recomputePresentation();
 }
 
+void Renderer::ensureTarget(std::uint32_t& texture,
+                            std::uint32_t& framebuffer) {
+  if (texture != 0 && framebuffer != 0) return;
+  if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
+  if (texture) glDeleteTextures(1, &texture);
+  texture = 0;
+  framebuffer = 0;
+
+  glGenTextures(1, &texture);
+  glBindTexture(GL_TEXTURE_2D, texture);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA,
+               GL_UNSIGNED_BYTE, nullptr);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glGenFramebuffers(1, &framebuffer);
+  glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                         GL_TEXTURE_2D, texture, 0);
+  ++stats_.framebufferChecks;
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    glDeleteFramebuffers(1, &framebuffer);
+    glDeleteTextures(1, &texture);
+    framebuffer = 0;
+    texture = 0;
+    throw std::runtime_error("renderer framebuffer is incomplete");
+  }
+  ++stats_.rendererTargetCreates;
+}
+
+void Renderer::destroyTarget(std::uint32_t& texture,
+                             std::uint32_t& framebuffer) {
+  if (!texture && !framebuffer) return;
+  if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
+  if (texture) glDeleteTextures(1, &texture);
+  framebuffer = 0;
+  texture = 0;
+  ++stats_.rendererTargetDestroys;
+}
+
 void Renderer::resizeTargets(int width, int height) {
   if (width == width_ && height == height_) return;
   if (width <= 0 || height <= 0) {
@@ -102,15 +143,6 @@ void Renderer::resizeTargets(int width, int height) {
     throw std::runtime_error("renderer target exceeds GL_MAX_TEXTURE_SIZE");
   }
 
-  const auto destroyTarget = [](std::uint32_t& texture,
-                                std::uint32_t& framebuffer) {
-    if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
-    if (texture) glDeleteTextures(1, &texture);
-    framebuffer = 0;
-    texture = 0;
-  };
-  const std::size_t targetCount = 5U + groupFramebuffers_.size();
-  stats_.rendererTargetDestroys += targetCount;
   destroyTarget(sceneTexture_, sceneFramebuffer_);
   destroyTarget(offscreenTexture_, offscreenFramebuffer_);
   destroyTarget(filterTexture_, filterFramebuffer_);
@@ -126,34 +158,10 @@ void Renderer::resizeTargets(int width, int height) {
   hasValidSceneFrame_ = false;
   toneCompositionActive_ = false;
 
-  const auto createTarget = [&](std::uint32_t& texture,
-                                std::uint32_t& framebuffer) {
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glGenFramebuffers(1, &framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, texture, 0);
-    ++stats_.framebufferChecks;
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-      throw std::runtime_error("resized renderer framebuffer is incomplete");
-    }
-    ++stats_.rendererTargetCreates;
-  };
-  createTarget(sceneTexture_, sceneFramebuffer_);
-  createTarget(offscreenTexture_, offscreenFramebuffer_);
-  createTarget(filterTexture_, filterFramebuffer_);
-  createTarget(toneOverlayTexture_, toneOverlayFramebuffer_);
-  createTarget(bloomTexture_, bloomFramebuffer_);
-  for (std::size_t index = 0; index < groupFramebuffers_.size(); ++index) {
-    createTarget(groupTextures_[index], groupFramebuffers_[index]);
-  }
+  // Only the scene target is mandatory. Offscreen/filter/tone/bloom/group
+  // targets are allocated on first use, avoiding eight full-size RGBA targets
+  // in ordinary scenes.
+  ensureTarget(sceneTexture_, sceneFramebuffer_);
   recomputePresentation();
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
@@ -655,7 +663,15 @@ std::optional<ImageInfo> Renderer::renderToImage(int width, int height) {
 }
 
 std::size_t Renderer::renderTargetBytes() const {
-  return static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_) * 36U;
+  std::size_t count = 0;
+  count += sceneTexture_ != 0;
+  count += offscreenTexture_ != 0;
+  count += filterTexture_ != 0;
+  count += toneOverlayTexture_ != 0;
+  count += bloomTexture_ != 0;
+  for (const auto texture : groupTextures_) count += texture != 0;
+  return static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_) *
+         4U * count;
 }
 
 }
