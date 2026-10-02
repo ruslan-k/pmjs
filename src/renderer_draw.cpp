@@ -348,6 +348,9 @@ bool Renderer::filterBoundsRect(const RenderCommand* filterBegin,
 }
 
 void Renderer::renderScene() {
+  if (offscreenRender_) {
+    ensureTarget(offscreenTexture_, offscreenFramebuffer_);
+  }
   std::uint32_t& rootFramebuffer = offscreenRender_ ? offscreenFramebuffer_ :
                                                       sceneFramebuffer_;
   std::uint32_t& rootTexture = offscreenRender_ ? offscreenTexture_ :
@@ -355,6 +358,41 @@ void Renderer::renderScene() {
   const bool shouldRenderScene =
       sceneSubmittedThisFrame_ || offscreenRender_ || !hasValidSceneFrame_;
   if (shouldRenderScene) {
+    // Size auxiliary storage to actual scene features, not worst-case engine
+    // capability. Ordinary scenes therefore keep only the mandatory scene FBO.
+    std::size_t depth = 0;
+    std::size_t maxDepth = 0;
+    bool needsFilterTarget = false;
+    bool needsToneOverlay = false;
+    bool needsBloomTarget = false;
+    for (const auto& command : frame_.commands) {
+      if (command.action == RenderCommand::Action::filterBegin) {
+        ++depth;
+        maxDepth = std::max(maxDepth, depth);
+        needsFilterTarget = true;
+        needsBloomTarget = needsBloomTarget ||
+            command.filterKind == scene_packet::FilterKind::advancedBloom;
+      } else if (command.action == RenderCommand::Action::filterEnd) {
+        if (depth > 0) --depth;
+      }
+      if (command.appliesColorMatrix) {
+        needsFilterTarget = true;
+        needsToneOverlay = true;
+      }
+    }
+    if (needsFilterTarget) {
+      ensureTarget(filterTexture_, filterFramebuffer_);
+    }
+    if (needsToneOverlay) {
+      ensureTarget(toneOverlayTexture_, toneOverlayFramebuffer_);
+    }
+    if (needsBloomTarget) {
+      ensureTarget(bloomTexture_, bloomFramebuffer_);
+    }
+    for (std::size_t index = 0;
+         index < std::min(maxDepth, groupFramebuffers_.size()); ++index) {
+      ensureTarget(groupTextures_[index], groupFramebuffers_[index]);
+    }
     if (!offscreenRender_) toneCompositionActive_ = false;
     glBindFramebuffer(GL_FRAMEBUFFER, rootFramebuffer);
     glViewport(0, 0, width_, height_);
@@ -1381,6 +1419,7 @@ void Renderer::presentToDrawable() {
   const bool composePresentation = toneCompositionActive_ ||
       hasPresentationLayers;
   if (composePresentation) {
+    ensureTarget(filterTexture_, filterFramebuffer_);
     drawToneComposition(filterFramebuffer_, 0, 0, width_, height_, true);
     if (toneCompositionActive_) ++stats_.toneComposedPresentationFrames;
   }
@@ -1488,6 +1527,8 @@ void Renderer::drawToneComposition(std::uint32_t framebuffer,
 
 void Renderer::materializeToneComposition() {
   if (!toneCompositionActive_) return;
+  ensureTarget(filterTexture_, filterFramebuffer_);
+  ensureTarget(toneOverlayTexture_, toneOverlayFramebuffer_);
   drawToneComposition(filterFramebuffer_, 0, 0, width_, height_);
   std::swap(sceneFramebuffer_, filterFramebuffer_);
   std::swap(sceneTexture_, filterTexture_);
