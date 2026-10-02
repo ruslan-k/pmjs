@@ -6,10 +6,12 @@
 #
 # Usage:
 #   tools/profile-device.sh [-i SECONDS] [-o DIR] [--no-perf] -- COMMAND [ARG...]
+#   tools/profile-device.sh [-i SECONDS] [-o DIR] [--no-perf] --attach PID [--duration SECONDS]
 #
 # Examples:
 #   tools/profile-device.sh -- ./example/run-game.sh /path/game /path/saves
 #   tools/profile-device.sh -i 0.5 -o /tmp/omori-profile -- ./OMORI.sh
+#   tools/profile-device.sh --attach "$(cat /tmp/game.pid)" --duration 120 -o /tmp/session
 #
 # Outputs:
 #   samples.csv   time series for CPU/RSS/PSS/threads/I/O/temperature/frequency
@@ -23,19 +25,29 @@ set -u
 INTERVAL="${PMJS_PROFILE_INTERVAL:-1}"
 OUT_DIR="${PMJS_PROFILE_OUT:-}"
 USE_PERF=1
+ATTACH_PID=""
+DURATION_LIMIT=""
 
 usage() {
   cat <<'EOF'
 Usage: profile-device.sh [-i SECONDS] [-o DIR] [--no-perf] -- COMMAND [ARG...]
+       profile-device.sh [-i SECONDS] [-o DIR] [--no-perf] --attach PID [--duration SECONDS]
 
   -i SECONDS   Sampling period (default: 1; fractional values are allowed)
   -o DIR       Output directory (default: ./pmjs-profile-YYYYmmdd-HHMMSS)
   --no-perf    Do not attempt an optional perf stat attachment
+  -a, --attach PID
+               Profile an already-running process tree instead of launching one
+  -d, --duration SECONDS
+               Stop sampling after SECONDS (useful with --attach)
   -h, --help   Show this help
 
 The command may be a PMJS runner invocation or the normal PortMaster launcher.
 The profiler follows descendants of the launcher, so wrapping the real Node
-process in a shell script is fine.
+process in a shell script is fine. In attach mode no command is launched; the
+sampler follows the given pid and its descendants until it exits or the
+duration elapses, which is the right mode when the game must be started from
+the device menu.
 EOF
 }
 
@@ -49,6 +61,12 @@ while [ "$#" -gt 0 ]; do
       OUT_DIR="$2"; shift 2 ;;
     --no-perf)
       USE_PERF=0; shift ;;
+    -a|--attach)
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+      ATTACH_PID="$2"; shift 2 ;;
+    -d|--duration)
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+      DURATION_LIMIT="$2"; shift 2 ;;
     -h|--help)
       usage; exit 0 ;;
     --)
@@ -60,7 +78,24 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ "$#" -gt 0 ] || { echo "No command supplied." >&2; usage >&2; exit 2; }
+if [ -z "$ATTACH_PID" ] && [ "$#" -eq 0 ]; then
+  echo "No command supplied (and no --attach pid)." >&2
+  usage >&2
+  exit 2
+fi
+
+if [ -n "$ATTACH_PID" ]; then
+  case "$ATTACH_PID" in
+    ''|*[!0-9]*) echo "Invalid attach pid: $ATTACH_PID" >&2; exit 2 ;;
+  esac
+  [ -d "/proc/$ATTACH_PID" ] || { echo "Attach pid $ATTACH_PID is not running." >&2; exit 2; }
+fi
+
+if [ -n "$DURATION_LIMIT" ]; then
+  case "$DURATION_LIMIT" in
+    ''|*[!0-9.]*) echo "Invalid duration: $DURATION_LIMIT" >&2; exit 2 ;;
+  esac
+fi
 
 case "$INTERVAL" in
   ''|*[!0-9.]*)
@@ -272,11 +307,19 @@ write_device_info "$@"
 echo "elapsed_s,pids,cpu_pct,rss_kb,hwm_kb,pss_kb,threads,fd_count,read_bytes,write_bytes,voluntary_ctxt,nonvoluntary_ctxt,mem_available_kb,swap_free_kb,cpu_freq_khz,gpu_freq_khz,max_temp_millic,load1" > "$SAMPLES"
 
 echo "[pmjs-profile] output: $OUT_DIR"
-echo "[pmjs-profile] launching: $*"
 
 START_MS="$(now_ms)"
-"$@" >"$GAME_LOG" 2>&1 &
-ROOT_PID=$!
+ATTACHED=0
+if [ -n "$ATTACH_PID" ]; then
+  ATTACHED=1
+  ROOT_PID="$ATTACH_PID"
+  echo "[pmjs-profile] attaching to pid: $ROOT_PID"
+  : > "$GAME_LOG"
+else
+  echo "[pmjs-profile] launching: $*"
+  "$@" >"$GAME_LOG" 2>&1 &
+  ROOT_PID=$!
+fi
 echo "$ROOT_PID" > "$PID_FILE"
 
 PERF_PID=""
@@ -336,11 +379,22 @@ while kill -0 "$ROOT_PID" 2>/dev/null; do
 
   PREV_MS="$NOW_MS"
   PREV_TICKS="$TICKS"
+
+  if [ -n "$DURATION_LIMIT" ]; then
+    REACHED="$(awk -v e="$ELAPSED" -v d="$DURATION_LIMIT" 'BEGIN { print (e + 0 >= d + 0) ? 1 : 0 }')"
+    [ "$REACHED" = "1" ] && break
+  fi
+
   sleep "$INTERVAL" 2>/dev/null || sleep 1
 done
 
-wait "$ROOT_PID"
-EXIT_CODE=$?
+if [ "$ATTACHED" -eq 1 ]; then
+  EXIT_CODE=0
+  echo "[pmjs-profile] attach window finished (target may still be running)"
+else
+  wait "$ROOT_PID"
+  EXIT_CODE=$?
+fi
 
 cleanup
 trap - EXIT INT TERM
@@ -384,6 +438,9 @@ END {
 }' "$SAMPLES" > "$SUMMARY"
 
 {
+  if [ "$ATTACHED" -eq 1 ]; then echo "mode=attach"; else echo "mode=launch"; fi
+  if [ "$ATTACHED" -eq 1 ]; then echo "attach_pid=$ROOT_PID"; fi
+  if [ -n "$DURATION_LIMIT" ]; then echo "duration_limit_seconds=$DURATION_LIMIT"; fi
   echo "game_log=$GAME_LOG"
   echo "samples_csv=$SAMPLES"
   echo "device_info=$DEVICE"
