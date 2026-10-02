@@ -368,12 +368,28 @@ void Renderer::renderScene() {
     } else {
       filterBounds_.clear();
     }
-  std::vector<bool> inlineFilterBoundary(frame_.commands.size(), false);
-  std::vector<const RenderCommand*> inlineFilterMatrix(
-      frame_.commands.size(), nullptr);
-  std::vector<bool> inlineFilterClipped(frame_.commands.size(), false);
-  std::vector<std::array<int, 4>> inlineFilterClip(frame_.commands.size());
-  std::vector<std::size_t> filterDepthBefore(frame_.commands.size(), 0);
+  // These arrays scale with scene command count and used to malloc/free every
+  // frame. Keep one thread-local backing store and clear values in place.
+  // Trim only after a large scene collapses so peak maps do not pin memory.
+  const std::size_t commandCount = frame_.commands.size();
+  static thread_local std::vector<bool> inlineFilterBoundary;
+  static thread_local std::vector<const RenderCommand*> inlineFilterMatrix;
+  static thread_local std::vector<bool> inlineFilterClipped;
+  static thread_local std::vector<std::array<int, 4>> inlineFilterClip;
+  static thread_local std::vector<std::size_t> filterDepthBefore;
+  if (inlineFilterMatrix.capacity() > 1024 &&
+      commandCount * 4 < inlineFilterMatrix.capacity()) {
+    std::vector<bool>().swap(inlineFilterBoundary);
+    std::vector<const RenderCommand*>().swap(inlineFilterMatrix);
+    std::vector<bool>().swap(inlineFilterClipped);
+    std::vector<std::array<int, 4>>().swap(inlineFilterClip);
+    std::vector<std::size_t>().swap(filterDepthBefore);
+  }
+  inlineFilterBoundary.assign(commandCount, false);
+  inlineFilterMatrix.assign(commandCount, nullptr);
+  inlineFilterClipped.assign(commandCount, false);
+  inlineFilterClip.assign(commandCount, {});
+  filterDepthBefore.assign(commandCount, 0);
   std::size_t scannedFilterDepth = 0;
   for (std::size_t index = 0; index < frame_.commands.size(); ++index) {
     const RenderCommand& command = frame_.commands[index];
@@ -411,8 +427,14 @@ void Renderer::renderScene() {
         !preservesAlpha(filter.filterParameters)) continue;
     std::size_t depth = 1;
     std::size_t end = begin;
-    std::vector<std::size_t> drawIndices;
-    drawIndices.reserve(16);
+    static thread_local std::vector<std::size_t> drawIndices;
+    drawIndices.clear();
+    if (drawIndices.capacity() < 16) drawIndices.reserve(16);
+    if (drawIndices.capacity() > 1024 &&
+        frame_.commands.size() * 4 < drawIndices.capacity()) {
+      std::vector<std::size_t>().swap(drawIndices);
+      drawIndices.reserve(16);
+    }
     bool eligible = true;
     for (std::size_t index = begin + 1;
          index < frame_.commands.size() && depth > 0; ++index) {
@@ -516,8 +538,15 @@ void Renderer::renderScene() {
     const RenderCommand* inlineMatrix = nullptr;
     RenderCommand::Primitive primitive = RenderCommand::Primitive::sprite;
   };
-  std::vector<DrawOperation> operations;
-  operations.reserve(frame_.commands.size());
+  static thread_local std::vector<DrawOperation> operations;
+  if (operations.capacity() > 1024 &&
+      frame_.commands.size() * 4 < operations.capacity()) {
+    std::vector<DrawOperation>().swap(operations);
+  }
+  operations.clear();
+  if (operations.capacity() < frame_.commands.size()) {
+    operations.reserve(frame_.commands.size());
+  }
   std::size_t preparingFilterDepth = 0;
   for (std::size_t commandIndex = 0;
        commandIndex < frame_.commands.size(); ++commandIndex) {

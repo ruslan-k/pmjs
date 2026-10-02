@@ -108,6 +108,11 @@ results.push(sample('scene-submit-512', 300, () => {
   native.beginFrame();
   native.scene.submit(native.scene.packetVersion, metadata, values, count);
 }));
+results.push(sample('scene-render-512', 120, () => {
+  native.beginFrame();
+  native.scene.submit(native.scene.packetVersion, metadata, values, count);
+  native.renderFrame();
+}));
 native.beginFrame();
 
 native.images.release(image.handle);
