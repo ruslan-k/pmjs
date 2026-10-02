@@ -344,6 +344,8 @@ async function run(input, hooks = {}) {
         playerPxPerSec: playerPxPerSec,
         playerMoving: playerMoving,
         playerSpeed: playerSpeed,
+        renderScale: typeof globalThis.__pmjsRenderScale === 'number'
+          ? globalThis.__pmjsRenderScale : 1,
         process: {
           rss: usage.rss,
           heapTotal: usage.heapTotal,
