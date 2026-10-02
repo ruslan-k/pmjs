@@ -63,6 +63,7 @@ napi_value inputSnapshot(napi_env env, napi_callback_info) try {
   static napi_ref snapshotRef = nullptr;
   static State* cachedState = nullptr;
   static std::vector<int> cachedPadInstances;
+  static bool cachedSnapshotEmpty = true;
   static thread_local std::vector<Platform::GamepadState> pads;
 
   napi_value result;
@@ -83,7 +84,20 @@ napi_value inputSnapshot(napi_env env, napi_callback_info) try {
   if (cachedState != &value) {
     cachedState = &value;
     cachedPadInstances.clear();
+    cachedSnapshotEmpty = true;
   }
+
+  // The dominant no-input/no-controller path is already represented by the
+  // retained empty arrays. Avoid four N-API array-length writes per frame.
+  platform.fillGamepads(pads);
+  const bool snapshotEmpty = platform.keysDown().empty() &&
+      platform.keysPressed().empty() && platform.keyEvents().empty() &&
+      pads.empty();
+  if (snapshotEmpty && cachedSnapshotEmpty) {
+    platform.clearKeyEvents();
+    return result;
+  }
+  cachedSnapshotEmpty = snapshotEmpty;
 
   const auto arrayProperty = [&](napi_value owner, const char* name,
                                  std::size_t length) {
@@ -145,7 +159,6 @@ napi_value inputSnapshot(napi_env env, napi_callback_info) try {
   }
   platform.clearKeyEvents();
 
-  platform.fillGamepads(pads);
   napi_value gamepads = arrayProperty(result, "gamepads", pads.size());
   if (cachedPadInstances.size() < pads.size()) {
     cachedPadInstances.resize(pads.size(), std::numeric_limits<int>::min());
