@@ -214,6 +214,9 @@ napi_value rendererStats(napi_env env, napi_callback_info) try {
   check(env, napi_set_named_property(env, result, "rendererTargetDestroys",
     number(env, static_cast<double>(stats.rendererTargetDestroys))),
     "cannot set renderer target destroys");
+  check(env, napi_set_named_property(env, result, "renderTargetBytes",
+    number(env, static_cast<double>(host(env).renderer.renderTargetBytes()))),
+    "cannot set renderer target bytes");
   check(env, napi_set_named_property(env, result, "filterTargetClears",
     number(env, static_cast<double>(stats.filterTargetClears))),
     "cannot set filter target clears");
