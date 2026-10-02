@@ -54,8 +54,17 @@ int Renderer::filterBoundsPadding(scene_packet::FilterKind kind,
 
 void Renderer::computeFilterContentBounds() {
   constexpr std::size_t maxRegions = 8;
-  filterBounds_.clear();
-  filterBounds_.resize(frame_.commands.size());
+  const std::size_t commandCount = frame_.commands.size();
+  if (filterBounds_.size() < commandCount) {
+    filterBounds_.resize(commandCount);
+  }
+  for (std::size_t index = 0; index < commandCount; ++index) {
+    auto& bounds = filterBounds_[index];
+    bounds.bounded = false;
+    bounds.regionsValid = false;
+    bounds.rect = {};
+    bounds.regions.clear();
+  }
   struct Accumulator {
     std::size_t beginIndex = 0;
     bool hasContent = false;
@@ -68,8 +77,76 @@ void Renderer::computeFilterContentBounds() {
   };
   std::vector<Accumulator> stack;
   stack.reserve(scene_packet::maxFilterDepth);
-  const auto unite = [](Accumulator& acc, float x0, float y0, float x1,
-                        float y1) {
+  const auto overlapsOrTouches = [](const auto& a, const auto& b) {
+    return a[0] <= b[2] && b[0] <= a[2] &&
+           a[1] <= b[3] && b[1] <= a[3];
+  };
+  const auto mergeRegion = [](const auto& a, const auto& b) {
+    return std::array<float, 4>{std::min(a[0], b[0]),
+                                std::min(a[1], b[1]),
+                                std::max(a[2], b[2]),
+                                std::max(a[3], b[3])};
+  };
+  const auto regionArea = [](const auto& rect) {
+    return std::max(0.0F, rect[2] - rect[0]) *
+           std::max(0.0F, rect[3] - rect[1]);
+  };
+  const auto addRegion = [&](Accumulator& acc,
+                             std::array<float, 4> incoming) {
+    if (incoming[0] >= incoming[2] || incoming[1] >= incoming[3]) return;
+
+    // Keep the representation bounded while commands are accumulated instead
+    // of collecting hundreds of rectangles and compacting them with repeated
+    // O(n^2) scans/erase shifts at filterEnd. Eight conservative regions are
+    // sufficient for the bounded-filter optimization; merging may only enlarge
+    // work, never omit pixels.
+    for (std::size_t index = 0; index < acc.regions.size();) {
+      if (!overlapsOrTouches(acc.regions[index], incoming)) {
+        ++index;
+        continue;
+      }
+      incoming = mergeRegion(acc.regions[index], incoming);
+      acc.regions[index] = acc.regions.back();
+      acc.regions.pop_back();
+      index = 0;
+    }
+
+    if (acc.regions.size() < maxRegions) {
+      acc.regions.push_back(incoming);
+      return;
+    }
+
+    std::size_t best = 0;
+    float bestWaste = std::numeric_limits<float>::infinity();
+    const float incomingArea = regionArea(incoming);
+    for (std::size_t index = 0; index < acc.regions.size(); ++index) {
+      const auto joined = mergeRegion(acc.regions[index], incoming);
+      const float waste = regionArea(joined) -
+                          regionArea(acc.regions[index]) - incomingArea;
+      if (waste < bestWaste) {
+        bestWaste = waste;
+        best = index;
+      }
+    }
+    acc.regions[best] = mergeRegion(acc.regions[best], incoming);
+
+    // The chosen merge can now touch another retained region. Fold those
+    // overlaps in-place; the vector remains <= maxRegions at all times.
+    for (std::size_t index = 0; index < acc.regions.size();) {
+      if (index == best ||
+          !overlapsOrTouches(acc.regions[best], acc.regions[index])) {
+        ++index;
+        continue;
+      }
+      acc.regions[best] = mergeRegion(acc.regions[best], acc.regions[index]);
+      acc.regions[index] = acc.regions.back();
+      acc.regions.pop_back();
+      if (best == acc.regions.size()) best = index;
+      index = 0;
+    }
+  };
+  const auto unite = [&](Accumulator& acc, float x0, float y0, float x1,
+                         float y1) {
     if (!acc.hasContent) {
       acc.minX = x0;
       acc.minY = y0;
@@ -82,69 +159,7 @@ void Renderer::computeFilterContentBounds() {
       acc.maxX = std::max(acc.maxX, x1);
       acc.maxY = std::max(acc.maxY, y1);
     }
-    if (x0 < x1 && y0 < y1) acc.regions.push_back({x0, y0, x1, y1});
-  };
-  const auto compactRegions = [](std::vector<std::array<float, 4>>& regions) {
-    const auto overlapsOrTouches = [](const auto& a, const auto& b) {
-      return a[0] <= b[2] && b[0] <= a[2] &&
-             a[1] <= b[3] && b[1] <= a[3];
-    };
-    const auto merge = [](const auto& a, const auto& b) {
-      return std::array<float, 4>{std::min(a[0], b[0]),
-                                  std::min(a[1], b[1]),
-                                  std::max(a[2], b[2]),
-                                  std::max(a[3], b[3])};
-    };
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      for (std::size_t left = 0; left < regions.size() && !changed; ++left) {
-        for (std::size_t right = left + 1; right < regions.size(); ++right) {
-          if (!overlapsOrTouches(regions[left], regions[right])) continue;
-          regions[left] = merge(regions[left], regions[right]);
-          regions.erase(regions.begin() + static_cast<std::ptrdiff_t>(right));
-          changed = true;
-          break;
-        }
-      }
-    }
-    while (regions.size() > maxRegions) {
-      std::size_t bestLeft = 0;
-      std::size_t bestRight = 1;
-      float bestWaste = std::numeric_limits<float>::infinity();
-      for (std::size_t left = 0; left < regions.size(); ++left) {
-        for (std::size_t right = left + 1; right < regions.size(); ++right) {
-          const auto joined = merge(regions[left], regions[right]);
-          const auto area = [](const auto& rect) {
-            return (rect[2] - rect[0]) * (rect[3] - rect[1]);
-          };
-          const float waste = area(joined) - area(regions[left]) -
-                              area(regions[right]);
-          if (waste < bestWaste) {
-            bestWaste = waste;
-            bestLeft = left;
-            bestRight = right;
-          }
-        }
-      }
-      regions[bestLeft] = merge(regions[bestLeft], regions[bestRight]);
-      regions.erase(regions.begin() +
-                    static_cast<std::ptrdiff_t>(bestRight));
-      changed = true;
-      while (changed) {
-        changed = false;
-        for (std::size_t left = 0; left < regions.size() && !changed; ++left) {
-          for (std::size_t right = left + 1; right < regions.size(); ++right) {
-            if (!overlapsOrTouches(regions[left], regions[right])) continue;
-            regions[left] = merge(regions[left], regions[right]);
-            regions.erase(regions.begin() +
-                          static_cast<std::ptrdiff_t>(right));
-            changed = true;
-            break;
-          }
-        }
-      }
-    }
+    addRegion(acc, {x0, y0, x1, y1});
   };
   for (std::size_t index = 0; index < frame_.commands.size(); ++index) {
     const RenderCommand& command = frame_.commands[index];
@@ -206,7 +221,6 @@ void Renderer::computeFilterContentBounds() {
                     static_cast<int>(std::ceil(hiY))};
         auto regions = regionsValid ? std::move(level.regions) :
                                       std::vector<std::array<float, 4>>{};
-        compactRegions(regions);
         for (const auto& region : regions) {
           int left = static_cast<int>(std::floor(region[0]));
           int top = static_cast<int>(std::floor(region[1]));
