@@ -73,11 +73,14 @@ std::vector<ShapedGlyph> shapeRun(std::span<const std::uint32_t> text,
   }
 
   // Retry whole shaping clusters, including bases and marks, with surrounding context.
-  std::vector<unsigned> clusters{end};
+  std::vector<unsigned> clusters;
+  clusters.reserve(glyphs.size() + 1);
+  clusters.push_back(end);
   for (const auto& glyph : glyphs) clusters.push_back(glyph.cluster);
   std::sort(clusters.begin(), clusters.end());
   clusters.erase(std::unique(clusters.begin(), clusters.end()), clusters.end());
   std::vector<ShapedGlyph> result;
+  result.reserve(glyphs.size());
   const auto missingGlyph = [](const auto& glyph) { return glyph.glyphIndex == 0; };
   const auto fallback = [&](unsigned start, unsigned stop) {
     std::vector<ShapedGlyph> replacement;
@@ -138,6 +141,7 @@ ShapedText shapeText(std::span<const std::uint32_t> text,
                      std::uint64_t& fallbackShapeCalls) {
   ShapedText result;
   if (fonts.empty()) return result;
+  result.glyphs.reserve(text.size());
   std::vector<hb_script_t> scripts;
   scripts.reserve(text.size());
   hb_script_t previous = HB_SCRIPT_UNKNOWN;
