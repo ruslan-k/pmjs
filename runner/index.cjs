@@ -246,6 +246,72 @@ async function run(input, hooks = {}) {
 
   const period = timing.renderPeriod;
   let deadline = timing.uncapped ? 0 : native.runtime.monotonicNow() + period;
+  const memoryTelemetryEnabled = hostProcess.env.PMJS_MEMORY_TELEMETRY === '1';
+  const configuredTelemetryMs = Number(
+    hostProcess.env.PMJS_MEMORY_TELEMETRY_MS || 5000);
+  const memoryTelemetryMs = Number.isFinite(configuredTelemetryMs) &&
+      configuredTelemetryMs >= 1000 ? configuredTelemetryMs : 5000;
+  let nextMemoryTelemetry = 0;
+  let lastTelemetryFrames = null;
+  let lastTelemetryFramesAt = 0;
+  let lastTelemetryLogic = null;
+  function reportMemoryTelemetry(now) {
+    if (!memoryTelemetryEnabled || now < nextMemoryTelemetry) return;
+    nextMemoryTelemetry = now + memoryTelemetryMs;
+    try {
+      const usage = hostProcess.memoryUsage();
+      const stats = typeof native.render.stats === 'function'
+        ? native.render.stats() : null;
+      let fps = null;
+      if (stats && typeof stats.frames === 'number') {
+        if (lastTelemetryFrames !== null && now > lastTelemetryFramesAt) {
+          fps = (stats.frames - lastTelemetryFrames) /
+            ((now - lastTelemetryFramesAt) / 1000);
+        }
+        lastTelemetryFrames = stats.frames;
+        lastTelemetryFramesAt = now;
+      }
+      let logicRatio = null;
+      let logicDebtMs = null;
+      const sceneManager = globalThis.SceneManager;
+      if (sceneManager && typeof sceneManager._t === 'number') {
+        if (lastTelemetryLogic !== null && now > lastTelemetryLogic.at) {
+          logicRatio = (sceneManager._t - lastTelemetryLogic.t) /
+            ((now - lastTelemetryLogic.at) / 1000);
+        }
+        lastTelemetryLogic = { t: sceneManager._t, at: now };
+        if (typeof sceneManager._accumulator === 'number') {
+          logicDebtMs = sceneManager._accumulator * 1000;
+        }
+      }
+      const snapshot = {
+        uptimeMs: Math.round(now),
+        fps: fps === null ? null : Math.round(fps * 10) / 10,
+        logicRatio: logicRatio === null ? null
+          : Math.round(logicRatio * 1000) / 1000,
+        logicDebtMs: logicDebtMs === null ? null
+          : Math.round(logicDebtMs * 10) / 10,
+        process: {
+          rss: usage.rss,
+          heapTotal: usage.heapTotal,
+          heapUsed: usage.heapUsed,
+          external: usage.external,
+          arrayBuffers: usage.arrayBuffers
+        },
+        renderer: typeof native.render.memory === 'function'
+          ? native.render.memory() : null,
+        images: native.images && typeof native.images.memory === 'function'
+          ? native.images.memory(5) : null,
+        canvases: native.canvas && typeof native.canvas.memory === 'function'
+          ? native.canvas.memory() : null,
+        rendererStats: stats
+      };
+      console.log('[pmjs-memory] ' + JSON.stringify(snapshot));
+    } catch (error) {
+      console.warn('[pmjs-memory] telemetry failed: ' +
+        (error && error.stack || error));
+    }
+  }
   console.log(`[pmjs] timing logic_hz=${timing.logicHz} ` +
     (timing.uncapped ? 'render_hz=uncapped' : `render_hz=${timing.renderHz}`));
   console.log(`[pmjs] ready size=${options.width}x${options.height}`);
@@ -278,6 +344,7 @@ async function run(input, hooks = {}) {
           globalThis.__pmjsAfterNativeRender();
         }
         native.swapFrame();
+        reportMemoryTelemetry(now);
         if (!timing.uncapped) {
           const monotonicNow = native.runtime.monotonicNow();
           deadline = advanceDeadline(deadline, monotonicNow, period);
