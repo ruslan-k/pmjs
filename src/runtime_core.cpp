@@ -24,72 +24,102 @@ bool RuntimeCore::submitScene(std::uint32_t version,
                               const std::uint32_t* metadata,
                               std::size_t metadataCount, const float* values,
                               std::size_t valueCount, std::size_t nodeCount) {
+  const std::size_t requiredMetadata =
+      nodeCount * scene_packet::metadataStride;
   if (version != scene_packet::version ||
       (nodeCount > 0 && (!metadata || !values)) ||
       nodeCount > scene_packet::maxNodes ||
-      metadataCount < nodeCount * scene_packet::metadataStride ||
+      metadataCount < requiredMetadata ||
       valueCount < nodeCount * scene_packet::valueStride ||
       nodeCount * (scene_packet::metadataStride * sizeof(std::uint32_t) +
                    scene_packet::valueStride * sizeof(float)) >
         scene_packet::maxPacketBytes) return false;
+
+  // Most scene packets already contain native ImageStore handles. Do not copy
+  // the full metadata packet merely to write identical handles back into it.
+  // Allocate/copy lazily only if a canvas handle actually resolves to a
+  // different native image handle.
   sceneMetadataScratch_.clear();
-  if (nodeCount > 0) {
-    sceneMetadataScratch_.assign(
-      metadata, metadata + nodeCount * scene_packet::metadataStride);
-  }
+  bool copied = false;
+  const auto ensureCopy = [&]() {
+    if (copied) return;
+    sceneMetadataScratch_.assign(metadata, metadata + requiredMetadata);
+    copied = true;
+  };
+  const auto current = [&](std::size_t offset) -> std::uint32_t {
+    return copied ? sceneMetadataScratch_[offset] : metadata[offset];
+  };
+  const auto resolveAt = [&](std::size_t offset) -> std::optional<ImageHandle> {
+    const std::uint32_t handle = current(offset);
+    const auto resolved = resolveImage(handle);
+    if (!resolved) return std::nullopt;
+    if (*resolved != handle) {
+      ensureCopy();
+      sceneMetadataScratch_[offset] = *resolved;
+    }
+    return resolved;
+  };
+
   for (std::size_t index = 0; index < nodeCount; ++index) {
     const std::size_t offset = index * scene_packet::metadataStride;
-    const auto kind = static_cast<scene_packet::NodeKind>(
-      sceneMetadataScratch_[offset]);
-    if (sceneMetadataScratch_[offset] >
-        static_cast<std::uint32_t>(scene_packet::NodeKind::mesh)) {
+    const auto kindValue = current(offset);
+    if (kindValue > static_cast<std::uint32_t>(scene_packet::NodeKind::mesh)) {
       return false;
     }
-    if (sceneMetadataScratch_[offset + 5] &
-        ~scene_packet::kAllowedNodeFlags) return false;
-    if (sceneMetadataScratch_[offset + 5] & scene_packet::NodeFlags::hasAlphaMask) {
-      const auto mask = resolveImage(sceneMetadataScratch_[offset + 6]);
+    const auto kind = static_cast<scene_packet::NodeKind>(kindValue);
+    const auto flags = current(offset + 5);
+    if (flags & ~scene_packet::kAllowedNodeFlags) return false;
+
+    if (flags & scene_packet::NodeFlags::hasAlphaMask) {
+      const std::uint32_t originalMask = current(offset + 6);
+      const auto mask = resolveAt(offset + 6);
       if (!mask) {
         std::cerr << "[pmjs-scene] invalid alpha-mask handle="
-                  << sceneMetadataScratch_[offset + 6]
-                  << " node=" << index << '\n';
+                  << originalMask << " node=" << index << '\n';
         return false;
       }
-      sceneMetadataScratch_[offset + 6] = *mask;
     }
+
     if (kind == scene_packet::NodeKind::filterBegin &&
-        (sceneMetadataScratch_[offset + 4] ==
+        (current(offset + 4) ==
            static_cast<std::uint32_t>(scene_packet::FilterKind::displacement) ||
-         sceneMetadataScratch_[offset + 4] ==
+         current(offset + 4) ==
            static_cast<std::uint32_t>(scene_packet::FilterKind::alphaMask))) {
-      const auto image = resolveImage(sceneMetadataScratch_[offset + 2]);
+      const std::uint32_t originalImage = current(offset + 2);
+      const auto image = resolveAt(offset + 2);
       if (!image) {
         std::cerr << "[pmjs-scene] invalid filter image handle="
-                  << sceneMetadataScratch_[offset + 2]
-                  << " node=" << index << '\n';
+                  << originalImage << " node=" << index << '\n';
         return false;
       }
-      sceneMetadataScratch_[offset + 2] = *image;
     }
+
     if (kind != scene_packet::NodeKind::sprite &&
-        kind != scene_packet::NodeKind::tilingSprite) continue;
-    const auto image = resolveImage(sceneMetadataScratch_[offset + 2]);
+        kind != scene_packet::NodeKind::tilingSprite) {
+      continue;
+    }
+    const std::uint32_t originalImage = current(offset + 2);
+    const auto image = resolveAt(offset + 2);
     if (!image) {
       std::cerr << "[pmjs-scene] invalid sprite image handle="
-                << sceneMetadataScratch_[offset + 2]
-                << " node=" << index
+                << originalImage << " node=" << index
                 << " kind=" << static_cast<std::uint32_t>(kind) << '\n';
       return false;
     }
-    sceneMetadataScratch_[offset + 2] = *image;
   }
+
+  // A one-off canvas-heavy/huge scene should not pin a large metadata block
+  // once normal direct-image packets resume.
+  if (!copied && sceneMetadataScratch_.capacity() > 4096 &&
+      requiredMetadata * 4 < sceneMetadataScratch_.capacity()) {
+    std::vector<std::uint32_t>().swap(sceneMetadataScratch_);
+  }
+
+  const std::uint32_t* queuedMetadata =
+      copied ? sceneMetadataScratch_.data() : metadata;
   const bool queued = renderer_.queueScene(
-    version,
-    nodeCount ? sceneMetadataScratch_.data() : nullptr,
-    sceneMetadataScratch_.size(),
-    nodeCount ? values : nullptr,
-    valueCount,
-    nodeCount);
+    version, nodeCount ? queuedMetadata : nullptr, requiredMetadata,
+    nodeCount ? values : nullptr, valueCount, nodeCount);
   if (!queued) {
     std::cerr << "[pmjs-scene] renderer rejected packet nodes="
               << nodeCount << '\n';
