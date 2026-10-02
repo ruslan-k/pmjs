@@ -129,8 +129,13 @@ function parseTimingConfig(env) {
 
 function resolveSwapDefault(env, timing) {
   const source = env || {};
-  if (timing.uncapped && (source.PMJS_SWAP_INTERVAL === undefined ||
-      source.PMJS_SWAP_INTERVAL === '')) {
+  // The runner already owns frame pacing for capped modes. Leaving SDL/EGL
+  // VSync enabled adds a second independent limiter: a small deadline miss can
+  // then block until the following vblank and turn a minor overrun into a full
+  // refresh-period hitch. Default to non-blocking swap for both paced and
+  // uncapped rendering; PMJS_SWAP_INTERVAL=1 remains an explicit user override.
+  if (source.PMJS_SWAP_INTERVAL === undefined ||
+      source.PMJS_SWAP_INTERVAL === '') {
     return '0';
   }
   return null;
@@ -185,7 +190,7 @@ async function run(input, hooks = {}) {
   const swapDefault = resolveSwapDefault(hostProcess.env, timing);
   if (swapDefault !== null) {
     hostProcess.env.PMJS_SWAP_INTERVAL = swapDefault;
-    console.log('[pmjs] uncapped render: defaulting PMJS_SWAP_INTERVAL=0 (was unset)');
+    console.log('[pmjs] runner pacing: defaulting PMJS_SWAP_INTERVAL=0 (was unset)');
   }
   const native = options.native || require(options.addon);
   native.initialize({ gameRoot: options.gameRoot, assetRoot: options.assetRoot,
