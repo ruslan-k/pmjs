@@ -165,6 +165,12 @@
   }
 
   function drainAnimationFrames(now) {
+    // Zero-RAF frames dominate menus and many event-heavy RPG scenes. Avoid
+    // even swapping the retained queues on that path.
+    if (rafQueue.length === 0) {
+      if (cancelledRafs.size) cancelledRafs.clear();
+      return;
+    }
     // Double-buffer the RAF queues instead of allocating a new array every
     // rendered frame.
     var callbacks = rafQueue;
@@ -189,6 +195,10 @@
 
   function pmjsDrainScheduler(now) {
     if (typeof now !== 'number') now = performance.now();
+    // Nothing can observe schedulerNow/draining when neither a timer nor RAF
+    // callback can run.
+    if (now < nextTimerDeadline && rafQueue.length === 0 &&
+        cancelledRafs.size === 0) return;
     schedulerNow = now;
     draining = true;
     try {
