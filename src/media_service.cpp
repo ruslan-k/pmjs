@@ -36,7 +36,7 @@ std::uint64_t audioThreadMicros() {
 }
 }
 struct MediaService::Impl {
-  static constexpr std::size_t bufferFrames = 48000, decodeFrames = 8192;
+  static constexpr std::size_t bufferFrames = 24000, decodeFrames = 8192;
   struct Voice {
     explicit Voice(std::unique_ptr<AudioDecoderSession> source)
         : decoder(std::move(source)) {
