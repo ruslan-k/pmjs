@@ -99,8 +99,11 @@ struct State {
         std::vector<std::uint8_t> rgba;
         {
           std::unique_lock lock(mutex);
+          // Keep one decoded frame ready plus one look-ahead. A third
+          // AVFrame adds roughly another frame of YUV residency with little
+          // latency benefit on low-memory handhelds.
           if (!requested && !shuttingDown &&
-              decoder->queuedFrames() < 3 && !decoder->exhausted()) {
+              decoder->queuedFrames() < 2 && !decoder->exhausted()) {
             lock.unlock();
             std::string error;
             decoder->prefetchOne(&error);
