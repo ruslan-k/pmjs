@@ -1,0 +1,115 @@
+'use strict';
+
+const path = require('node:path');
+const { performance } = require('node:perf_hooks');
+
+const addon = path.resolve(process.argv[2]);
+const assets = path.resolve(process.argv[3]);
+const native = require(addon);
+native.initialize({
+  gameRoot: assets,
+  assetRoot: '',
+  width: 128,
+  height: 128,
+  windowTitle: 'pmjs perf'
+});
+
+function median(values) {
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function sample(name, iterations, fn) {
+  for (let i = 0; i < Math.min(iterations, 20); i++) fn(i);
+  const values = [];
+  for (let run = 0; run < 5; run++) {
+    if (global.gc) global.gc();
+    const started = performance.now();
+    for (let i = 0; i < iterations; i++) fn(i);
+    values.push((performance.now() - started) * 1000 / iterations);
+  }
+  return {
+    benchmark: name,
+    iterations,
+    median_us_per_op: median(values),
+    samples_us_per_op: values
+  };
+}
+
+const results = [];
+
+const canvas = native.canvas.create(256, 256);
+// Force deferred canvas realization so these measurements cover the CPU pixel
+// hot paths rather than command queuing.
+native.canvas.readPixels(canvas.handle, 0, 0, 1, 1);
+
+results.push(sample('canvas-fill-clear-256', 80, () => {
+  native.canvas.fillRect(canvas.handle, 0, 0, 256, 256, 0x345678ff);
+  native.canvas.clearRect(canvas.handle, 0, 0, 256, 256);
+}));
+
+native.canvas.fillRect(canvas.handle, 0, 0, 256, 256, 0x89abcde0);
+results.push(sample('canvas-readback-256', 120, () => {
+  const pixels = native.canvas.readPixels(canvas.handle, 0, 0, 256, 256);
+  if (pixels.length !== 256 * 256 * 4) throw new Error('bad readback');
+}));
+
+function slotRound() {
+  const handles = [];
+  for (let i = 0; i < 4096; i++) handles.push(native.canvas.create(1, 1).handle);
+  for (let i = 0; i < handles.length; i += 2) {
+    native.canvas.release(handles[i]);
+    handles[i] = 0;
+  }
+  const started = performance.now();
+  const replacements = [];
+  for (let i = 0; i < 2048; i++) replacements.push(native.canvas.create(1, 1).handle);
+  const elapsedUs = (performance.now() - started) * 1000 / replacements.length;
+  for (const handle of handles) if (handle) native.canvas.release(handle);
+  for (const handle of replacements) native.canvas.release(handle);
+  return elapsedUs;
+}
+const slotSamples = [];
+for (let i = 0; i < 5; i++) slotSamples.push(slotRound());
+results.push({
+  benchmark: 'canvas-slot-reuse',
+  iterations: 2048,
+  median_us_per_op: median(slotSamples),
+  samples_us_per_op: slotSamples
+});
+
+const image = native.images.load('fixture.png');
+const count = 512;
+const stride = native.scene.schema.valueStride;
+const metadata = new Uint32Array(count * native.scene.schema.metadataStride);
+const values = new Float32Array(count * stride);
+for (let i = 0; i < count; i++) {
+  const mo = i * 7;
+  metadata[mo] = 1;
+  metadata[mo + 1] = 0xffffffff;
+  metadata[mo + 2] = image.handle;
+  metadata[mo + 3] = 0xffffff;
+  const vo = i * stride;
+  values[vo] = 1;
+  values[vo + 3] = 1;
+  values[vo + 6] = 1;
+  values[vo + 9] = 0;
+  values[vo + 10] = 0;
+  values[vo + 11] = 2;
+  values[vo + 12] = 2;
+  values[vo + 13] = 2;
+  values[vo + 14] = 2;
+}
+results.push(sample('scene-submit-512', 300, () => {
+  native.beginFrame();
+  native.scene.submit(native.scene.packetVersion, metadata, values, count);
+}));
+native.beginFrame();
+
+native.images.release(image.handle);
+native.canvas.release(canvas.handle);
+
+console.log(JSON.stringify({
+  results,
+  rss_mb: process.memoryUsage().rss / (1024 * 1024)
+}));
