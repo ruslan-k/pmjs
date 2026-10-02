@@ -148,6 +148,10 @@ jobs:
               bv = statistics.median(x[key] for x in b)
               av = statistics.median(x[key] for x in a)
               print(f"{key}: before={bv:.3f} after={av:.3f} delta={pct(bv,av):+.1f}%")
+          before_frames = statistics.median(x['buffered_frames'] for x in b)
+          after_frames = statistics.median(x['buffered_frames'] for x in a)
+          print(f"buffered_frames: before={before_frames:.0f} after={after_frames:.0f} delta={pct(before_frames,after_frames):+.1f}%")
+          print(f"stream_buffer_kib: before={before_frames * 2 * 4 / 1024:.1f} after={after_frames * 2 * 4 / 1024:.1f}")
 
           b = load('/tmp/native-before.json')
           a = load('/tmp/native-after.json')
