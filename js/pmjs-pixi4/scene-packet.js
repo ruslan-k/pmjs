@@ -141,6 +141,10 @@ function nativeParticleValues(context, node, childIndex) {
   return value;
 }
 
+var nativePlainSpriteBindingPool = [];
+var nativePlainSpriteBindingPoolUsed = 0;
+var nativePlainSpriteSegmentScratch = [];
+
 function nativePlainSpriteBinding(node) {
   if (nativeSceneNodeRejected(node, null) || node.children && node.children.length ||
       node.shader || node.mask || typeof node.updateChowRender === 'function' ||
@@ -167,17 +171,31 @@ function nativePlainSpriteBinding(node) {
       rotation % 2 || cpuTinted ||
       tone && (tone[0] || tone[1] || tone[2] || tone[3]) ||
       blend && blend[3] > 0) return null;
-  var anchor = node.anchor || { x: 0, y: 0 };
+  var anchor = node.anchor;
+  var anchorX = anchor ? anchor.x : 0;
+  var anchorY = anchor ? anchor.y : 0;
   var original = texture.orig || frame;
   var trim = texture.trim;
-  return { node: node, texture: texture, base: base, nativeImage: nativeImage,
-    frame: frame, rotation: rotation, blendMode: blendMode,
-    localX: trim ? trim.x - anchor.x * original.width :
-      -anchor.x * original.width,
-    localY: trim ? trim.y - anchor.y * original.height :
-      -anchor.y * original.height,
-    width: trim ? trim.width : original.width,
-    height: trim ? trim.height : original.height };
+  var binding = nativePlainSpriteBindingPool[nativePlainSpriteBindingPoolUsed];
+  if (!binding) {
+    binding = {};
+    nativePlainSpriteBindingPool[nativePlainSpriteBindingPoolUsed] = binding;
+  }
+  nativePlainSpriteBindingPoolUsed++;
+  binding.node = node;
+  binding.texture = texture;
+  binding.base = base;
+  binding.nativeImage = nativeImage;
+  binding.frame = frame;
+  binding.rotation = rotation;
+  binding.blendMode = blendMode;
+  binding.localX = trim ? trim.x - anchorX * original.width :
+    -anchorX * original.width;
+  binding.localY = trim ? trim.y - anchorY * original.height :
+    -anchorY * original.height;
+  binding.width = trim ? trim.width : original.width;
+  binding.height = trim ? trim.height : original.height;
+  return binding;
 }
 
 function writeNativePlainSpriteSegment(bindings, parentIndex) {
@@ -585,7 +603,8 @@ function writeNativeSceneNode(node, parentIndex, forcedClip, forcedMask,
     if (nativeSceneTraversesChild(kind, node, node.children[index])) {
       if (!particleFrame &&
           PMJS.optimizations.isEnabled('scene.plain-sprite-segment')) {
-        var segment = [];
+        var segment = nativePlainSpriteSegmentScratch;
+        segment.length = 0;
         var segmentIndex = index;
         while (segmentIndex < childLimit &&
             nativeSceneTraversesChild(kind, node, node.children[segmentIndex])) {
@@ -656,6 +675,8 @@ function prepareNativeBitmapCaches(node, renderer, root) {
 
 function encodeNativeScene(stage) {
   resetNativeSceneRecords();
+  nativePlainSpriteBindingPoolUsed = 0;
+  nativePlainSpriteSegmentScratch.length = 0;
   nativeSceneFilterDepth = 0;
   nativeSceneSegmentTracing = !!(globalThis.__pmjsTrace &&
     __pmjsTrace.active());
