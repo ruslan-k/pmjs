@@ -857,28 +857,61 @@ bool CanvasStore::drawTextNow(Surface& surface, const std::vector<std::filesyste
 bool CanvasStore::blurNow(Surface& surface) {
   const int width = surface.width;
   const int height = surface.height;
-  std::vector<std::uint8_t> scratch(surface.pixels.size());
+  if (width <= 0 || height <= 0) return true;
+
+  // Separable 5-tap blur does not need a full second RGBA surface. Copy one
+  // row for the horizontal pass, then one column for the vertical pass. This
+  // reduces temporary storage from width*height*4 to max(width,height)*4.
+  std::vector<std::uint8_t> scratch(
+      static_cast<std::size_t>(std::max(width, height)) * 4U);
   constexpr int weights[5] = {1, 4, 6, 4, 1};
-  for (int pass = 0; pass < 2; ++pass) {
-    const auto& source = pass == 0 ? surface.pixels : scratch;
-    auto& destination = pass == 0 ? scratch : surface.pixels;
-    for (int y = 0; y < height; ++y) {
-      for (int x = 0; x < width; ++x) {
-        for (int channel = 0; channel < 4; ++channel) {
-          int sum = 0;
-          for (int offset = -2; offset <= 2; ++offset) {
-            const int sampleX = pass == 0 ? std::clamp(x + offset, 0, width - 1) : x;
-            const int sampleY = pass == 0 ? y : std::clamp(y + offset, 0, height - 1);
-            const std::size_t index =
-              (static_cast<std::size_t>(sampleY) * width + sampleX) * 4U + channel;
-            sum += source[index] * weights[offset + 2];
-          }
-          destination[(static_cast<std::size_t>(y) * width + x) * 4U + channel] =
-            static_cast<std::uint8_t>((sum + 8) / 16);
+
+  const std::size_t rowBytes = static_cast<std::size_t>(width) * 4U;
+  for (int y = 0; y < height; ++y) {
+    const std::size_t rowOffset =
+        static_cast<std::size_t>(y) * rowBytes;
+    std::memcpy(scratch.data(), surface.pixels.data() + rowOffset, rowBytes);
+    for (int x = 0; x < width; ++x) {
+      for (int channel = 0; channel < 4; ++channel) {
+        int sum = 0;
+        for (int offset = -2; offset <= 2; ++offset) {
+          const int sampleX = std::clamp(x + offset, 0, width - 1);
+          sum += scratch[static_cast<std::size_t>(sampleX) * 4U + channel] *
+                 weights[offset + 2];
         }
+        surface.pixels[rowOffset + static_cast<std::size_t>(x) * 4U +
+                       channel] =
+            static_cast<std::uint8_t>((sum + 8) / 16);
       }
     }
   }
+
+  for (int x = 0; x < width; ++x) {
+    for (int y = 0; y < height; ++y) {
+      const std::size_t source =
+          (static_cast<std::size_t>(y) * width + x) * 4U;
+      const std::size_t destination = static_cast<std::size_t>(y) * 4U;
+      scratch[destination] = surface.pixels[source];
+      scratch[destination + 1] = surface.pixels[source + 1];
+      scratch[destination + 2] = surface.pixels[source + 2];
+      scratch[destination + 3] = surface.pixels[source + 3];
+    }
+    for (int y = 0; y < height; ++y) {
+      const std::size_t destination =
+          (static_cast<std::size_t>(y) * width + x) * 4U;
+      for (int channel = 0; channel < 4; ++channel) {
+        int sum = 0;
+        for (int offset = -2; offset <= 2; ++offset) {
+          const int sampleY = std::clamp(y + offset, 0, height - 1);
+          sum += scratch[static_cast<std::size_t>(sampleY) * 4U + channel] *
+                 weights[offset + 2];
+        }
+        surface.pixels[destination + channel] =
+            static_cast<std::uint8_t>((sum + 8) / 16);
+      }
+    }
+  }
+
   markDirty(surface, 0, 0, width, height);
   return true;
 }
