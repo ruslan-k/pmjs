@@ -13,6 +13,10 @@ native.initialize({
   height: 128,
   windowTitle: 'pmjs perf'
 });
+const startupRendererStats = native.render.stats();
+const startupRenderTargetBytes = Number.isFinite(startupRendererStats.renderTargetBytes)
+  ? startupRendererStats.renderTargetBytes
+  : 128 * 128 * 36;
 
 function median(values) {
   const sorted = values.slice().sort((a, b) => a - b);
@@ -128,5 +132,7 @@ native.canvas.release(canvas.handle);
 
 console.log(JSON.stringify({
   results,
+  startup_render_target_bytes: startupRenderTargetBytes,
+  final_render_target_bytes: Number(native.render.stats().renderTargetBytes || startupRenderTargetBytes),
   rss_mb: process.memoryUsage().rss / (1024 * 1024)
 }));
