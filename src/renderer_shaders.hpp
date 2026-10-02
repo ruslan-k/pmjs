@@ -4,8 +4,7 @@
 #include <string>
 
 namespace pmjs::renderer_shaders {
-constexpr const char* primitiveSurfaceFragmentSource = R"(
-  #version 300 es
+constexpr const char* primitiveSurfaceFragmentSource = R"(#version 300 es
   precision mediump float;
   uniform vec2 surfaceSize;
   uniform int primitiveKind;
@@ -34,8 +33,7 @@ constexpr const char* primitiveSurfaceFragmentSource = R"(
     outputColor = vec4(color.rgb * color.a, color.a);
   }
 )";
-constexpr const char* vertexSource = R"(
-  #version 300 es
+constexpr const char* vertexSource = R"(#version 300 es
   layout(location = 0) in vec2 position;
   layout(location = 1) in vec2 uv;
   layout(location = 2) in vec4 color;
@@ -50,8 +48,7 @@ constexpr const char* vertexSource = R"(
     vertexUvClamp = uvClamp;
   }
 )";
-constexpr const char* fragmentSource = R"(
-  #version 300 es
+constexpr const char* fragmentSource = R"(#version 300 es
   precision mediump float;
   uniform sampler2D image;
   uniform vec2 pmjsTextureSize;
@@ -898,8 +895,7 @@ inline std::string pixiFragmentSourceWithPrecision(const char* base,
 inline std::string filterFragmentSourceWithPrecision(const std::string& precision) {
   return pixiFragmentSourceWithPrecision(fragmentSource, precision);
 }
-constexpr const char* tileVertexSource = R"(
-  #version 300 es
+constexpr const char* tileVertexSource = R"(#version 300 es
   layout(location = 0) in vec2 localPosition;
   layout(location = 1) in vec2 sourcePixel;
   layout(location = 2) in vec2 animationFactor;
@@ -915,8 +911,7 @@ constexpr const char* tileVertexSource = R"(
     vertexUv = (sourcePixel + animationFactor * animationOffset) / pmjsTextureSize;
   }
 )";
-constexpr const char* simpleFragmentSource = R"(
-  #version 300 es
+constexpr const char* simpleFragmentSource = R"(#version 300 es
   precision mediump float;
   uniform sampler2D image;
   in vec2 vertexUv;
@@ -928,8 +923,7 @@ constexpr const char* simpleFragmentSource = R"(
     outputColor.rgb *= outputColor.a;
   }
 )";
-constexpr const char* generatedTextureFragmentSource = R"(
-  #version 300 es
+constexpr const char* generatedTextureFragmentSource = R"(#version 300 es
   precision mediump float;
   uniform sampler2D image;
   in vec2 vertexUv;
@@ -940,8 +934,7 @@ constexpr const char* generatedTextureFragmentSource = R"(
     outputColor = color;
   }
 )";
-constexpr const char* presentationVertexSource = R"(
-  #version 300 es
+constexpr const char* presentationVertexSource = R"(#version 300 es
   out vec2 vertexUv;
   void main() {
     const vec2 positions[6] = vec2[6](
@@ -954,8 +947,7 @@ constexpr const char* presentationVertexSource = R"(
     vertexUv = uvs[gl_VertexID];
   }
 )";
-constexpr const char* presentationFragmentSource = R"(
-  #version 300 es
+constexpr const char* presentationFragmentSource = R"(#version 300 es
   precision mediump float;
   uniform sampler2D sceneImage;
   uniform sampler2D overlayImage;
@@ -1003,8 +995,7 @@ constexpr const char* presentationFragmentSource = R"(
       opaqueBackground ? 1.0 : composed.a);
   }
 )";
-constexpr const char* spriteEffectFragmentSource = R"(
-  #version 300 es
+constexpr const char* spriteEffectFragmentSource = R"(#version 300 es
   precision mediump float;
   uniform sampler2D image;
   uniform vec2 pmjsTextureSize;
@@ -1083,8 +1074,7 @@ constexpr const char* spriteEffectFragmentSource = R"(
     }
   }
 )";
-constexpr const char* tileFragmentSource = R"(
-  #version 300 es
+constexpr const char* tileFragmentSource = R"(#version 300 es
   precision mediump float;
   uniform sampler2D image;
   uniform vec4 color;
