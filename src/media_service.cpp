@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <deque>
 #include <iostream>
@@ -69,19 +70,30 @@ struct MediaService::Impl {
     if (device) SDL_PauseAudioDevice(device, 0);
   }
   ~Impl() {
-    shuttingDown = true;
+    shuttingDown.store(true, std::memory_order_release);
+    wakeWorker();
     if (worker.joinable()) worker.join();
     if (device) SDL_CloseAudioDevice(device);
   }
-  std::vector<std::shared_ptr<Voice>> snapshot(bool streamsOnly = false) const {
-    std::lock_guard lock(mutex);
-    std::vector<std::shared_ptr<Voice>> result;
-    result.reserve(voices.size());
+  using VoiceList = std::vector<std::shared_ptr<Voice>>;
+
+  void rebuildVoiceSnapshotLocked() {
+    auto next = std::make_shared<VoiceList>();
+    next->reserve(voices.size());
     for (const auto& [handle, voice] : voices) {
       (void)handle;
-      if (!streamsOnly || voice->decoder) result.push_back(voice);
+      next->push_back(voice);
     }
-    return result;
+    std::atomic_store_explicit(
+      &voiceSnapshot, std::shared_ptr<const VoiceList>(std::move(next)),
+      std::memory_order_release);
+  }
+  std::shared_ptr<const VoiceList> snapshot() const {
+    return std::atomic_load_explicit(&voiceSnapshot, std::memory_order_acquire);
+  }
+  void wakeWorker() {
+    workerWakeSerial.fetch_add(1, std::memory_order_release);
+    workerCv.notify_one();
   }
   std::shared_ptr<Voice> voice(std::uint32_t handle) const {
     std::lock_guard lock(mutex);
@@ -94,7 +106,8 @@ struct MediaService::Impl {
     const int frames = byteCount / static_cast<int>(sizeof(float) * 2);
     std::fill(output, output + frames * 2, 0.0F);
     const float master = self.masterVolume.load(std::memory_order_relaxed);
-    for (const auto& voice : self.snapshot()) {
+    const auto voices = self.snapshot();
+    for (const auto& voice : *voices) {
       std::lock_guard lock(voice->mutex);
       mixVoiceInto(voice->mix, output, frames, master);
     }
@@ -153,9 +166,34 @@ struct MediaService::Impl {
     }
   }
   void decodeLoop() {
-    while (!shuttingDown) {
-      for (const auto& voice : snapshot(true)) fill(voice);
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    std::uint64_t seenWake = workerWakeSerial.load(std::memory_order_acquire);
+    while (!shuttingDown.load(std::memory_order_acquire)) {
+      bool hasPlayingStream = false;
+      const auto voices = snapshot();
+      for (const auto& voice : *voices) {
+        if (!voice->decoder) continue;
+        {
+          std::lock_guard lock(voice->mutex);
+          hasPlayingStream = hasPlayingStream || voice->mix.playing;
+        }
+        fill(voice);
+      }
+
+      std::unique_lock waitLock(workerWaitMutex);
+      const auto changed = [this, &seenWake] {
+        return shuttingDown.load(std::memory_order_acquire) ||
+          workerWakeSerial.load(std::memory_order_acquire) != seenWake;
+      };
+      if (hasPlayingStream) {
+        // A 341 ms+ streaming buffer does not need a 2 ms polling loop.
+        // Refill often enough to stay far ahead of the audio callback while
+        // cutting idle/steady-state wakeups by 4x.
+        workerCv.wait_for(waitLock, std::chrono::milliseconds(8), changed);
+      } else {
+        // No streaming voice is playing: sleep until play/load/release/shutdown.
+        workerCv.wait(waitLock, changed);
+      }
+      seenWake = workerWakeSerial.load(std::memory_order_acquire);
     }
   }
   struct CachedAsset {
@@ -175,14 +213,19 @@ struct MediaService::Impl {
     while (cacheBytes > policy.cacheBytes && !lru.empty()) eraseCached(cache.find(lru.back()));
   }
   std::uint32_t installVoice(std::shared_ptr<Voice> voice) {
-    std::lock_guard lock(mutex);
-    const auto handle = nextHandle++;
-    if (!handle) throw std::runtime_error("audio handle space exhausted");
-    if (diagnostics) {
-      if (voice->mix.asset) ++cacheStats.sampleLoads;
-      else ++cacheStats.streamLoads;
+    std::uint32_t handle = 0;
+    {
+      std::lock_guard lock(mutex);
+      handle = nextHandle++;
+      if (!handle) throw std::runtime_error("audio handle space exhausted");
+      if (diagnostics) {
+        if (voice->mix.asset) ++cacheStats.sampleLoads;
+        else ++cacheStats.streamLoads;
+      }
+      voices.emplace(handle, std::move(voice));
+      rebuildVoiceSnapshotLocked();
     }
-    voices.emplace(handle, std::move(voice));
+    wakeWorker();
     return handle;
   }
   std::shared_ptr<const PreparedAudioAsset> cached(const std::string& key, AudioIntent intent) {
@@ -281,9 +324,13 @@ struct MediaService::Impl {
   SDL_AudioSpec obtained{};
   mutable std::mutex mutex;
   std::unordered_map<std::uint32_t, std::shared_ptr<Voice>> voices;
+  std::shared_ptr<const VoiceList> voiceSnapshot = std::make_shared<const VoiceList>();
   std::uint32_t nextHandle = 1;
   std::atomic<bool> shuttingDown{false};
   std::atomic<float> masterVolume{1.0F};
+  std::atomic<std::uint64_t> workerWakeSerial{0};
+  std::mutex workerWaitMutex;
+  std::condition_variable workerCv;
   std::thread worker;
 };
 
@@ -363,6 +410,8 @@ std::size_t MediaService::sampleMemoryBytes() const {
 bool MediaService::play(std::uint32_t handle, bool loop, double offset) {
   auto voice = impl_->voice(handle);
   if (!voice || !std::isfinite(offset)) return false;
+  bool available = false;
+  {
   std::lock_guard lock(voice->mutex);
   if (voice->mix.duration > 0) {
     if (loop && voice->mix.loopEnd > voice->mix.loopStart) {
@@ -384,14 +433,21 @@ bool MediaService::play(std::uint32_t handle, bool loop, double offset) {
   voice->mix.loop = loop; voice->mix.eof = !!voice->mix.asset; voice->mix.playing = impl_->device != 0;
   voice->mix.gain = 1.0F; voice->mix.targetGain = 1.0F; voice->mix.gainStep = 0.0F;
   voice->mix.stopAfterFade = false;
-  return impl_->device != 0;
+  available = impl_->device != 0;
+  }
+  impl_->wakeWorker();
+  return available;
 }
 bool MediaService::stop(std::uint32_t handle) {
   auto voice = impl_->voice(handle); if (!voice) return false;
-  std::lock_guard lock(voice->mutex); voice->mix.playing = false;
-  voice->mix.gain = 1.0F; voice->mix.targetGain = 1.0F; voice->mix.gainStep = 0.0F;
-  voice->mix.stopAfterFade = false;
-  ++voice->generation; voice->mix.samples.clear(); return true;
+  {
+    std::lock_guard lock(voice->mutex); voice->mix.playing = false;
+    voice->mix.gain = 1.0F; voice->mix.targetGain = 1.0F; voice->mix.gainStep = 0.0F;
+    voice->mix.stopAfterFade = false;
+    ++voice->generation; voice->mix.samples.clear();
+  }
+  impl_->wakeWorker();
+  return true;
 }
 bool MediaService::setParameters(std::uint32_t handle, float volume,
                                  float pitch, float pan) {
@@ -432,7 +488,14 @@ std::size_t MediaService::bufferedFrames(std::uint32_t handle) const {
     : voice->mix.samples.size() / 2;
 }
 bool MediaService::release(std::uint32_t handle) {
-  std::lock_guard lock(impl_->mutex); return impl_->voices.erase(handle) != 0;
+  bool removed = false;
+  {
+    std::lock_guard lock(impl_->mutex);
+    removed = impl_->voices.erase(handle) != 0;
+    if (removed) impl_->rebuildVoiceSnapshotLocked();
+  }
+  if (removed) impl_->wakeWorker();
+  return removed;
 }
 bool MediaService::audioAvailable() const { return impl_->device != 0; }
 void MediaService::setMasterVolume(float volume) {
