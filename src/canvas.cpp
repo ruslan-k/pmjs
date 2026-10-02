@@ -706,6 +706,25 @@ void CanvasStore::fillRectNow(Surface& surface, int x, int y, int width, int hei
   markDirty(surface, x0, y0, x1 - x0, y1 - y0);
 }
 
+
+void CanvasStore::fillRectAdditiveNow(Surface& surface, int x, int y,
+                                      int width, int height,
+                                      std::uint32_t rgba) {
+  const int x0 = std::clamp(x, 0, surface.width);
+  const int y0 = std::clamp(y, 0, surface.height);
+  const int x1 = static_cast<int>(std::clamp<std::int64_t>(
+    static_cast<std::int64_t>(x) + width, 0, surface.width));
+  const int y1 = static_cast<int>(std::clamp<std::int64_t>(
+    static_cast<std::int64_t>(y) + height, 0, surface.height));
+  if (x1 <= x0 || y1 <= y0 || (rgba & 0xffU) == 0) return;
+  for (int py = y0; py < y1; ++py) {
+    for (int px = x0; px < x1; ++px) {
+      blendPixelAdditive(surface, px, py, rgba);
+    }
+  }
+  markDirty(surface, x0, y0, x1 - x0, y1 - y0);
+}
+
 void CanvasStore::clearNow(Surface& surface) {
   std::fill(surface.pixels.begin(), surface.pixels.end(), 0);
   markDirty(surface, 0, 0, surface.width, surface.height);
@@ -1122,6 +1141,21 @@ bool CanvasStore::fillRect(CanvasHandle handle, int x, int y, int width, int hei
     }
   }
   fillRectNow(surface, x, y, width, height, rgba);
+  return true;
+}
+
+
+bool CanvasStore::fillRectAdditive(CanvasHandle handle, int x, int y,
+                                   int width, int height,
+                                   std::uint32_t rgba) {
+  auto* surface = lookup(handle);
+  if (!surface) return false;
+  // Additive compositing depends on destination pixels, so realize deferred
+  // commands once and keep all pixel work in native C++ rather than JS.
+  if (surface->state == SurfaceState::Deferred && !realizeSurface(*surface)) {
+    return false;
+  }
+  fillRectAdditiveNow(*surface, x, y, width, height, rgba);
   return true;
 }
 
