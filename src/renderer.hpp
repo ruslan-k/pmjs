@@ -277,6 +277,8 @@ class Renderer {
   static PrimitiveSurfaceHandle makePrimitiveSurfaceHandle(
       std::size_t index, std::uint16_t generation);
   PrimitiveSurfaceResource* lookupPrimitiveSurface(PrimitiveSurfaceHandle handle);
+  void ensureTarget(std::uint32_t& texture, std::uint32_t& framebuffer);
+  void destroyTarget(std::uint32_t& texture, std::uint32_t& framebuffer);
   void resizeTargets(int width, int height);
   void drawToneComposition(std::uint32_t framebuffer, int viewportX,
                            int viewportY, int viewportWidth,
