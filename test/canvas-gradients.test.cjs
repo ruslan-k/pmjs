@@ -56,3 +56,37 @@ test('radial gradients reject negative radii and invalid stops', () => {
   const gradient = drawing.createRadialGradient(0, 0, 0, 0, 0, 1);
   assert.throws(() => gradient.addColorStop(2, '#fff'), /invalid color stop/);
 });
+
+
+test('axis-aligned lighter fill uses the native additive rectangle path', () => {
+  const additive = [];
+  const fallbackReads = [];
+  const context = {
+    console,
+    NativeHost: {
+      runtime: { env: function() { return ''; } },
+      canvas: {
+        fillRectAdditive: function() { additive.push(Array.from(arguments)); },
+        readPixels: function() { fallbackReads.push(Array.from(arguments)); return new Uint8Array(16); },
+        writePixels: function() {}
+      }
+    }
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  const canvas = {
+    width: 32,
+    height: 32,
+    _ensureNativeCanvas: function() { return { handle: 11 }; }
+  };
+  const drawing = new context.CanvasContext2D(canvas);
+  drawing.globalCompositeOperation = 'lighter';
+  drawing.globalAlpha = 0.5;
+  drawing.fillStyle = '#804020';
+  drawing.fillRect(2, 3, 8, 9);
+
+  assert.equal(additive.length, 1);
+  assert.deepEqual(additive[0].slice(0, 5), [11, 2, 3, 8, 9]);
+  assert.equal(additive[0][5] & 0xff, 128);
+  assert.equal(fallbackReads.length, 0);
+});
