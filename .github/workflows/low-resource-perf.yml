@@ -1,0 +1,136 @@
+name: low-resource performance
+
+on:
+  push:
+    branches:
+      - perf/low-resource-runtime
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_SHA: 8379e184b6d8eefccfb737411015b09308666372
+    steps:
+      - name: Checkout optimized branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build xvfb pkg-config \
+            libsdl2-dev libegl1-mesa-dev libgles2-mesa-dev \
+            libpng-dev libjpeg-dev libfreetype6-dev libharfbuzz-dev \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswresample-dev libswscale-dev
+
+      - name: Prepare baseline worktree
+        run: |
+          git worktree add /tmp/pmjs-base "$BASE_SHA"
+
+      - name: Configure baseline and optimized builds
+        run: |
+          cmake -S /tmp/pmjs-base -B /tmp/pmjs-base/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+
+      - name: Build baseline and optimized versions
+        run: |
+          cmake --build /tmp/pmjs-base/build --target pmjs_native -j2
+          cmake --build "$GITHUB_WORKSPACE/build" -j2
+
+      - name: Run optimized test suite
+        run: |
+          ctest --test-dir "$GITHUB_WORKSPACE/build" --output-on-failure -j2
+
+      - name: Benchmark scheduler before and after
+        run: |
+          git show "$BASE_SHA:js/pmjs-web/scheduler.js" > /tmp/base-scheduler.js
+          node --expose-gc tools/perf/scheduler-bench.cjs /tmp/base-scheduler.js 500000 | tee /tmp/scheduler-before.json
+          node --expose-gc tools/perf/scheduler-bench.cjs js/pmjs-web/scheduler.js 500000 | tee /tmp/scheduler-after.json
+
+      - name: Build audio worker benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLAGS="$(pkg-config --cflags --libs \
+            sdl2 egl glesv2 libpng libjpeg freetype2 harfbuzz \
+            libavformat libavcodec libavutil libswresample libswscale)"
+          c++ -O2 -std=c++20 -I/tmp/pmjs-base/src \
+            tools/perf/audio-worker-bench.cpp /tmp/pmjs-base/build/libpmjs_runtime.a \
+            $FLAGS -lm -ldl -pthread -o /tmp/audio-before
+          c++ -O2 -std=c++20 -I"$GITHUB_WORKSPACE/src" \
+            tools/perf/audio-worker-bench.cpp "$GITHUB_WORKSPACE/build/libpmjs_runtime.a" \
+            $FLAGS -lm -ldl -pthread -o /tmp/audio-after
+
+      - name: Benchmark audio worker before and after
+        run: |
+          : > /tmp/audio-before.jsonl
+          : > /tmp/audio-after.jsonl
+          for i in 1 2 3; do /tmp/audio-before | tee -a /tmp/audio-before.jsonl; done
+          for i in 1 2 3; do /tmp/audio-after | tee -a /tmp/audio-after.jsonl; done
+
+      - name: Benchmark native hot paths before and after
+        run: |
+          xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 \
+            node --expose-gc tools/perf/native-hotpath-bench.cjs \
+            /tmp/pmjs-base/build/pmjs_native.node /tmp/pmjs-base/build/test-assets \
+            | tee /tmp/native-before.json
+          xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 \
+            node --expose-gc tools/perf/native-hotpath-bench.cjs \
+            "$GITHUB_WORKSPACE/build/pmjs_native.node" "$GITHUB_WORKSPACE/build/test-assets" \
+            | tee /tmp/native-after.json
+
+      - name: Summarize benchmark deltas
+        run: |
+          python3 - <<'PY'
+          import json, statistics
+
+          def load(path):
+              with open(path) as f:
+                  return json.load(f)
+
+          def pct(before, after):
+              return (after / before - 1.0) * 100.0 if before else 0.0
+
+          before = load('/tmp/scheduler-before.json')
+          after = load('/tmp/scheduler-after.json')
+          print('=== scheduler ===')
+          print(f"before {before['median_ns_per_frame']:.1f} ns/frame")
+          print(f"after  {after['median_ns_per_frame']:.1f} ns/frame")
+          print(f"delta  {pct(before['median_ns_per_frame'], after['median_ns_per_frame']):+.1f}%")
+
+          def jsonl(path):
+              with open(path) as f:
+                  return [json.loads(line) for line in f if line.strip().startswith('{')]
+          b = jsonl('/tmp/audio-before.jsonl')
+          a = jsonl('/tmp/audio-after.jsonl')
+          print('=== audio worker ===')
+          for key in ('idle_cpu_ms', 'streaming_cpu_ms'):
+              bv = statistics.median(x[key] for x in b)
+              av = statistics.median(x[key] for x in a)
+              print(f"{key}: before={bv:.3f} after={av:.3f} delta={pct(bv,av):+.1f}%")
+
+          b = load('/tmp/native-before.json')
+          a = load('/tmp/native-after.json')
+          bm = {x['benchmark']: x['median_us_per_op'] for x in b['results']}
+          am = {x['benchmark']: x['median_us_per_op'] for x in a['results']}
+          print('=== native hot paths ===')
+          for name in bm:
+              print(f"{name}: before={bm[name]:.3f} us after={am[name]:.3f} us delta={pct(bm[name],am[name]):+.1f}%")
+          print(f"rss_mb: before={b['rss_mb']:.1f} after={a['rss_mb']:.1f} delta={pct(b['rss_mb'],a['rss_mb']):+.1f}%")
+          PY
+
+      - name: Runner information
+        if: always()
+        run: |
+          lscpu | sed -n '1,20p'
+          free -h
