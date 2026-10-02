@@ -85,3 +85,28 @@ The output directory contains:
 - `perf-stat.txt`: hardware/software perf counters when `perf` is installed and allowed.
 
 The profiler follows child processes, so it can wrap the existing PortMaster shell launcher rather than requiring the final Node process to be invoked directly.
+
+For RPG Maker MV ports, several runtime A/B switches are available for device-specific bottlenecks:
+
+```sh
+# Load a port-owned patch after guest plugins/PMJS wrappers, before js/main.js.
+export PMJS_PORT_SCRIPT=js/fnh-port.js
+
+# Coalesce expensive map refreshIfNeeded() work. Default behavior is unchanged
+# unless this variable is set; 3 or 4 are useful A/B values on 60 Hz games.
+export PMJS_REFRESH_COALESCE_TICKS=3
+
+# Reuse Game_Map.events() results inside one updateScene call.
+export PMJS_CACHE_MAP_EVENTS=1
+
+# Cache Game_Switches/Game_Variables value() results for one updateScene tick.
+# setValue() invalidates the affected entry immediately.
+export PMJS_CACHE_GAME_VALUES=1
+
+# Avoid rescanning the same immutable event-command list for image prefetch on
+# every interpreter setup. Entries are periodically rescanned.
+export PMJS_CACHE_REQUEST_IMAGES=1
+export PMJS_REQUEST_IMAGES_CACHE_MS=5000
+```
+
+All four logic fast paths above are opt-in. This makes it possible to A/B them independently on plugin-heavy games before promoting any of them into a port's normal launcher.
