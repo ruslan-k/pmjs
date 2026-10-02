@@ -21,9 +21,12 @@ GLuint compileShader(GLenum type, const char* source) {
   const GLuint shader = glCreateShader(type);
   std::string normalizedSource;
   const char* shaderSource = source;
-  if (source) {
+  // All built-in shaders are Mali-safe at rest (#version at byte 0 and no
+  // textureSize uniform collision). Keep normalization only as a defensive
+  // fallback for legacy/generated sources that still start with trivia.
+  if (source && source[0] != '#') {
     normalizedSource = renderer_shader_source::normalizeForGles3(source);
-    if (normalizedSource != source) shaderSource = normalizedSource.c_str();
+    shaderSource = normalizedSource.c_str();
   }
   glShaderSource(shader, 1, &shaderSource, nullptr);
   glCompileShader(shader);
