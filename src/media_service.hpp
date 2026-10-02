@@ -12,7 +12,7 @@ namespace pmjs {
 enum class AudioIntent { unknown, effect, music, ambient, jingle };
 
 struct PreparedAudioPolicy {
-  std::size_t cacheBytes = 16U * 1024U * 1024U;
+  std::size_t cacheBytes = 8U * 1024U * 1024U;
   std::size_t maxAssetBytes = 2U * 1024U * 1024U;
   std::size_t maxSynchronousBytes = 256U * 1024U;
 };
