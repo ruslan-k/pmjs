@@ -17,7 +17,12 @@
       pendingTasks.length = 0;
       pendingTaskHead = 0;
     } else if (pendingTaskHead > 64) {
-      pendingTasks.splice(0, pendingTaskHead);
+      // splice() allocates an array for removed entries and shifts the tail.
+      // Compact in place instead; this queue is drained every frame on
+      // memory-constrained handhelds.
+      var remaining = pendingTasks.length - pendingTaskHead;
+      pendingTasks.copyWithin(0, pendingTaskHead);
+      pendingTasks.length = remaining;
       pendingTaskHead = 0;
     }
   }
@@ -216,9 +221,11 @@
         if (timers.get(timer.id) !== timer) continue;
 
         if (timer.interval > 0) {
-          do {
-            timer.deadline += timer.interval;
-          } while (timer.deadline <= now);
+          // Preserve browser-style "one callback after a stall" semantics,
+          // but skip missed periods arithmetically. The previous loop could
+          // burn millions of iterations after suspend/resume or a long hitch.
+          var missed = Math.floor((now - timer.deadline) / timer.interval) + 1;
+          timer.deadline += missed * timer.interval;
           heapPush(timer);
         } else {
           timers.delete(timer.id);
