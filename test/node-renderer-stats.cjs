@@ -4,6 +4,13 @@ const path = require('node:path');
 const native = require(path.resolve(process.argv[2]));
 native.initialize({gameRoot:path.resolve(process.argv[3]),assetRoot:'',width:32,height:32,windowTitle:'pmjs test'});
 
+const startupStats = native.render.stats();
+if (startupStats.rendererTargetCreates !== 1 ||
+    startupStats.renderTargetBytes !== 32 * 32 * 4) {
+  throw new Error('ordinary startup should allocate only the scene target: ' +
+    JSON.stringify(startupStats));
+}
+
 native.beginFrame();
 native.render.quad(0, 0, 32, 32, 0.2, 0.3, 0.4, 1);
 native.renderFrame();
@@ -66,8 +73,9 @@ if (stats.toneAdjustDrawCalls !== 0 ||
     JSON.stringify(stats));
 }
 if (stats.filterTargetAcquires !== 1 || stats.filterTargetReuses !== 1 ||
-    stats.filterTargetClears !== 1 || stats.rendererTargetCreates < 9 ||
-    stats.rendererTargetDestroys !== 0 || stats.framebufferChecks < 9) {
+    stats.filterTargetClears !== 1 || stats.rendererTargetCreates !== 4 ||
+    stats.rendererTargetDestroys !== 0 || stats.framebufferChecks !== 4 ||
+    stats.renderTargetBytes !== 32 * 32 * 4 * 4) {
   throw new Error('filter target lifecycle counters are inconsistent: ' +
     JSON.stringify(stats));
 }
