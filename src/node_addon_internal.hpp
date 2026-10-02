@@ -210,8 +210,21 @@ napi_value boolean(napi_env env, bool input);
 napi_value number(napi_env env, double input);
 napi_value uint32(napi_env env, std::uint32_t input);
 napi_value string(napi_env env, const std::string& input);
-std::vector<napi_value> arguments(napi_env env, napi_callback_info info,
-                                  std::size_t limit = 20);
+struct Arguments {
+  std::array<napi_value, 20> values{};
+  std::size_t count = 0;
+
+  std::size_t size() const noexcept { return count; }
+  bool empty() const noexcept { return count == 0; }
+  napi_value at(std::size_t index) const {
+    if (index >= count) throw std::out_of_range("missing argument");
+    return values[index];
+  }
+  napi_value operator[](std::size_t index) const noexcept { return values[index]; }
+};
+
+Arguments arguments(napi_env env, napi_callback_info info,
+                    std::size_t limit = 20);
 double asNumber(napi_env env, napi_value value);
 std::int32_t asInt32(napi_env env, napi_value value);
 std::uint32_t asUint32(napi_env env, napi_value value);
@@ -228,7 +241,7 @@ napi_value rendererStats(napi_env env, napi_callback_info info);
 
 template <std::size_t Size>
 std::array<float, Size> floatArray(napi_env env,
-                                   const std::vector<napi_value>& args,
+                                   const Arguments& args,
                                    std::size_t offset) {
   if (args.size() < offset + Size) throw std::runtime_error("missing arguments");
   std::array<float, Size> result{};
