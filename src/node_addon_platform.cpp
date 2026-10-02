@@ -1,5 +1,7 @@
 #include "node_addon_internal.hpp"
 
+#include <limits>
+
 namespace pmjs::addon {
 napi_value readText(napi_env env, napi_callback_info info) try {
   auto args = arguments(env, info, 1);
