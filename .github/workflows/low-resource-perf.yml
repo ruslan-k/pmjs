@@ -151,6 +151,10 @@ jobs:
           print('=== native hot paths ===')
           for name in bm:
               print(f"{name}: before={bm[name]:.3f} us after={am[name]:.3f} us delta={pct(bm[name],am[name]):+.1f}%")
+          if 'startup_render_target_bytes' in b and 'startup_render_target_bytes' in a:
+              before_mb = b['startup_render_target_bytes'] / (1024 * 1024)
+              after_mb = a['startup_render_target_bytes'] / (1024 * 1024)
+              print(f"render_targets_startup_mb: before={before_mb:.3f} after={after_mb:.3f} delta={pct(before_mb,after_mb):+.1f}%")
           print(f"rss_mb: before={b['rss_mb']:.1f} after={a['rss_mb']:.1f} delta={pct(b['rss_mb'],a['rss_mb']):+.1f}%")
           PY
 
