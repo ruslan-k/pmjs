@@ -259,7 +259,10 @@ async function run(input, hooks = {}) {
     function tick() {
       try {
         if (!native.pollEvents()) { resolve(); return; }
-        if (typeof globalThis.__pmjsUpdateWindowState === 'function') {
+        if (typeof globalThis.__pmjsUpdateWindowStateBits === 'function' &&
+            typeof native.runtime.windowStateBits === 'function') {
+          globalThis.__pmjsUpdateWindowStateBits(native.runtime.windowStateBits());
+        } else if (typeof globalThis.__pmjsUpdateWindowState === 'function') {
           globalThis.__pmjsUpdateWindowState(native.runtime.windowState());
         }
         if (typeof globalThis.__pmjsReceiveInput === 'function' &&
