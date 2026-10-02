@@ -141,6 +141,8 @@ if(BUILD_TESTING)
   pmjs_add_cpp_test(pmjs-vfs-test native-vfs test/vfs.cpp src/vfs.cpp)
   pmjs_add_cpp_test(pmjs-checked-bounds-test native-checked-bounds test/checked-bounds.cpp)
   pmjs_add_cpp_test(pmjs-filter-precision-test native-filter-precision test/filter-precision.cpp)
+  pmjs_add_cpp_test(pmjs-renderer-shader-source-test
+    native-renderer-shader-source test/renderer-shader-source.cpp)
   pmjs_add_cpp_test(pmjs-media-mix-test native-audio-mix-unit test/media-mix.cpp)
   add_executable(pmjs-audio-assets-test test/audio-assets.cpp)
   target_include_directories(pmjs-audio-assets-test PRIVATE src)

@@ -1,4 +1,5 @@
 #include "renderer.hpp"
+#include "renderer_shader_source.hpp"
 #include "renderer_shaders.hpp"
 #include "scene_packet.hpp"
 
@@ -18,7 +19,13 @@ namespace {
 
 GLuint compileShader(GLenum type, const char* source) {
   const GLuint shader = glCreateShader(type);
-  glShaderSource(shader, 1, &source, nullptr);
+  std::string normalizedSource;
+  const char* shaderSource = source;
+  if (source) {
+    normalizedSource = renderer_shader_source::normalizeForGles3(source);
+    if (normalizedSource != source) shaderSource = normalizedSource.c_str();
+  }
+  glShaderSource(shader, 1, &shaderSource, nullptr);
   glCompileShader(shader);
   GLint compiled = GL_FALSE;
   glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
@@ -105,7 +112,7 @@ Renderer::Renderer(int width, int height, ImageStore& images)
     glGetUniformLocation(presentationProgram_, "upperCanvasOpacity");
   spriteEffectProgram_ = linkProgram(vertexSource, spriteEffectFragmentSource);
   spriteEffectTextureSizeUniform_ =
-    glGetUniformLocation(spriteEffectProgram_, "textureSize");
+    glGetUniformLocation(spriteEffectProgram_, "pmjsTextureSize");
   spriteEffectBlurUniform_ =
     glGetUniformLocation(spriteEffectProgram_, "blurRadius");
   spriteEffectMaskEnabledUniform_ =
@@ -193,7 +200,7 @@ Renderer::Renderer(int width, int height, ImageStore& images)
 }
 
 void Renderer::queryFilterProgramUniforms() {
-  textureSizeUniform_ = glGetUniformLocation(program_, "textureSize");
+  textureSizeUniform_ = glGetUniformLocation(program_, "pmjsTextureSize");
   blurUniform_ = glGetUniformLocation(program_, "blurRadius");
   blurDirectionUniform_ = glGetUniformLocation(program_, "blurDirection");
   displacementEnabledUniform_ =
@@ -236,7 +243,7 @@ Renderer::TileProgramUniforms Renderer::queryTileProgramUniforms(std::uint32_t p
   uniforms.world = glGetUniformLocation(program, "world");
   uniforms.screen = glGetUniformLocation(program, "screenSize");
   uniforms.animation = glGetUniformLocation(program, "animationOffset");
-  uniforms.textureSize = glGetUniformLocation(program, "textureSize");
+  uniforms.textureSize = glGetUniformLocation(program, "pmjsTextureSize");
   uniforms.color = glGetUniformLocation(program, "color");
   uniforms.overlayColor = glGetUniformLocation(program, "meshPostTintOverlayColor");
   uniforms.maskEnabled = glGetUniformLocation(program, "maskEnabled");
