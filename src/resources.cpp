@@ -220,6 +220,7 @@ std::optional<ImageInfo> ImageStore::installDecoded(
   if (retainCpuPixels) {
     slots_[index].cachedPixels = std::move(pixels);
     slots_[index].cpuPixelFrames = 0;
+    cpuBytes_ += slots_[index].cachedPixels->rgba.capacity();
   }
   pathCache_.emplace(cacheKey, created->handle);
   return created;
@@ -234,6 +235,7 @@ std::optional<ImageInfo> ImageStore::installDecodedMemory(
   slots_[index].retainCpuPixels = true;
   slots_[index].cachedPixels = std::move(pixels);
   slots_[index].cpuPixelFrames = 0;
+  cpuBytes_ += slots_[index].cachedPixels->rgba.capacity();
   return created;
 }
 
@@ -248,7 +250,10 @@ bool ImageStore::retainCpuPixels(ImageHandle handle) {
     return true;
   }
   if (slot.cacheKey.empty()) return false;
-  if (!slot.cachedPixels) slot.cachedPixels = decodeImage(slot.cacheKey);
+  if (!slot.cachedPixels) {
+    slot.cachedPixels = decodeImage(slot.cacheKey);
+    if (slot.cachedPixels) cpuBytes_ += slot.cachedPixels->rgba.capacity();
+  }
   if (!slot.cachedPixels) return false;
   slot.retainCpuPixels = true;
   slot.cpuPixelFrames = 0;
@@ -283,16 +288,26 @@ const ImagePixels* ImageStore::readPixels(ImageHandle handle) const {
   if (!info || encodedIndex == 0) return nullptr;
   const auto& slot = slots_[encodedIndex - 1U];
   if (slot.cachedPixels) {
-    if (!slot.retainCpuPixels && !slot.cacheKey.empty()) slot.cpuPixelFrames = 60;
+    if (!slot.retainCpuPixels && !slot.cacheKey.empty()) {
+      slot.cpuPixelFrames = 60;
+      transientCpuPixelsActive_ = true;
+    }
     return &*slot.cachedPixels;
   }
   if (slot.cacheKey.empty()) return nullptr;
   if (slot.retainCpuPixels) {
-    if (!slot.cachedPixels) slot.cachedPixels = decodeImage(slot.cacheKey);
+    if (!slot.cachedPixels) {
+      slot.cachedPixels = decodeImage(slot.cacheKey);
+      if (slot.cachedPixels) cpuBytes_ += slot.cachedPixels->rgba.capacity();
+    }
     return slot.cachedPixels ? &*slot.cachedPixels : nullptr;
   }
-  if (!slot.cachedPixels) slot.cachedPixels = decodeImage(slot.cacheKey);
+  if (!slot.cachedPixels) {
+    slot.cachedPixels = decodeImage(slot.cacheKey);
+    if (slot.cachedPixels) cpuBytes_ += slot.cachedPixels->rgba.capacity();
+  }
   slot.cpuPixelFrames = 60;
+  transientCpuPixelsActive_ = slot.cachedPixels.has_value();
   return slot.cachedPixels ? &*slot.cachedPixels : nullptr;
 }
 
@@ -354,14 +369,6 @@ std::optional<ImageInfo> ImageStore::createRgba(int width, int height,
 
 std::optional<ImageInfo> ImageStore::createRenderTarget(int width, int height) {
   return createRgba(width, height, nullptr);
-}
-
-std::size_t ImageStore::cpuBytes() const {
-  std::size_t result = 0;
-  for (const auto& slot : slots_) {
-    if (slot.live && slot.cachedPixels) result += slot.cachedPixels->rgba.capacity();
-  }
-  return result;
 }
 
 std::size_t ImageStore::residentBytes(const Slot& slot) {
@@ -516,8 +523,11 @@ bool ImageStore::unpin(ImageHandle handle) {
   auto& slot = slots_[index];
   if (slot.pins == 0) return false;
   --slot.pins;
-  if (slot.pins == 0 && slot.references == 0 && slot.cacheKey.empty() &&
-      slot.inFlight.load(std::memory_order_acquire) == 0) destroySlot(index);
+  if (slot.pins == 0 && slot.references == 0 &&
+      slot.inFlight.load(std::memory_order_acquire) == 0) {
+    if (slot.cacheKey.empty()) destroySlot(index);
+    else warmBudgetDirty_ = true;
+  }
   return true;
 }
 
@@ -543,6 +553,7 @@ void ImageStore::destroySlot(std::size_t index) {
   slot.cpuPixelFrames = 0;
   slot.retainCpuPixels = false;
   slot.cacheKey.clear();
+  if (slot.cachedPixels) cpuBytes_ -= slot.cachedPixels->rgba.capacity();
   slot.cachedPixels.reset();
   slot.live = false;
   slot.generation = static_cast<std::uint16_t>((slot.generation + 1U) & generationMask);
@@ -562,8 +573,11 @@ bool ImageStore::release(ImageHandle handle) {
   markUsed(slot);
   // Anonymous RGBA surfaces cannot be reacquired by path, but explicit pins
   // may still extend their lifetime.
-  if (slot.cacheKey.empty() && slot.pins == 0 &&
-      slot.inFlight.load(std::memory_order_acquire) == 0) destroySlot(index);
+  if (slot.pins == 0 &&
+      slot.inFlight.load(std::memory_order_acquire) == 0) {
+    if (slot.cacheKey.empty()) destroySlot(index);
+    else warmBudgetDirty_ = true;
+  }
   return true;
 }
 
@@ -583,15 +597,20 @@ bool ImageStore::endUse(ImageHandle handle) {
     slot.inFlight.store(0, std::memory_order_release);
     return false;
   }
-  if (previous == 1 && slot.references == 0 && slot.pins == 0 &&
-      slot.cacheKey.empty()) {
-    destroySlot(index);
+  if (previous == 1 && slot.references == 0 && slot.pins == 0) {
+    if (slot.cacheKey.empty()) destroySlot(index);
+    else warmBudgetDirty_ = true;
   }
   return true;
 }
 
 void ImageStore::update() {
+  // beginFrame() calls this every frame. Most frames have no transient CPU
+  // pixels to age and no newly-warm image that can exceed the cache budget.
+  if (!transientCpuPixelsActive_ && !warmBudgetDirty_) return;
+
   std::size_t currentWarmBytes = 0;
+  bool transientStillActive = false;
   for (std::size_t index = 0; index < slots_.size(); ++index) {
     auto& slot = slots_[index];
     if (!slot.live) continue;
@@ -600,7 +619,9 @@ void ImageStore::update() {
     if (slot.cachedPixels && !slot.retainCpuPixels) {
       if (slot.cpuPixelFrames > 0) {
         --slot.cpuPixelFrames;
+        transientStillActive = true;
       } else {
+        cpuBytes_ -= slot.cachedPixels->rgba.capacity();
         slot.cachedPixels.reset();
       }
     }
@@ -609,8 +630,12 @@ void ImageStore::update() {
       currentWarmBytes += residentBytes(slot);
     }
   }
+  transientCpuPixelsActive_ = transientStillActive;
+  warmBudgetDirty_ = false;
   if (currentWarmBytes <= warmBudgetBytes_) return;
+
   std::vector<std::pair<std::uint64_t, std::size_t>> warmEntries;
+  warmEntries.reserve(liveCount_);
   for (std::size_t index = 0; index < slots_.size(); ++index) {
     const auto& slot = slots_[index];
     if (slot.live && slot.references == 0 && slot.pins == 0 &&
