@@ -421,6 +421,48 @@ async function run(input, hooks = {}) {
     sceneManager.__pmjsTimingWrapped = true;
     return true;
   }
+  if (hostProcess.env.PMJS_PROFILE_ON_SIGNAL === '1' &&
+      typeof hostProcess.on === 'function') {
+    const profileSeconds = Number(hostProcess.env.PMJS_PROFILE_SECONDS || 20);
+    const profileDir = hostProcess.env.PMJS_PROFILE_DIR || '/tmp';
+    let profiling = false;
+    hostProcess.on('SIGUSR2', () => {
+      if (profiling) return;
+      let inspector;
+      try { inspector = require('inspector'); } catch (_) { return; }
+      let session;
+      try {
+        session = new inspector.Session();
+        session.connect();
+        session.post('Profiler.enable');
+        session.post('Profiler.start');
+      } catch (error) {
+        console.warn('[pmjs-profile] start failed: ' + error);
+        try { if (session) session.disconnect(); } catch (_) {}
+        return;
+      }
+      profiling = true;
+      console.log('[pmjs-profile] capture started (' + profileSeconds + 's)');
+      setTimeout(() => {
+        session.post('Profiler.stop', (error, result) => {
+          try {
+            if (error || !result || !result.profile) {
+              console.warn('[pmjs-profile] stop failed: ' + error);
+            } else {
+              const target = profileDir + '/pmjs-' + Date.now() + '.cpuprofile';
+              require('fs').writeFileSync(target, JSON.stringify(result.profile));
+              console.log('[pmjs-profile] wrote ' + target);
+            }
+          } catch (writeError) {
+            console.warn('[pmjs-profile] write failed: ' + writeError);
+          } finally {
+            try { session.disconnect(); } catch (_) {}
+            profiling = false;
+          }
+        });
+      }, profileSeconds * 1000);
+    });
+  }
   function reportMemoryTelemetry(now) {
     if (!memoryTelemetryEnabled || now < nextMemoryTelemetry) return;
     nextMemoryTelemetry = now + memoryTelemetryMs;
