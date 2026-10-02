@@ -281,6 +281,42 @@ async function run(input, hooks = {}) {
   let telemetryPhaseMaxNativeMs = 0;
   let telemetryPhaseMaxSwapMs = 0;
   let lastTelemetryRendererStats = null;
+  let sceneWrapsInstalled = false;
+  let sceneTimingSampleActive = false;
+  let sceneUpdateMs = 0;
+  let sceneUpdateCalls = 0;
+  let sceneRenderMs = 0;
+  let sceneRenderCalls = 0;
+  function installSceneTimingWraps() {
+    const sceneManager = globalThis.SceneManager;
+    if (!sceneManager || typeof sceneManager.updateScene !== 'function' ||
+        typeof sceneManager.renderScene !== 'function') return false;
+    if (sceneManager.__pmjsTimingWrapped === true) return true;
+    const originalUpdateScene = sceneManager.updateScene;
+    const originalRenderScene = sceneManager.renderScene;
+    sceneManager.updateScene = function () {
+      if (!sceneTimingSampleActive) {
+        return originalUpdateScene.apply(this, arguments);
+      }
+      const started = performance.now();
+      const result = originalUpdateScene.apply(this, arguments);
+      sceneUpdateMs += performance.now() - started;
+      sceneUpdateCalls++;
+      return result;
+    };
+    sceneManager.renderScene = function () {
+      if (!sceneTimingSampleActive) {
+        return originalRenderScene.apply(this, arguments);
+      }
+      const started = performance.now();
+      const result = originalRenderScene.apply(this, arguments);
+      sceneRenderMs += performance.now() - started;
+      sceneRenderCalls++;
+      return result;
+    };
+    sceneManager.__pmjsTimingWrapped = true;
+    return true;
+  }
   function reportMemoryTelemetry(now) {
     if (!memoryTelemetryEnabled || now < nextMemoryTelemetry) return;
     nextMemoryTelemetry = now + memoryTelemetryMs;
@@ -395,6 +431,27 @@ async function run(input, hooks = {}) {
         };
       }
       if (stats) lastTelemetryRendererStats = stats;
+      if (sceneWrapsInstalled && telemetryPhaseSamples > 0) {
+        snapshot.sceneTimingMs = {
+          frames: telemetryPhaseSamples,
+          updateSceneCalls: sceneUpdateCalls,
+          updateSceneCallsPerFrame:
+            Math.round(sceneUpdateCalls / telemetryPhaseSamples * 100) / 100,
+          updateSceneMsPerFrame:
+            Math.round(sceneUpdateMs / telemetryPhaseSamples * 100) / 100,
+          updateSceneMsPerCall: sceneUpdateCalls > 0
+            ? Math.round(sceneUpdateMs / sceneUpdateCalls * 100) / 100 : null,
+          renderSceneCalls: sceneRenderCalls,
+          renderSceneMsPerFrame:
+            Math.round(sceneRenderMs / telemetryPhaseSamples * 100) / 100,
+          renderSceneMsPerCall: sceneRenderCalls > 0
+            ? Math.round(sceneRenderMs / sceneRenderCalls * 100) / 100 : null
+        };
+      }
+      sceneUpdateMs = 0;
+      sceneUpdateCalls = 0;
+      sceneRenderMs = 0;
+      sceneRenderCalls = 0;
       telemetryPhaseSamples = 0;
       telemetryPhaseBeginMs = 0;
       telemetryPhaseTickMs = 0;
@@ -435,6 +492,9 @@ async function run(input, hooks = {}) {
     function tick() {
       try {
         if (!native.pollEvents()) { resolve(); return; }
+        if (memoryTelemetryEnabled && !sceneWrapsInstalled) {
+          sceneWrapsInstalled = installSceneTimingWraps();
+        }
         if (typeof globalThis.__pmjsUpdateWindowStateBits === 'function' &&
             typeof native.runtime.windowStateBits === 'function') {
           globalThis.__pmjsUpdateWindowStateBits(native.runtime.windowStateBits());
@@ -448,6 +508,7 @@ async function run(input, hooks = {}) {
         const now = performance.now();
         const sampleFrameTiming = memoryTelemetryEnabled &&
           (++telemetryTimingFrame % telemetryTimingSampleEvery === 0);
+        sceneTimingSampleActive = sampleFrameTiming;
         let phaseStart = sampleFrameTiming ? performance.now() : 0;
         native.beginFrame();
         let phaseBeginEnd = sampleFrameTiming ? performance.now() : 0;
