@@ -218,17 +218,20 @@ void Renderer::beginFrame() {
 
 std::size_t Renderer::commandCount() const { return frame_.commands.size(); }
 
-void Renderer::discardCommandsFrom(std::size_t first) {  while (frame_.commands.size() > first) {
-    const RenderCommand command = frame_.commands.back();
+void Renderer::discardCommandsFrom(std::size_t first) {
+  while (frame_.commands.size() > first) {
+    const auto image = frame_.commands.back().image;
+    const auto maskImage = frame_.commands.back().maskImage;
+    const auto tileLayer = frame_.commands.back().tileLayer;
     frame_.commands.pop_back();
-    if (command.image) images_.endUse(command.image);
-    if (command.maskImage) images_.endUse(command.maskImage);
-    if (!command.tileLayer) continue;
-    const auto found = tileLayers_.find(command.tileLayer);
+    if (image) images_.endUse(image);
+    if (maskImage) images_.endUse(maskImage);
+    if (!tileLayer) continue;
+    const auto found = tileLayers_.find(tileLayer);
     if (found == tileLayers_.end() || found->second.queuedReferences == 0) continue;
     --found->second.queuedReferences;
     if (found->second.owners == 0 && found->second.queuedReferences == 0) {
-      destroyTileLayer(command.tileLayer);
+      destroyTileLayer(tileLayer);
     }
   }
 }
