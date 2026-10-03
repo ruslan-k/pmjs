@@ -104,6 +104,29 @@ test('bounded policy caps direct-step drain and retains fractional remainder', (
   assert.equal(ctx.__pmjsOverloadDiscontinuities, 1);
 });
 
+
+
+test('bounded retain mode caps the frame but preserves whole-step backlog', () => {
+  const ctx = load(context => {
+    context.SceneManager = tddpScene();
+  });
+  assert.equal(ctx.pmjsInstallTddpFluidTimestepAdapter(), true);
+  ctx.PMJS.plugins.tddpFluidTimestep.configure({
+    maxCatchup: 3,
+    dropExcess: false
+  });
+
+  ctx.SceneManager._now = 100;
+  ctx.SceneManager.updateMain();
+
+  assert.equal(ctx.SceneManager.steps, 3);
+  assert.equal(ctx.SceneManager.renders, 1);
+  assert.ok(ctx.SceneManager._accumulator > 0.04,
+    `expected deferred backlog, got ${ctx.SceneManager._accumulator}`);
+  assert.ok(ctx.__pmjsTddpDeferredMs > 40);
+  assert.equal(ctx.__pmjsTddpDroppedMs, undefined);
+});
+
 test('disabled bounded policy delegates to original TDDP behavior', () => {
   const ctx = load(context => {
     context.SceneManager = tddpScene();
