@@ -118,7 +118,11 @@
     registerOptimization: function(name, definition) {
       if (finished) throw new Error('PMJS plugins: optimization registration after resolution');
       PMJS.optimizations.register(definition);
-      optimizationRequirements.push({ plugin: key(name), id: definition.id });
+      var names = Array.isArray(name) ? name : [name];
+      optimizationRequirements.push({
+        plugins: names.map(function(plugin) { return key(plugin); }),
+        id: definition.id
+      });
     },
 
     snapshotOriginalManifest: function(records) {
@@ -186,12 +190,15 @@
         }
       });
       optimizationRequirements.forEach(function(requirement) {
-        var entry = guests[requirement.plugin];
-        if (!entry || entry.state !== 'loaded') {
-          PMJS.optimizations.refuse(requirement.id,
-            'required guest plugin ' + requirement.plugin + ' unavailable: ' +
-            (entry ? entry.state : 'not discovered'));
-        }
+        var satisfied = requirement.plugins.some(function(plugin) {
+          var entry = guests[plugin];
+          return !!entry && entry.state === 'loaded';
+        });
+        if (satisfied) return;
+        var first = guests[requirement.plugins[0]];
+        PMJS.optimizations.refuse(requirement.id,
+          'required guest plugin ' + requirement.plugins.join('|') +
+          ' unavailable: ' + (first ? first.state : 'not discovered'));
       });
       return true;
     },

@@ -8,15 +8,16 @@ const vm = require('node:vm');
 const { loadPmjsRuntime } = require('./helpers/runtime-context.cjs');
 
 const adapters = [
-  ['yanfly/message-core', 'YEP_MessageCore', ['plugins.yanfly.message-word-wrap-measure']],
-  ['yanfly/event-mini-label', 'YEP_EventMiniLabel', ['plugins.yanfly.event-mini-label']],
-  ['yanfly/slippery-tiles', 'YEP_SlipperyTiles', ['plugins.yanfly.slippery-tiles']],
-  ['yed/tiled', 'YED_Tiled', ['tilemap.yed-indexed-paint-loops', 'tilemap.yed-indexed-animation']],
-  ['olivia/horror-effects', 'Olivia_HorrorEffects', ['plugins.olivia.horror-effects']],
-  ['terrax/lighting', 'Terrax_Lighting', ['terrax.native-lighting']],
+  ['yanfly/message-core', ['YEP_MessageCore'], ['plugins.yanfly.message-word-wrap-measure']],
+  ['yanfly/event-mini-label', ['YEP_EventMiniLabel'], ['plugins.yanfly.event-mini-label']],
+  ['yanfly/slippery-tiles', ['YEP_SlipperyTiles'], ['plugins.yanfly.slippery-tiles']],
+  ['yed/tiled', ['YED_Tiled'], ['tilemap.yed-indexed-paint-loops', 'tilemap.yed-indexed-animation']],
+  ['olivia/horror-effects', ['Olivia_HorrorEffects'], ['plugins.olivia.horror-effects']],
+  ['terrax/lighting', ['Terrax_Lighting', 'TerraxLighting'], ['terrax.native-lighting']],
 ];
 
-for (const [adapter, plugin, ids] of adapters) {
+for (const [adapter, plugins, ids] of adapters) {
+  const plugin = plugins[0];
   for (const state of ['unloaded', 'failed', 'disabled', 'not discovered']) {
     test(adapter + ' refuses an unavailable guest: ' + state, () => {
       const ctx = loadPmjsRuntime({ console: { log() {}, error() {} } });
@@ -57,6 +58,21 @@ for (const [adapter, plugin, ids] of adapters) {
       ctx.PMJS.optimizations.finalize();
       for (const id of ids) {
         assert.equal(ctx.PMJS.optimizations.reason(id), 'disabled by ' + policy);
+      }
+    });
+  }
+
+  for (const alias of plugins) {
+    test(adapter + ' accepts the ' + alias + ' guest name', () => {
+      const ctx = loadPmjsRuntime({ console: { log() {}, error() {} } });
+      vm.runInContext(fs.readFileSync(path.join(__dirname,
+        '../js/pmjs-plugins/' + adapter + '.js'), 'utf8'), ctx);
+      ctx.PMJS.plugins.snapshotEffectiveManifest([{ name: alias, status: true }]);
+      ctx.PMJS.plugins.execute(alias, () => {});
+      assert.equal(ctx.PMJS.plugins.finish(), true);
+      ctx.PMJS.optimizations.finalize();
+      for (const id of ids) {
+        assert.equal(ctx.PMJS.optimizations.reason(id), 'enabled');
       }
     });
   }

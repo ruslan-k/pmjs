@@ -38,7 +38,7 @@
 
   if (typeof PMJS !== 'undefined' && PMJS.plugins &&
       typeof PMJS.plugins.registerOptimization === 'function') {
-    PMJS.plugins.registerOptimization('Terrax_Lighting', {
+    PMJS.plugins.registerOptimization(['Terrax_Lighting', 'TerraxLighting'], {
       id: 'terrax.native-lighting',
       owner: 'plugins/terrax/lighting',
       fallback: 'ordinary Terrax Canvas _updateMask and stock light-sprite handling'
