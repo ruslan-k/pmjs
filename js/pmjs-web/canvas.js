@@ -73,52 +73,86 @@ function canvasSourcePixels(source, nativeSource, operationId) {
   }
 }
 
-function compositeCanvasPixel(pixels, offset, sourceColors, sourceAlpha, operation) {
+function compositeCanvasPixel(pixels, offset, red, green, blue, sourceAlpha,
+    operation) {
   var destinationAlpha = pixels[offset + 3] / 255;
-  var outputAlpha;
-  var output = [0, 0, 0];
+  var outputAlpha, outputRed, outputGreen, outputBlue;
   operation = operation || 'source-over';
   if (operation === 'copy') {
     outputAlpha = sourceAlpha;
-    output = sourceColors;
+    outputRed = red;
+    outputGreen = green;
+    outputBlue = blue;
   } else if (operation === 'destination-in') {
     outputAlpha = destinationAlpha * sourceAlpha;
-    output = [pixels[offset], pixels[offset + 1], pixels[offset + 2]];
+    outputRed = pixels[offset];
+    outputGreen = pixels[offset + 1];
+    outputBlue = pixels[offset + 2];
   } else if (operation === 'source-atop') {
     outputAlpha = destinationAlpha;
-    for (var atopChannel = 0; atopChannel < 3; atopChannel++) {
-      output[atopChannel] = destinationAlpha <= 0 ? 0 :
-        sourceColors[atopChannel] * sourceAlpha +
-        pixels[offset + atopChannel] * (1 - sourceAlpha);
+    if (destinationAlpha <= 0) {
+      outputRed = 0;
+      outputGreen = 0;
+      outputBlue = 0;
+    } else {
+      var atopInverse = 1 - sourceAlpha;
+      outputRed = red * sourceAlpha + pixels[offset] * atopInverse;
+      outputGreen = green * sourceAlpha + pixels[offset + 1] * atopInverse;
+      outputBlue = blue * sourceAlpha + pixels[offset + 2] * atopInverse;
     }
   } else {
-    outputAlpha = operation === 'lighter'
+    var lighter = operation === 'lighter';
+    var difference = operation === 'difference';
+    var saturation = operation === 'saturation';
+    outputAlpha = lighter
       ? Math.min(1, sourceAlpha + destinationAlpha)
       : sourceAlpha + destinationAlpha * (1 - sourceAlpha);
-    for (var channel = 0; channel < 3; channel++) {
-      var source = sourceColors[channel];
-      var destination = pixels[offset + channel];
-      var blended = source;
-      if (operation === 'difference') blended = Math.abs(destination - source);
-      else if (operation === 'saturation') {
-
-        var gray = pixels[offset] * 0.299 + pixels[offset + 1] * 0.587 +
-          pixels[offset + 2] * 0.114;
-        blended = gray;
-      }
-      var premultiplied = operation === 'lighter'
-        ? source * sourceAlpha + destination * destinationAlpha
-        : blended * sourceAlpha * destinationAlpha +
-          source * sourceAlpha * (1 - destinationAlpha) +
-          destination * destinationAlpha * (1 - sourceAlpha);
-      output[channel] = outputAlpha <= 0 ? 0 : premultiplied / outputAlpha;
+    var destinationRed = pixels[offset];
+    var destinationGreen = pixels[offset + 1];
+    var destinationBlue = pixels[offset + 2];
+    var gray = saturation
+      ? destinationRed * 0.299 + destinationGreen * 0.587 +
+        destinationBlue * 0.114
+      : 0;
+    var blendedRed = difference ? Math.abs(destinationRed - red)
+      : (saturation ? gray : red);
+    var blendedGreen = difference ? Math.abs(destinationGreen - green)
+      : (saturation ? gray : green);
+    var blendedBlue = difference ? Math.abs(destinationBlue - blue)
+      : (saturation ? gray : blue);
+    if (lighter) {
+      outputRed = red * sourceAlpha + destinationRed * destinationAlpha;
+      outputGreen = green * sourceAlpha + destinationGreen * destinationAlpha;
+      outputBlue = blue * sourceAlpha + destinationBlue * destinationAlpha;
+    } else {
+      var bothWeight = sourceAlpha * destinationAlpha;
+      var sourceWeight = sourceAlpha * (1 - destinationAlpha);
+      var destinationWeight = destinationAlpha * (1 - sourceAlpha);
+      outputRed = blendedRed * bothWeight + red * sourceWeight +
+        destinationRed * destinationWeight;
+      outputGreen = blendedGreen * bothWeight + green * sourceWeight +
+        destinationGreen * destinationWeight;
+      outputBlue = blendedBlue * bothWeight + blue * sourceWeight +
+        destinationBlue * destinationWeight;
+    }
+    if (outputAlpha <= 0) {
+      outputRed = 0;
+      outputGreen = 0;
+      outputBlue = 0;
+    } else {
+      outputRed = outputRed / outputAlpha;
+      outputGreen = outputGreen / outputAlpha;
+      outputBlue = outputBlue / outputAlpha;
     }
   }
-  for (var outputChannel = 0; outputChannel < 3; outputChannel++) {
-    pixels[offset + outputChannel] = Math.max(0, Math.min(255,
-      Math.round(output[outputChannel])));
-  }
-  pixels[offset + 3] = Math.max(0, Math.min(255, Math.round(outputAlpha * 255)));
+  pixels[offset] = clampCanvasChannel(outputRed);
+  pixels[offset + 1] = clampCanvasChannel(outputGreen);
+  pixels[offset + 2] = clampCanvasChannel(outputBlue);
+  pixels[offset + 3] = clampCanvasChannel(outputAlpha * 255);
+}
+
+function clampCanvasChannel(value) {
+  return Math.max(0, Math.min(255, Math.round(value)));
 }
 
 function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
@@ -146,22 +180,34 @@ function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
   var inverseA = t[3] / determinant, inverseB = -t[1] / determinant;
   var inverseC = -t[2] / determinant, inverseD = t[0] / determinant;
   var alpha = Math.max(0, Math.min(1, Number(context.globalAlpha)));
-  for (var y = top; y < bottom; y++) for (var x = left; x < right; x++) {
-    var shiftedX = x + 0.5 - t[4], shiftedY = y + 0.5 - t[5];
-    var localX = inverseA * shiftedX + inverseC * shiftedY;
-    var localY = inverseB * shiftedX + inverseD * shiftedY;
-    var u = (localX - dx) / dw, v = (localY - dy) / dh;
-    if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
-    var sampleX = Math.max(0, Math.min(source.width - 1, Math.floor(sx + u * sw)));
-    var sampleY = Math.max(0, Math.min(source.height - 1, Math.floor(sy + v * sh)));
-    var sourceOffset = (sampleY * source.width + sampleX) * 4;
-    var destinationOffset = ((y - top) * (right - left) + x - left) * 4;
-    if (!passesCanvasClip(context, x + 0.5, y + 0.5)) continue;
-    var sourceAlpha = sourcePixels[sourceOffset + 3] / 255 * alpha;
-    compositeCanvasPixel(destinationPixels, destinationOffset,
-      [sourcePixels[sourceOffset], sourcePixels[sourceOffset + 1],
-       sourcePixels[sourceOffset + 2]], sourceAlpha,
-      context.globalCompositeOperation);
+  var operation = context.globalCompositeOperation;
+  var clipped = context._clipPaths.length > 0;
+  var sourceWidth = source.width, sourceHeight = source.height;
+  var inverseDw = 1 / dw, inverseDh = 1 / dh;
+  var originX = 0.5 - t[4], originY = 0.5 - t[5];
+  var span = right - left;
+  for (var y = top; y < bottom; y++) {
+    var shiftedY = y + originY;
+    var localX = inverseA * (left + originX) + inverseC * shiftedY;
+    var localY = inverseB * (left + originX) + inverseD * shiftedY;
+    var destinationOffset = (y - top) * span * 4;
+    for (var x = left; x < right;
+        x++, destinationOffset += 4, localX += inverseA, localY += inverseB) {
+      var u = (localX - dx) * inverseDw, v = (localY - dy) * inverseDh;
+      if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
+      var sampleX = Math.floor(sx + u * sw);
+      if (sampleX < 0) sampleX = 0;
+      else if (sampleX > sourceWidth - 1) sampleX = sourceWidth - 1;
+      var sampleY = Math.floor(sy + v * sh);
+      if (sampleY < 0) sampleY = 0;
+      else if (sampleY > sourceHeight - 1) sampleY = sourceHeight - 1;
+      var sourceOffset = (sampleY * sourceWidth + sampleX) * 4;
+      if (clipped && !passesCanvasClip(context, x + 0.5, y + 0.5)) continue;
+      var sourceAlpha = sourcePixels[sourceOffset + 3] / 255 * alpha;
+      compositeCanvasPixel(destinationPixels, destinationOffset,
+        sourcePixels[sourceOffset], sourcePixels[sourceOffset + 1],
+        sourcePixels[sourceOffset + 2], sourceAlpha, operation);
+    }
   }
   NativeHost.canvas.writePixels(destination.handle, left, top,
     right - left, bottom - top, destinationPixels);
@@ -198,6 +244,8 @@ function paintAffineRectangle(context, x, y, width, height, rgba, clear) {
   var pixels = NativeHost.canvas.readPixels(canvas.handle, left, top,
     right - left, bottom - top);
   var dynamicStyle = rgba && typeof rgba === 'object';
+  var operation = context.globalCompositeOperation;
+  var clipped = context._clipPaths.length > 0;
   for (var targetY = top; targetY < bottom; targetY++) for (var targetX = left; targetX < right; targetX++) {
     var inside = true, sign = 0;
     for (var edge = 0; edge < 4; edge++) {
@@ -212,7 +260,8 @@ function paintAffineRectangle(context, x, y, width, height, rgba, clear) {
       if (sign && sign !== currentSign) { inside = false; break; }
       sign = currentSign;
     }
-    if (!inside || !passesCanvasClip(context, targetX + 0.5, targetY + 0.5)) continue;
+    if (!inside || (clipped &&
+        !passesCanvasClip(context, targetX + 0.5, targetY + 0.5))) continue;
     var offset = ((targetY - top) * (right - left) + targetX - left) * 4;
     if (clear) {
       pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = pixels[offset + 3] = 0;
@@ -221,10 +270,9 @@ function paintAffineRectangle(context, x, y, width, height, rgba, clear) {
     var pixelRgba = dynamicStyle ? canvasStyleRgba(rgba,
       targetX + 0.5, targetY + 0.5, context.globalAlpha) : rgba;
     var sourceAlpha = (pixelRgba & 255) / 255;
-    var sourceColors = [(pixelRgba >>> 24) & 255,
-      (pixelRgba >>> 16) & 255, (pixelRgba >>> 8) & 255];
-    compositeCanvasPixel(pixels, offset, sourceColors, sourceAlpha,
-      context.globalCompositeOperation);
+    compositeCanvasPixel(pixels, offset, (pixelRgba >>> 24) & 255,
+      (pixelRgba >>> 16) & 255, (pixelRgba >>> 8) & 255, sourceAlpha,
+      operation);
   }
   NativeHost.canvas.writePixels(canvas.handle, left, top,
     right - left, bottom - top, pixels);
