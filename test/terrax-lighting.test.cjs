@@ -522,6 +522,14 @@ test('Terrax mask scale is configured before recorder creation and scales retain
     this.height = height;
     this._context = {
       _transform: [1, 0, 0, 1, 0, 0],
+      fillStyle: '#000000',
+      globalAlpha: 1,
+      globalCompositeOperation: 'source-over',
+      _clipPaths: [],
+      save() {},
+      restore() {},
+      fillRect() {},
+      fill() {},
       scale(x, y) { this._transform[0] *= x; this._transform[3] *= y; }
     };
     this._canvas = {
