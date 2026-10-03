@@ -103,3 +103,17 @@ test('MV bootstrap executes plugins in order and logs a final summary', () => {
     .map(entry => entry.name), ['First', 'Last']);
   assert.ok(lines.some(line => /guest plugins: 3 manifest, 2 loaded/.test(line)));
 });
+
+
+test('optimization guest aliases reject empty and duplicate names', () => {
+  const ctx = loadPmjsRuntime();
+  assert.throws(() => ctx.PMJS.plugins.registerOptimization([], {
+    id: 'test.empty-alias', owner: 'test', fallback: 'none'
+  }), /guest names must be nonempty strings/);
+  assert.throws(() => ctx.PMJS.plugins.registerOptimization(['Guest', 'guest.js'], {
+    id: 'test.duplicate-alias', owner: 'test', fallback: 'none'
+  }), /guest names must be unique/);
+  assert.throws(() => ctx.PMJS.plugins.registerOptimization(['Guest', ''], {
+    id: 'test.invalid-alias', owner: 'test', fallback: 'none'
+  }), /guest names must be nonempty strings/);
+});
