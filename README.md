@@ -118,3 +118,7 @@ export PMJS_TRANSITION_PROFILE_MS=80
 ```
 
 All logic/cache fast paths above are opt-in. This makes it possible to A/B them independently on plugin-heavy games before promoting any of them into a port's normal launcher. The transition profiler records only frames above the configured threshold and is intended for map loads, scene changes, large tilemap rebuilds, and image-cache spikes.
+
+### Port scripts (runtime-side fixes without game file edits)
+
+`PMJS_PORT_SCRIPT` loads a port-owned script after guest plugins and before `js/main.js`, in the same context as the game, which makes it the right place for compatibility and performance patches that must not touch the game's own files. A worked example ships as `example/port-script-fnh.js` (Fear & Hunger): it sets the game plugin's own config channel and wraps TerraxLighting's `Lightmask` prototype at runtime so the stock mask drawing runs on a quarter-resolution bitmap via `ctx.scale(1/4)`, with the mask display sprites scaled 4x to stretch it back to full screen. Measured on a TrimUI Smart Pro with stock game files plus the port's install patches: the mask's per-update cost dropped from ~14.3 ms to ~6.7 ms (`Spriteset_Map.update` average), the mask texture upload from 2.18 MB to 137 KB, and the game-logic ratio (game time / wall time) returned to ~1.0 while walking.
