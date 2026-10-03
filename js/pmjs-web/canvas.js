@@ -1040,20 +1040,28 @@ CanvasContext2D.prototype.putImageData = function(imageData, x, y) {
         return originalFillRect.apply(this, arguments);
       }
       var transform = this._transform;
-      var identity = transform && transform[0] === 1 && transform[1] === 0 &&
-        transform[2] === 0 && transform[3] === 1;
+      var axisAligned = transform &&
+        Math.abs(transform[1]) < 0.000001 &&
+        Math.abs(transform[2]) < 0.000001 &&
+        Math.abs(transform[0]) > 0.000001 &&
+        Math.abs(transform[3]) > 0.000001;
       var blendMode = this.globalCompositeOperation === 'lighter' ? 1 :
         this.globalCompositeOperation === 'source-over' ? 0 : -1;
       var style = this.fillStyle;
       var supportedGradient = style && style._pmjsStyle === 'radial-gradient' &&
         style.nativeConcentric && style.stops.length > 0 && style.stops.length <= 3;
       var supportedSolid = typeof style === 'string' || typeof style === 'number';
-      if (!identity || this._clipPaths && this._clipPaths.length ||
+      if (!axisAligned || this._clipPaths && this._clipPaths.length ||
           blendMode < 0 || (!supportedGradient && !supportedSolid)) {
         replayRecordedCanvasOperations();
         return originalFillRect.apply(this, arguments);
       }
-      var bounds = [x + transform[4], y + transform[5], width, height];
+      var x0 = transform[0] * x + transform[4];
+      var y0 = transform[3] * y + transform[5];
+      var x1 = transform[0] * (x + width) + transform[4];
+      var y1 = transform[3] * (y + height) + transform[5];
+      var bounds = [Math.min(x0, x1), Math.min(y0, y1),
+        Math.abs(x1 - x0), Math.abs(y1 - y0)];
       replay.push({ style: style, alpha: this.globalAlpha,
         composite: this.globalCompositeOperation,
         transform: Array.prototype.slice.call(transform),
