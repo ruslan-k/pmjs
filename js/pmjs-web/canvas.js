@@ -1066,10 +1066,12 @@ CanvasContext2D.prototype.putImageData = function(imageData, x, y) {
         composite: this.globalCompositeOperation,
         transform: Array.prototype.slice.call(transform),
         arguments: Array.prototype.slice.call(arguments) });
+      var fullSurfaceTolerance = 1.0;
       if (supportedSolid && blendMode === 0 && records.length === 0 &&
-          bounds[0] <= 0 && bounds[1] <= 0 &&
-          bounds[0] + bounds[2] >= canvas.width &&
-          bounds[1] + bounds[3] >= canvas.height) {
+          bounds[0] <= fullSurfaceTolerance &&
+          bounds[1] <= fullSurfaceTolerance &&
+          bounds[0] + bounds[2] >= canvas.width - fullSurfaceTolerance &&
+          bounds[1] + bounds[3] >= canvas.height - fullSurfaceTolerance) {
         clearColor = lightColor(style, this.globalAlpha);
         return;
       }
