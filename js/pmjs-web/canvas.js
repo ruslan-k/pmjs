@@ -535,7 +535,17 @@ var textMetricsCache = new Map();
 var textMeasurementCacheLimit = 4096;
 
 function textMeasurementKey(font, text) {
-  return font.paths.join('\u0001') + '\u0002' + font.size + '\u0002' + text;
+  // JSON tuple encoding avoids collisions from font paths/text containing
+  // separator characters while preserving path order and font size.
+  return JSON.stringify([font.paths, font.size, text]);
+}
+
+function boundedTextCacheSet(cache, key, value) {
+  if (cache.size >= textMeasurementCacheLimit && !cache.has(key)) {
+    var oldest = cache.keys().next();
+    if (!oldest.done) cache.delete(oldest.value);
+  }
+  cache.set(key, value);
 }
 
 function measuredTextWidth(font, text) {
@@ -543,10 +553,7 @@ function measuredTextWidth(font, text) {
   var width = textMeasurementCache.get(key);
   if (width !== undefined) return width;
   width = NativeHost.canvas.measureText(font.paths, text, font.size);
-  if (textMeasurementCache.size >= textMeasurementCacheLimit) {
-    textMeasurementCache.clear();
-  }
-  textMeasurementCache.set(key, width);
+  boundedTextCacheSet(textMeasurementCache, key, width);
   return width;
 }
 
@@ -555,10 +562,11 @@ function measuredTextMetrics(font, text) {
   var metrics = textMetricsCache.get(key);
   if (metrics === undefined) {
     metrics = NativeHost.canvas.measureTextMetrics(font.paths, text, font.size);
-    if (textMetricsCache.size >= textMeasurementCacheLimit) {
-      textMetricsCache.clear();
+    boundedTextCacheSet(textMetricsCache, key, metrics);
+    if (metrics && Number.isFinite(metrics.width) &&
+        !textMeasurementCache.has(key)) {
+      boundedTextCacheSet(textMeasurementCache, key, metrics.width);
     }
-    textMetricsCache.set(key, metrics);
   }
   return Object.assign({}, metrics);
 }
