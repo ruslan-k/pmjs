@@ -128,8 +128,10 @@
           sprite.y = y;
           sprite.rotation = 0;
           var maskScale = bitmap && bitmap.__pmjsTerraxMaskScale || 1;
-          sprite.scale.x = 1 / maskScale;
-          sprite.scale.y = 1 / maskScale;
+          if (sprite.scale) {
+            sprite.scale.x = 1 / maskScale;
+            sprite.scale.y = 1 / maskScale;
+          }
           sprite.ax = 0;
           sprite.ay = 0;
           sprite.visible = true;
