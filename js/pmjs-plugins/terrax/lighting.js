@@ -4,6 +4,38 @@
 // Gates the GPU recorder plus mask-sprite pooling; disabled means stock
 // Terrax Canvas _updateMask and light-sprite handling.
 (function() {
+  var configuredMaskScale = 1;
+
+  function configureMaskScale(scale) {
+    scale = Number(scale);
+    if (!Number.isFinite(scale) || scale <= 0 || scale > 1) {
+      throw new RangeError('Terrax mask scale must be > 0 and <= 1');
+    }
+    configuredMaskScale = scale;
+    console.log('[pmjs] Terrax mask scale=' + scale);
+    return scale;
+  }
+
+  function applyMaskScale(lightmask) {
+    var scale = configuredMaskScale;
+    if (!(scale < 1) || !lightmask || !lightmask._maskBitmap ||
+        typeof Bitmap !== 'function') return;
+    var full = lightmask._maskBitmap;
+    if (full.__pmjsTerraxScaledMask) return;
+    var width = Math.max(1, Math.ceil(full.width * scale));
+    var height = Math.max(1, Math.ceil(full.height * scale));
+    var scaled = new Bitmap(width, height);
+    scaled.__pmjsTerraxScaledMask = true;
+    scaled.__pmjsTerraxMaskScale = scale;
+    if (scaled._context && typeof scaled._context.scale === 'function') {
+      scaled._context.scale(scale, scale);
+    }
+    lightmask._maskBitmap = scaled;
+    if (typeof full.destroy === 'function') {
+      try { full.destroy(); } catch (_) {}
+    }
+  }
+
   if (typeof PMJS !== 'undefined' && PMJS.plugins &&
       typeof PMJS.plugins.registerOptimization === 'function') {
     PMJS.plugins.registerOptimization('Terrax_Lighting', {
@@ -78,6 +110,7 @@
       var result = createLightmask.apply(this, arguments);
       var lightmask = this._lightmask;
       if (!lightmask || !lightmask._sprites) return result;
+      applyMaskScale(lightmask);
       installGpuLightRecorder(lightmask);
 
       if (looksLikeKnownAddSprite(lightmask._addSprite) &&
@@ -94,6 +127,9 @@
           sprite.x = x;
           sprite.y = y;
           sprite.rotation = 0;
+          var maskScale = bitmap && bitmap.__pmjsTerraxMaskScale || 1;
+          sprite.scale.x = 1 / maskScale;
+          sprite.scale.y = 1 / maskScale;
           sprite.ax = 0;
           sprite.ay = 0;
           sprite.visible = true;
@@ -114,4 +150,6 @@
     installTerraxLightingFastPaths);
 
   globalThis.pmjsInstallTerraxLightingFastPaths = installTerraxLightingFastPaths;
+  PMJS.plugins.terraxLighting = PMJS.plugins.terraxLighting || {};
+  PMJS.plugins.terraxLighting.configureMaskScale = configureMaskScale;
 })();
