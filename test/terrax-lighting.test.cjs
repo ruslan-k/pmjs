@@ -467,6 +467,22 @@ test('scaled recorder treats subpixel-rounded full mask fill as surface clear', 
   assert.equal(h.renders[0][2].length, 0);
 });
 
+
+
+test('scaled recorder does not treat a one-pixel inset as a full-surface clear', () => {
+  const h = recorderHarness();
+  h.drawing.scale(0.25, 0.25);
+  h.recorder.record(() => {
+    h.drawing.fillStyle = '#ffffff';
+    // Starts at x=4 logical => x=1 physical. This must remain a rectangle
+    // record, not become a full-surface clear merely because the far edge
+    // nearly covers the ceil-rounded backing surface.
+    h.drawing.fillRect(4, 0, 250, 190);
+  });
+  assert.equal(h.renders.length, 1);
+  assert.equal(h.renders[0][2].length > 0, true);
+});
+
 test('Canvas recorder falls back on native submission failure and preserves drawing exceptions', () => {
   const h = recorderHarness();
   h.context.NativeHost.render.renderPrimitiveSurface = () => { throw new Error('GPU failed'); };
