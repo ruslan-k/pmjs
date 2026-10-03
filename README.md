@@ -107,6 +107,14 @@ export PMJS_CACHE_GAME_VALUES=1
 # every interpreter setup. Entries are periodically rescanned.
 export PMJS_CACHE_REQUEST_IMAGES=1
 export PMJS_REQUEST_IMAGES_CACHE_MS=5000
+
+# Batch image-cache truncation after decode bursts instead of sorting the full
+# cache after every completion wave. Default 0 preserves immediate trimming.
+export PMJS_IMAGE_CACHE_TRIM_DELAY_MS=100
+
+# Emit a breakdown only for unusually slow frames/transitions.
+export PMJS_TRANSITION_PROFILE=1
+export PMJS_TRANSITION_PROFILE_MS=80
 ```
 
-All four logic fast paths above are opt-in. This makes it possible to A/B them independently on plugin-heavy games before promoting any of them into a port's normal launcher.
+All logic/cache fast paths above are opt-in. This makes it possible to A/B them independently on plugin-heavy games before promoting any of them into a port's normal launcher. The transition profiler records only frames above the configured threshold and is intended for map loads, scene changes, large tilemap rebuilds, and image-cache spikes.
