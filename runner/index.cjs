@@ -356,7 +356,21 @@ async function run(input, hooks = {}) {
       ['Tilemap', 'update', 'Tilemap.update'],
       ['Weather', 'update', 'Weather.update'],
       ['WindowLayer', 'update', 'WindowLayer.update'],
-      ['Lightmask', '_updateMask', 'Lightmask._updateMask']
+      ['Lightmask', '_updateMask', 'Lightmask._updateMask'],
+      ['Scene_Battle', 'update', 'Scene_Battle.update'],
+      ['Scene_Battle', 'updateBattleProcess', 'Scene_Battle.updateBattleProcess'],
+      ['Scene_Battle', 'updateSpritesets', 'Scene_Battle.updateSpritesets'],
+      ['BattleManager', 'update', 'BattleManager.update'],
+      ['BattleManager', 'updateEvent', 'BattleManager.updateEvent'],
+      ['Game_Battler', 'update', 'Game_Battler.update'],
+      ['Game_Actor', 'update', 'Game_Actor.update'],
+      ['Game_Enemy', 'update', 'Game_Enemy.update'],
+      ['Sprite_Battler', 'update', 'Sprite_Battler.update'],
+      ['Sprite_Actor', 'update', 'Sprite_Actor.update'],
+      ['Sprite_Enemy', 'update', 'Sprite_Enemy.update'],
+      ['Sprite_Animation', 'update', 'Sprite_Animation.update'],
+      ['Window_BattleLog', 'update', 'Window_BattleLog.update'],
+      ['Window_Message', 'update', 'Window_Message.update']
     ];
     let installed = 0;
     for (const spec of specs) {
