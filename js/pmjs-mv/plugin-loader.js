@@ -57,23 +57,34 @@
     }
   }
 
-  function pmjsMvLoadPortScript() {
+  function pmjsMvLoadConfiguredPortScript(envName, label) {
     var script = '';
     try {
-      script = NativeHost.runtime.env('PMJS_PORT_SCRIPT') || '';
+      script = NativeHost.runtime.env(envName) || '';
     } catch (_) {}
     script = String(script).trim();
     if (!script) return false;
     if (script.indexOf('..') !== -1 || script.charAt(0) === '/' ||
         script.charAt(0) === '\\') {
-      throw new Error('PMJS_PORT_SCRIPT must be a game-root relative path');
+      throw new Error(envName + ' must be a game-root relative path');
     }
-    console.log('[pmjs] loading port script: ' + script);
+    console.log('[pmjs] loading ' + label + ' port script: ' + script);
     NativeHost.runtime.loadScript(script);
     return true;
   }
 
+  function pmjsMvLoadPortScript() {
+    return pmjsMvLoadConfiguredPortScript('PMJS_PORT_SCRIPT', 'post-plugin');
+  }
+
+  function pmjsMvLoadPrePluginPortScript() {
+    return pmjsMvLoadConfiguredPortScript('PMJS_PORT_PRE_SCRIPT', 'pre-plugin');
+  }
+
   function pmjsMvInitializePlugins() {
+    // Pre-plugin scripts are for configuration globals or compatibility shims
+    // that guest plugins read during their own evaluation.
+    pmjsMvLoadPrePluginPortScript();
     globalThis.pmjsInitializeRpgMakerPlugins(
       pmjsMvInstallPluginManagerHooks, afterPlugins);
     // Port-specific compatibility/performance patches must run after guest
@@ -87,4 +98,5 @@
   globalThis.pmjsMvLoadPluginManifest = pmjsMvLoadPluginManifest;
   globalThis.pmjsMvInitializePlugins = pmjsMvInitializePlugins;
   globalThis.pmjsMvLoadPortScript = pmjsMvLoadPortScript;
+  globalThis.pmjsMvLoadPrePluginPortScript = pmjsMvLoadPrePluginPortScript;
 })();
