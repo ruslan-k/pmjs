@@ -530,6 +530,39 @@ function colorWithGlobalAlpha(color, globalAlpha) {
   return ((rgba & 0xffffff00) | alpha) >>> 0;
 }
 
+var textMeasurementCache = new Map();
+var textMetricsCache = new Map();
+var textMeasurementCacheLimit = 4096;
+
+function textMeasurementKey(font, text) {
+  return font.paths.join('\u0001') + '\u0002' + font.size + '\u0002' + text;
+}
+
+function measuredTextWidth(font, text) {
+  var key = textMeasurementKey(font, text);
+  var width = textMeasurementCache.get(key);
+  if (width !== undefined) return width;
+  width = NativeHost.canvas.measureText(font.paths, text, font.size);
+  if (textMeasurementCache.size >= textMeasurementCacheLimit) {
+    textMeasurementCache.clear();
+  }
+  textMeasurementCache.set(key, width);
+  return width;
+}
+
+function measuredTextMetrics(font, text) {
+  var key = textMeasurementKey(font, text);
+  var metrics = textMetricsCache.get(key);
+  if (metrics === undefined) {
+    metrics = NativeHost.canvas.measureTextMetrics(font.paths, text, font.size);
+    if (textMetricsCache.size >= textMeasurementCacheLimit) {
+      textMetricsCache.clear();
+    }
+    textMetricsCache.set(key, metrics);
+  }
+  return Object.assign({}, metrics);
+}
+
 function contextFont(context) {
   var fontStr = (context && typeof context === 'object') ? context.font : context;
   if (globalThis.PMJS && PMJS.fonts && typeof PMJS.fonts.resolveDescriptor === 'function') {
@@ -762,7 +795,7 @@ CanvasContext2D.prototype.drawImage = function(source) {
 };
 function canvasTextPosition(context, text, x, y) {
   var font = contextFont(context);
-  var width = NativeHost.canvas.measureText(font.paths, String(text), font.size);
+  var width = measuredTextWidth(font, String(text));
   if (context.textAlign === 'center') x -= width / 2;
   else if (context.textAlign === 'right' || context.textAlign === 'end') x -= width;
   var baseline = context.textBaseline;
@@ -970,7 +1003,7 @@ CanvasContext2D.prototype.createPattern = function(source, repetition) {
 };
 CanvasContext2D.prototype.measureText = function(text) {
   var font = contextFont(this);
-  return NativeHost.canvas.measureTextMetrics(font.paths, String(text), font.size);
+  return measuredTextMetrics(font, String(text));
 };
 CanvasContext2D.prototype.getImageData = function(x, y, width, height) {
   width = Math.floor(width);
@@ -1236,7 +1269,7 @@ Object.assign(PMJS.web.canvas, {
   },
   measureTextWidth: function(text, descriptor) {
     var font = contextFont(descriptor);
-    return NativeHost.canvas.measureText(font.paths, String(text), font.size);
+    return measuredTextWidth(font, String(text));
   }
 });
 
