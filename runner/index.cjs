@@ -293,6 +293,16 @@ async function run(input, hooks = {}) {
   let logicProfileSampleActive = false;
   let logicProfileInstalled = false;
   const logicProfileStats = Object.create(null);
+  const transitionProfileEnabled =
+    hostProcess.env.PMJS_TRANSITION_PROFILE === '1';
+  const configuredTransitionThreshold = Number(
+    hostProcess.env.PMJS_TRANSITION_PROFILE_MS || 80);
+  const transitionProfileThresholdMs =
+    Number.isFinite(configuredTransitionThreshold) &&
+    configuredTransitionThreshold >= 20 && configuredTransitionThreshold <= 5000
+      ? configuredTransitionThreshold : 80;
+  let transitionProfileInstalled = false;
+  let transitionFrameStats = Object.create(null);
   let sceneUpdateMs = 0;
   let sceneUpdateCalls = 0;
   let sceneRenderMs = 0;
@@ -389,6 +399,98 @@ async function run(input, hooks = {}) {
     }).sort((left, right) => right.totalMs - left.totalMs);
     for (const name of Object.keys(logicProfileStats)) delete logicProfileStats[name];
     return rows;
+  }
+
+  function transitionRecord(name, elapsed) {
+    let item = transitionFrameStats[name];
+    if (!item) item = transitionFrameStats[name] = { calls: 0, totalMs: 0, maxMs: 0 };
+    item.calls++;
+    item.totalMs += elapsed;
+    if (elapsed > item.maxMs) item.maxMs = elapsed;
+  }
+  function installTransitionWrap(target, method, name) {
+    if (!target || typeof target[method] !== 'function') return false;
+    const original = target[method];
+    if (original.__pmjsTransitionWrapped) return true;
+    function wrappedTransitionMethod() {
+      const started = performance.now();
+      try {
+        return original.apply(this, arguments);
+      } finally {
+        transitionRecord(name, performance.now() - started);
+      }
+    }
+    wrappedTransitionMethod.__pmjsTransitionWrapped = true;
+    wrappedTransitionMethod.__pmjsOriginal = original;
+    target[method] = wrappedTransitionMethod;
+    return true;
+  }
+  function installTransitionProfileWraps() {
+    if (!transitionProfileEnabled || transitionProfileInstalled) {
+      return transitionProfileInstalled;
+    }
+    const specs = [
+      ['Scene_Map', 'create', 'Scene_Map.create'],
+      ['Scene_Map', 'onMapLoaded', 'Scene_Map.onMapLoaded'],
+      ['Scene_Map', 'createDisplayObjects', 'Scene_Map.createDisplayObjects'],
+      ['Scene_Map', 'createSpriteset', 'Scene_Map.createSpriteset'],
+      ['Scene_Map', 'start', 'Scene_Map.start'],
+      ['Spriteset_Map', 'initialize', 'Spriteset_Map.initialize'],
+      ['Spriteset_Map', 'createLowerLayer', 'Spriteset_Map.createLowerLayer'],
+      ['Spriteset_Map', 'createTilemap', 'Spriteset_Map.createTilemap'],
+      ['Spriteset_Map', 'createCharacters', 'Spriteset_Map.createCharacters'],
+      ['Tilemap', '_paintAllTiles', 'Tilemap._paintAllTiles'],
+      ['Tilemap', 'refresh', 'Tilemap.refresh'],
+      ['Bitmap', '_requestImage', 'Bitmap._requestImage'],
+      ['Bitmap', '_onLoad', 'Bitmap._onLoad'],
+      ['ImageCache', '_truncateCache', 'ImageCache._truncateCache']
+    ];
+    let installed = 0;
+    for (const spec of specs) {
+      const ctor = globalThis[spec[0]];
+      if (ctor && ctor.prototype &&
+          installTransitionWrap(ctor.prototype, spec[1], spec[2])) installed++;
+    }
+    if (globalThis.DataManager) {
+      for (const spec of [
+        ['loadMapData', 'DataManager.loadMapData'],
+        ['onLoad', 'DataManager.onLoad'],
+        ['extractMetadata', 'DataManager.extractMetadata']
+      ]) {
+        if (installTransitionWrap(globalThis.DataManager, spec[0], spec[1])) installed++;
+      }
+    }
+    transitionProfileInstalled = installed > 0;
+    if (transitionProfileInstalled) {
+      console.log('[pmjs] transition profiler enabled methods=' + installed +
+        ' threshold_ms=' + transitionProfileThresholdMs);
+    }
+    return transitionProfileInstalled;
+  }
+  function transitionProfileFlush(frameMs) {
+    if (!transitionProfileEnabled || !transitionProfileInstalled) {
+      transitionFrameStats = Object.create(null);
+      return;
+    }
+    if (frameMs >= transitionProfileThresholdMs) {
+      const rows = Object.keys(transitionFrameStats).map(name => {
+        const item = transitionFrameStats[name];
+        return {
+          name,
+          calls: item.calls,
+          totalMs: Math.round(item.totalMs * 100) / 100,
+          maxMs: Math.round(item.maxMs * 100) / 100
+        };
+      }).sort((a, b) => b.totalMs - a.totalMs);
+      console.log('[pmjs-transition] ' + JSON.stringify({
+        frameMs: Math.round(frameMs * 100) / 100,
+        scene: globalThis.SceneManager && SceneManager._scene &&
+          SceneManager._scene.constructor
+          ? SceneManager._scene.constructor.name : null,
+        methods: rows.slice(0, 24)
+      }));
+    }
+    transitionFrameStats = Object.create(null);
   }
 
   function installSceneTimingWraps() {
@@ -650,6 +752,9 @@ async function run(input, hooks = {}) {
         if (logicProfileEnabled && !logicProfileInstalled) {
           installLogicProfileWraps();
         }
+        if (transitionProfileEnabled && !transitionProfileInstalled) {
+          installTransitionProfileWraps();
+        }
         if (typeof globalThis.__pmjsUpdateWindowStateBits === 'function' &&
             typeof native.runtime.windowStateBits === 'function') {
           globalThis.__pmjsUpdateWindowStateBits(native.runtime.windowStateBits());
@@ -661,6 +766,7 @@ async function run(input, hooks = {}) {
           globalThis.__pmjsReceiveInput(native.input.snapshot());
         }
         const now = performance.now();
+        const transitionFrameStart = transitionProfileEnabled ? performance.now() : 0;
         const sampleFrameTiming = memoryTelemetryEnabled &&
           (++telemetryTimingFrame % telemetryTimingSampleEvery === 0);
         sceneTimingSampleActive = sampleFrameTiming;
@@ -700,6 +806,9 @@ async function run(input, hooks = {}) {
           telemetryPhaseMaxTickMs = Math.max(telemetryPhaseMaxTickMs, tickMs);
           telemetryPhaseMaxNativeMs = Math.max(telemetryPhaseMaxNativeMs, nativeMs);
           telemetryPhaseMaxSwapMs = Math.max(telemetryPhaseMaxSwapMs, swapMs);
+        }
+        if (transitionProfileEnabled) {
+          transitionProfileFlush(performance.now() - transitionFrameStart);
         }
         if (memoryTelemetryEnabled && now >= nextMemoryTelemetry) {
           reportMemoryTelemetry(now);
