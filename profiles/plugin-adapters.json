@@ -25,6 +25,10 @@
       "modules": ["js/pmjs-plugins/terrax/lighting.js"]
     },
     {
+      "plugins": ["TDDP_FluidTimestep"],
+      "modules": ["js/pmjs-plugins/tddp/fluid-timestep.js"]
+    },
+    {
       "plugins": ["Atlas Loader"],
       "modules": ["js/pmjs-plugins/atlas-loader/image-retention.js"]
     }
