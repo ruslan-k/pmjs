@@ -21,7 +21,7 @@
       "modules": ["js/pmjs-plugins/yanfly/event-mini-label.js"]
     },
     {
-      "plugins": ["Terrax_Lighting"],
+      "plugins": ["Terrax_Lighting", "TerraxLighting"],
       "modules": ["js/pmjs-plugins/terrax/lighting.js"]
     },
     {
