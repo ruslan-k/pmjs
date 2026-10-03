@@ -499,3 +499,79 @@ test('ordinary drawing after an accelerated frame preserves that frame through r
   assert.deepEqual(h.cpu.map(op => op.args), [[0, 0, 64, 48], [1, 2, 3, 4]]);
   assert.equal(h.canvas._nativeImage, undefined);
 });
+
+
+test('Terrax mask scale is configured before recorder creation and scales retained sprite', () => {
+  const surfaces = [];
+  function Sprite() { this.scale = { x: 1, y: 1 }; }
+  function Bitmap(width, height) {
+    this.width = width;
+    this.height = height;
+    this._context = {
+      _transform: [1, 0, 0, 1, 0, 0],
+      scale(x, y) { this._transform[0] *= x; this._transform[3] *= y; }
+    };
+    this._canvas = {
+      width, height,
+      getContext: () => this._context
+    };
+    this.destroyed = false;
+  }
+  Bitmap.prototype.destroy = function() { this.destroyed = true; };
+  function SpritesetMap() {}
+  let originalBitmap;
+  defineKnownCreateLightmask(SpritesetMap, function() {
+    originalBitmap = new Bitmap(80, 48);
+    return {
+      _sprites: [],
+      _maskBitmap: originalBitmap,
+      addChild() {},
+      removeChild() {},
+      _addSprite: knownAddSprite,
+      _removeSprite: knownRemoveSprite,
+      _updateMask() {
+        var maskBitmap = this._maskBitmap;
+        maskBitmap._context.fillStyle = '#000000';
+        maskBitmap._context.globalCompositeOperation = 'source-over';
+        maskBitmap._context.fillRect(0, 0, 80, 48);
+      }
+    };
+  });
+  const context = {
+    console,
+    Sprite,
+    Bitmap,
+    Spriteset_Map: SpritesetMap,
+    colorWithGlobalAlpha() { return 0x000000ff; },
+    NativeHost: { runtime: { env() { return ''; } }, render: {
+      createPrimitiveSurface(width, height) {
+        surfaces.push([width, height]);
+        return { handle: 1, image: { handle: 2, width, height } };
+      },
+      renderPrimitiveSurface() {},
+      releasePrimitiveSurface() { return true; }
+    } }
+  };
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/pmjs-core/config.js'), 'utf8'), context);
+  vm.runInContext(optimizationsSource, context);
+  loadRegistrySupport(context);
+  vm.runInContext(terraxSource, context);
+  context.PMJS.phases.emit('afterGuestPlugins');
+  context.PMJS.plugins.terraxLighting.configureMaskScale(0.25);
+
+  const spriteset = new context.Spriteset_Map();
+  spriteset.createLightmask();
+  const mask = spriteset._lightmask;
+
+  assert.equal(mask._maskBitmap.width, 20);
+  assert.equal(mask._maskBitmap.height, 12);
+  assert.equal(mask._maskBitmap.__pmjsTerraxMaskScale, 0.25);
+  assert.equal(originalBitmap.destroyed, true);
+  assert.deepEqual(surfaces, [[20, 12]]);
+
+  mask._addSprite(0, 0, mask._maskBitmap);
+  assert.equal(mask._sprites[0].scale.x, 4);
+  assert.equal(mask._sprites[0].scale.y, 4);
+});
