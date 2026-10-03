@@ -117,10 +117,20 @@
   PMJS.plugins = {
     registerOptimization: function(name, definition) {
       if (finished) throw new Error('PMJS plugins: optimization registration after resolution');
+      var names = Array.isArray(name) ? name.slice() : [name];
+      var validNames = names.filter(function(plugin) {
+        return typeof plugin === 'string' && plugin.trim();
+      });
+      if (!validNames.length || validNames.length !== names.length) {
+        throw new TypeError('PMJS plugins: optimization guest names must be nonempty strings');
+      }
+      var canonicalNames = validNames.map(function(plugin) { return key(plugin); });
+      if (new Set(canonicalNames).size !== canonicalNames.length) {
+        throw new TypeError('PMJS plugins: optimization guest names must be unique');
+      }
       PMJS.optimizations.register(definition);
-      var names = Array.isArray(name) ? name : [name];
       optimizationRequirements.push({
-        plugins: names.map(function(plugin) { return key(plugin); }),
+        plugins: canonicalNames,
         id: definition.id
       });
     },
@@ -195,10 +205,13 @@
           return !!entry && entry.state === 'loaded';
         });
         if (satisfied) return;
-        var first = guests[requirement.plugins[0]];
+        var states = requirement.plugins.map(function(plugin) {
+          var entry = guests[plugin];
+          return plugin + '=' + (entry ? entry.state : 'not discovered');
+        });
         PMJS.optimizations.refuse(requirement.id,
           'required guest plugin ' + requirement.plugins.join('|') +
-          ' unavailable: ' + (first ? first.state : 'not discovered'));
+          ' unavailable: ' + states.join(','));
       });
       return true;
     },
