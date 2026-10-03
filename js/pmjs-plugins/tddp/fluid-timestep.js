@@ -40,7 +40,7 @@
       source.indexOf('this.updateInputData()') !== -1 &&
       source.indexOf('this.changeScene()') !== -1 &&
       source.indexOf('this.updateScene()') !== -1 &&
-      source.indexOf('this._accumulator -= this._dt') !== -1 &&
+      /this\._accumulator\s*-=\s*this\._dt/.test(source) &&
       source.indexOf('this.renderScene()') !== -1 &&
       source.indexOf('this.requestUpdate()') !== -1;
   }
@@ -79,15 +79,14 @@
     var originalUpdateMain = SceneManager.updateMain;
     function boundedTddpUpdateMain() {
       var maxCatchup = policy.maxCatchup;
-      if (!(maxCatchup > 0) || !policy.dropExcess ||
-          typeof this.updateScene !== 'function') {
+      if (!(maxCatchup > 0) || typeof this.updateScene !== 'function') {
         return originalUpdateMain.apply(this, arguments);
       }
 
       var manager = this;
       var originalUpdateScene = manager.updateScene;
       var steps = 0;
-      var droppedSeconds = 0;
+      var excessSeconds = 0;
       manager.updateScene = function() {
         steps++;
         var result = originalUpdateScene.apply(this, arguments);
@@ -97,7 +96,7 @@
             manager._accumulator >= manager._dt) {
           var remainder = manager._accumulator % manager._dt;
           var retained = manager._dt + remainder;
-          droppedSeconds += Math.max(0, manager._accumulator - retained);
+          excessSeconds += Math.max(0, manager._accumulator - retained);
           manager._accumulator = retained;
         }
         return result;
@@ -106,11 +105,20 @@
         return originalUpdateMain.apply(manager, arguments);
       } finally {
         manager.updateScene = originalUpdateScene;
-        if (droppedSeconds > 0) {
-          globalThis.__pmjsOverloadDiscontinuities =
-            (globalThis.__pmjsOverloadDiscontinuities || 0) + 1;
-          globalThis.__pmjsTddpDroppedMs =
-            (globalThis.__pmjsTddpDroppedMs || 0) + droppedSeconds * 1000;
+        if (excessSeconds > 0) {
+          if (policy.dropExcess) {
+            globalThis.__pmjsOverloadDiscontinuities =
+              (globalThis.__pmjsOverloadDiscontinuities || 0) + 1;
+            globalThis.__pmjsTddpDroppedMs =
+              (globalThis.__pmjsTddpDroppedMs || 0) + excessSeconds * 1000;
+          } else {
+            // The original loop already rendered with only the fractional
+            // remainder visible. Restore deferred whole-step debt afterwards
+            // so the next presentation can retire it under the same cap.
+            manager._accumulator += excessSeconds;
+            globalThis.__pmjsTddpDeferredMs =
+              (globalThis.__pmjsTddpDeferredMs || 0) + excessSeconds * 1000;
+          }
         }
       }
     }
