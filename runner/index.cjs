@@ -263,6 +263,7 @@ async function run(input, hooks = {}) {
   let lastTelemetryFramesAt = 0;
   let lastTelemetryLogic = null;
   let lastTelemetryPlayer = null;
+  let lastTelemetryOverload = null;
   const configuredTimingSampleEvery = Number(
     hostProcess.env.PMJS_TELEMETRY_TIMING_SAMPLE_EVERY || 4);
   const telemetryTimingSampleEvery = Number.isSafeInteger(configuredTimingSampleEvery) &&
@@ -632,13 +633,30 @@ async function run(input, hooks = {}) {
         playerSpeed: playerSpeed,
         renderScale: typeof globalThis.__pmjsRenderScale === 'number'
           ? globalThis.__pmjsRenderScale : 1,
-        overload: {
-          discontinuities: Number(globalThis.__pmjsOverloadDiscontinuities || 0),
-          tddpDroppedMs: Math.round(
-            Number(globalThis.__pmjsTddpDroppedMs || 0) * 100) / 100,
-          tddpDeferredMs: Math.round(
-            Number(globalThis.__pmjsTddpDeferredMs || 0) * 100) / 100
-        },
+        overload: (function() {
+          var totalDiscontinuities = Number(
+            globalThis.__pmjsOverloadDiscontinuities || 0);
+          var totalDroppedMs = Number(globalThis.__pmjsTddpDroppedMs || 0);
+          var totalDeferredMs = Number(globalThis.__pmjsTddpDeferredMs || 0);
+          var previous = lastTelemetryOverload;
+          lastTelemetryOverload = {
+            discontinuities: totalDiscontinuities,
+            droppedMs: totalDroppedMs,
+            deferredMs: totalDeferredMs
+          };
+          return {
+            discontinuities: totalDiscontinuities,
+            tddpDroppedMs: Math.round(totalDroppedMs * 100) / 100,
+            tddpDeferredMs: Math.round(totalDeferredMs * 100) / 100,
+            delta: previous ? {
+              discontinuities: totalDiscontinuities - previous.discontinuities,
+              tddpDroppedMs: Math.round(
+                (totalDroppedMs - previous.droppedMs) * 100) / 100,
+              tddpDeferredMs: Math.round(
+                (totalDeferredMs - previous.deferredMs) * 100) / 100
+            } : null
+          };
+        })(),
         process: {
           rss: usage.rss,
           heapTotal: usage.heapTotal,
