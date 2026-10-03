@@ -68,7 +68,11 @@
         script.charAt(0) === '\\') {
       throw new Error(envName + ' must be a game-root relative path');
     }
-    console.log('[pmjs] loading ' + label + ' port script: ' + script);
+    if (label === 'post-plugin') {
+      console.log('[pmjs] loading port script: ' + script);
+    } else {
+      console.log('[pmjs] loading ' + label + ' port script: ' + script);
+    }
     NativeHost.runtime.loadScript(script);
     return true;
   }
