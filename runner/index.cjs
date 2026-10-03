@@ -632,6 +632,13 @@ async function run(input, hooks = {}) {
         playerSpeed: playerSpeed,
         renderScale: typeof globalThis.__pmjsRenderScale === 'number'
           ? globalThis.__pmjsRenderScale : 1,
+        overload: {
+          discontinuities: Number(globalThis.__pmjsOverloadDiscontinuities || 0),
+          tddpDroppedMs: Math.round(
+            Number(globalThis.__pmjsTddpDroppedMs || 0) * 100) / 100,
+          tddpDeferredMs: Math.round(
+            Number(globalThis.__pmjsTddpDeferredMs || 0) * 100) / 100
+        },
         process: {
           rss: usage.rss,
           heapTotal: usage.heapTotal,
