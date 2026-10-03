@@ -438,6 +438,19 @@ test('Canvas recorder replays supported rectangles before an unsupported draw an
   assert.equal(h.canvas._nativeImage.handle, 84);
 });
 
+
+
+test('Canvas primitive recorder accepts positive axis-aligned scaling', () => {
+  const h = recorderHarness();
+  h.drawing.scale(0.25, 0.25);
+  h.recorder.record(() => {
+    h.drawing.fillStyle = '#ffffff';
+    h.drawing.fillRect(0, 0, 64, 48);
+  });
+  assert.equal(h.renders.length, 1);
+  assert.equal(h.cpu.length, 0);
+});
+
 test('Canvas recorder falls back on native submission failure and preserves drawing exceptions', () => {
   const h = recorderHarness();
   h.context.NativeHost.render.renderPrimitiveSurface = () => { throw new Error('GPU failed'); };
