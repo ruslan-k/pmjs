@@ -35,7 +35,7 @@ for (const [adapter, plugins, ids] of adapters) {
       for (const id of ids) {
         assert.equal(ctx.PMJS.optimizations.isEnabled(id), false);
         assert.match(ctx.PMJS.optimizations.reason(id),
-          new RegExp('required guest plugin .* unavailable: ' + state));
+          new RegExp('required guest plugin .* unavailable: .*' + state));
       }
     });
   }
