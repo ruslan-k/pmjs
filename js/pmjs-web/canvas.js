@@ -1066,12 +1066,18 @@ CanvasContext2D.prototype.putImageData = function(imageData, x, y) {
         composite: this.globalCompositeOperation,
         transform: Array.prototype.slice.call(transform),
         arguments: Array.prototype.slice.call(arguments) });
-      var fullSurfaceTolerance = 1.0;
+      // A scaled logical full-surface fill can undershoot the ceil-rounded
+      // backing extent by < 1 physical pixel (e.g. 216.5 into width 217).
+      // Only tolerate that far-edge rounding. The origin must still be the
+      // actual surface origin; otherwise a genuinely inset rectangle could be
+      // misclassified as a clear of the whole surface.
+      var fullSurfaceEdgeTolerance = 0.999999;
+      var fullSurfaceOriginTolerance = 0.000001;
       if (supportedSolid && blendMode === 0 && records.length === 0 &&
-          bounds[0] <= fullSurfaceTolerance &&
-          bounds[1] <= fullSurfaceTolerance &&
-          bounds[0] + bounds[2] >= canvas.width - fullSurfaceTolerance &&
-          bounds[1] + bounds[3] >= canvas.height - fullSurfaceTolerance) {
+          Math.abs(bounds[0]) <= fullSurfaceOriginTolerance &&
+          Math.abs(bounds[1]) <= fullSurfaceOriginTolerance &&
+          bounds[0] + bounds[2] >= canvas.width - fullSurfaceEdgeTolerance &&
+          bounds[1] + bounds[3] >= canvas.height - fullSurfaceEdgeTolerance) {
         clearColor = lightColor(style, this.globalAlpha);
         return;
       }
