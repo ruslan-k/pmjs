@@ -482,11 +482,13 @@ async function run(input, hooks = {}) {
           maxMs: Math.round(item.maxMs * 100) / 100
         };
       }).sort((a, b) => b.totalMs - a.totalMs);
+      const sceneManager = globalThis.SceneManager;
+      const sceneName = sceneManager && sceneManager._scene &&
+        sceneManager._scene.constructor
+        ? sceneManager._scene.constructor.name : null;
       console.log('[pmjs-transition] ' + JSON.stringify({
         frameMs: Math.round(frameMs * 100) / 100,
-        scene: globalThis.SceneManager && SceneManager._scene &&
-          SceneManager._scene.constructor
-          ? SceneManager._scene.constructor.name : null,
+        scene: sceneName,
         methods: rows.slice(0, 24)
       }));
     }

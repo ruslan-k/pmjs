@@ -4,7 +4,8 @@
 // recognition, safety checks, and implementation details.
 
 (function () {
-  var tddp = window.PMJS && PMJS.plugins && PMJS.plugins.tddpFluidTimestep;
+  var pmjs = globalThis.PMJS;
+  var tddp = pmjs && pmjs.plugins && pmjs.plugins.tddpFluidTimestep;
   if (tddp && typeof tddp.configure === 'function') {
     // Device profiling on F&H shows ~9-15 ms per updateScene tick on the
     // target A53-class CPU. A cap of 5 preserves near-60 Hz authored logic
@@ -18,7 +19,8 @@
 })();
 
 (function () {
-  var terrax = window.PMJS && PMJS.plugins && PMJS.plugins.terraxLighting;
+  var pmjs = globalThis.PMJS;
+  var terrax = pmjs && pmjs.plugins && pmjs.plugins.terraxLighting;
   if (terrax && typeof terrax.configureMaskScale === 'function') {
     terrax.configureMaskScale(0.25);
     console.log('[fnh] Terrax quarter-resolution mask configured');
