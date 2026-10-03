@@ -451,6 +451,22 @@ test('Canvas primitive recorder accepts positive axis-aligned scaling', () => {
   assert.equal(h.cpu.length, 0);
 });
 
+
+
+test('scaled recorder treats subpixel-rounded full mask fill as surface clear', () => {
+  const h = recorderHarness();
+  h.drawing.scale(0.25, 0.25);
+  h.recorder.record(() => {
+    h.drawing.fillStyle = '#ffffff';
+    // 63.5 x 47.5 physical pixels on a 64 x 48 surface: this is the common
+    // ceil(backing-size) case for quarter-resolution masks.
+    h.drawing.fillRect(0, 0, 254, 190);
+  });
+  assert.equal(h.renders.length, 1);
+  assert.deepEqual(h.renders[0][1], [1, 1, 1, 1]);
+  assert.equal(h.renders[0][2].length, 0);
+});
+
 test('Canvas recorder falls back on native submission failure and preserves drawing exceptions', () => {
   const h = recorderHarness();
   h.context.NativeHost.render.renderPrimitiveSurface = () => { throw new Error('GPU failed'); };
