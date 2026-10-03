@@ -224,6 +224,8 @@ function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
 
 function paintAffineRectangle(context, x, y, width, height, rgba, clear) {
   var t = context._transform;
+  var determinant = t[0] * t[3] - t[1] * t[2];
+  if (Math.abs(determinant) < 0.000001 || width === 0 || height === 0) return;
   var x0 = t[0] * x + t[2] * y + t[4];
   var y0 = t[1] * x + t[3] * y + t[5];
   var x1 = t[0] * (x + width) + t[2] * y + t[4];
@@ -232,9 +234,6 @@ function paintAffineRectangle(context, x, y, width, height, rgba, clear) {
   var y2 = t[1] * (x + width) + t[3] * (y + height) + t[5];
   var x3 = t[0] * x + t[2] * (y + height) + t[4];
   var y3 = t[1] * x + t[3] * (y + height) + t[5];
-  // Flat storage avoids four point-array allocations plus four temporary map()
-  // arrays while keeping the edge loop compact.
-  var points = [x0, y0, x1, y1, x2, y2, x3, y3];
   var left = Math.max(0, Math.floor(Math.min(x0, x1, x2, x3)));
   var top = Math.max(0, Math.floor(Math.min(y0, y1, y2, y3)));
   var right = Math.min(context.canvas.width, Math.ceil(Math.max(x0, x1, x2, x3)));
@@ -246,33 +245,40 @@ function paintAffineRectangle(context, x, y, width, height, rgba, clear) {
   var dynamicStyle = rgba && typeof rgba === 'object';
   var operation = context.globalCompositeOperation;
   var clipped = context._clipPaths.length > 0;
-  for (var targetY = top; targetY < bottom; targetY++) for (var targetX = left; targetX < right; targetX++) {
-    var inside = true, sign = 0;
-    for (var edge = 0; edge < 4; edge++) {
-      var firstOffset = edge * 2;
-      var secondOffset = ((edge + 1) & 3) * 2;
-      var firstX = points[firstOffset], firstY = points[firstOffset + 1];
-      var secondX = points[secondOffset], secondY = points[secondOffset + 1];
-      var cross = (secondX - firstX) * (targetY + 0.5 - firstY) -
-        (secondY - firstY) * (targetX + 0.5 - firstX);
-      if (Math.abs(cross) < 0.000001) continue;
-      var currentSign = cross < 0 ? -1 : 1;
-      if (sign && sign !== currentSign) { inside = false; break; }
-      sign = currentSign;
+  var inverseA = t[3] / determinant, inverseB = -t[1] / determinant;
+  var inverseC = -t[2] / determinant, inverseD = t[0] / determinant;
+  var minLocalX = Math.min(x, x + width);
+  var maxLocalX = Math.max(x, x + width);
+  var minLocalY = Math.min(y, y + height);
+  var maxLocalY = Math.max(y, y + height);
+  var originX = 0.5 - t[4], originY = 0.5 - t[5];
+  var span = right - left;
+  var edgeTolerance = 0.000001;
+  for (var targetY = top; targetY < bottom; targetY++) {
+    var shiftedY = targetY + originY;
+    var localX = inverseA * (left + originX) + inverseC * shiftedY;
+    var localY = inverseB * (left + originX) + inverseD * shiftedY;
+    var offset = (targetY - top) * span * 4;
+    for (var targetX = left; targetX < right;
+        targetX++, offset += 4, localX += inverseA, localY += inverseB) {
+      if (localX < minLocalX - edgeTolerance ||
+          localX > maxLocalX + edgeTolerance ||
+          localY < minLocalY - edgeTolerance ||
+          localY > maxLocalY + edgeTolerance ||
+          (clipped && !passesCanvasClip(context,
+            targetX + 0.5, targetY + 0.5))) continue;
+      if (clear) {
+        pixels[offset] = pixels[offset + 1] =
+          pixels[offset + 2] = pixels[offset + 3] = 0;
+        continue;
+      }
+      var pixelRgba = dynamicStyle ? canvasStyleRgba(rgba,
+        targetX + 0.5, targetY + 0.5, context.globalAlpha) : rgba;
+      var sourceAlpha = (pixelRgba & 255) / 255;
+      compositeCanvasPixel(pixels, offset, (pixelRgba >>> 24) & 255,
+        (pixelRgba >>> 16) & 255, (pixelRgba >>> 8) & 255, sourceAlpha,
+        operation);
     }
-    if (!inside || (clipped &&
-        !passesCanvasClip(context, targetX + 0.5, targetY + 0.5))) continue;
-    var offset = ((targetY - top) * (right - left) + targetX - left) * 4;
-    if (clear) {
-      pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = pixels[offset + 3] = 0;
-      continue;
-    }
-    var pixelRgba = dynamicStyle ? canvasStyleRgba(rgba,
-      targetX + 0.5, targetY + 0.5, context.globalAlpha) : rgba;
-    var sourceAlpha = (pixelRgba & 255) / 255;
-    compositeCanvasPixel(pixels, offset, (pixelRgba >>> 24) & 255,
-      (pixelRgba >>> 16) & 255, (pixelRgba >>> 8) & 255, sourceAlpha,
-      operation);
   }
   NativeHost.canvas.writePixels(canvas.handle, left, top,
     right - left, bottom - top, pixels);
