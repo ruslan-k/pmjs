@@ -100,20 +100,36 @@ if (typeof ImageCache !== 'undefined' && ImageCache.prototype._truncateCache) {
 // Pending images must be held by MV's ImageCache. Once a Bitmap becomes ready,
 // coalesce cache reconsideration so a burst of async decodes causes one scan.
 var pmjsImageCacheTrimPending = false;
+var pmjsImageCacheTrimDelayMs = 0;
+try {
+  var configuredTrimDelay = Number(
+    NativeHost.runtime.env('PMJS_IMAGE_CACHE_TRIM_DELAY_MS') || 0);
+  if (Number.isFinite(configuredTrimDelay) && configuredTrimDelay >= 0 &&
+      configuredTrimDelay <= 1000) {
+    pmjsImageCacheTrimDelayMs = configuredTrimDelay;
+  }
+} catch (_) {}
+
+function pmjsRunImageCacheTrim() {
+  pmjsImageCacheTrimPending = false;
+  try {
+    if (typeof ImageManager !== 'undefined' && ImageManager._imageCache &&
+        typeof ImageManager._imageCache._truncateCache === 'function') {
+      ImageManager._imageCache._truncateCache();
+    }
+  } catch (error) {
+    PMJS.compat.hit('imageCache.completionTrimError', error && error.message || '');
+  }
+}
+
 function pmjsScheduleImageCacheTrim() {
   if (pmjsImageCacheTrimPending) return;
   pmjsImageCacheTrimPending = true;
-  Promise.resolve().then(function() {
-    pmjsImageCacheTrimPending = false;
-    try {
-      if (typeof ImageManager !== 'undefined' && ImageManager._imageCache &&
-          typeof ImageManager._imageCache._truncateCache === 'function') {
-        ImageManager._imageCache._truncateCache();
-      }
-    } catch (error) {
-      PMJS.compat.hit('imageCache.completionTrimError', error && error.message || '');
-    }
-  });
+  if (pmjsImageCacheTrimDelayMs > 0 && typeof setTimeout === 'function') {
+    setTimeout(pmjsRunImageCacheTrim, pmjsImageCacheTrimDelayMs);
+  } else {
+    Promise.resolve().then(pmjsRunImageCacheTrim);
+  }
 }
 PMJS.images.onLoadComplete(pmjsScheduleImageCacheTrim);
 
