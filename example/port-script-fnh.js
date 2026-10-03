@@ -6,7 +6,11 @@
 (function () {
   var tddp = window.PMJS && PMJS.plugins && PMJS.plugins.tddpFluidTimestep;
   if (tddp && typeof tddp.configure === 'function') {
-    tddp.configure({ maxCatchup: 8, dropExcess: true });
+    // Device profiling on F&H shows ~9-15 ms per updateScene tick on the
+    // target A53-class CPU. A cap of 5 preserves near-60 Hz authored logic
+    // without allowing one presentation frame to accumulate 70-120+ ms of
+    // catch-up work as an 8-step cap can.
+    tddp.configure({ maxCatchup: 5, dropExcess: true });
     console.log('[fnh] bounded TDDP catch-up configured');
   } else {
     console.warn('[fnh] PMJS TDDP adapter unavailable; catch-up left unchanged');
