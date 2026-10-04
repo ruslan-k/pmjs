@@ -44,6 +44,24 @@ jobs:
         run: |
           git worktree add /tmp/pmjs-base "$BASE_SHA"
 
+      - name: Apply baseline merge build fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("/tmp/pmjs-base/src/renderer_draw.cpp")
+          text = path.read_text()
+          duplicate = (
+              "  bool targetYDown = offscreenRender_;\n"
+              "  bool targetYDown = offscreenRender_;\n"
+          )
+          if text.count(duplicate) != 1:
+              raise SystemExit("expected duplicate targetYDown declaration not found exactly once")
+          path.write_text(text.replace(
+              duplicate, "  bool targetYDown = offscreenRender_;\n", 1
+          ))
+          PY
+
       - name: Configure baseline and optimized builds
         run: |
           cmake -S /tmp/pmjs-base -B /tmp/pmjs-base/build -G Ninja \
