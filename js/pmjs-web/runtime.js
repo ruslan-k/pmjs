@@ -13,10 +13,10 @@ function applyNativeWindowState(focused, visible) {
   nativeWindowState.visible = visible;
   if (wasFocused && !nativeWindowState.focused) {
     pendingKeyReleases.length = 0;
-    pendingPadReleases.length = 0;
     for (var padIndex = 0; padIndex < nativeGamepads.length; padIndex++) {
       var pad = nativeGamepads[padIndex];
       if (!pad) continue;
+      pad._pendingReleaseMask = 0;
       for (var buttonIndex = 0; buttonIndex < pad.buttons.length; buttonIndex++) pad.buttons[buttonIndex]._value = 0;
       for (var axisIndex = 0; axisIndex < pad.axes.length; axisIndex++) pad.axes[axisIndex] = 0;
     }
@@ -129,7 +129,15 @@ var nativeEmptyGamepads = [];
 var nativeZeroAxes = [0, 0, 0, 0];
 var nativeGamepadExposed = false;
 var pendingKeyReleases = [];
-var pendingPadReleases = [];
+function nativeButtonMask(values) {
+  var mask = 0;
+  if (!values) return 0;
+  for (var index = 0; index < values.length; index++) {
+    var button = values[index] | 0;
+    if (button >= 0 && button < 31) mask |= (1 << button);
+  }
+  return mask;
+}
 function dispatchNativeKey(source) {
   if (!globalThis.document || typeof document.dispatchEvent !== 'function') return;
   var event = { type: source.down ? 'keydown' : 'keyup',
@@ -182,7 +190,7 @@ globalThis.__pmjsReceiveInput = function(state) {
     var oldPad = nativeGamepads[index];
     if (oldPad && (!pads[index] || pads[index].connected === false ||
         pads[index].instance !== oldPad._instance)) {
-      pendingPadReleases = pendingPadReleases.filter(function(release) { return release.pad !== oldPad; });
+      oldPad._pendingReleaseMask = 0;
       oldPad.connected = false;
       for (var cleared = 0; cleared < oldPad.buttons.length; cleared++) oldPad.buttons[cleared]._value = 0;
       oldPad.axes = [0, 0, 0, 0];
@@ -201,31 +209,38 @@ globalThis.__pmjsReceiveInput = function(state) {
     var pad = nativeGamepads[i];
     if (!pad || pad._instance !== sourcePad.instance) {
       pad = { id: sourcePad.id, index: i, connected: true, mapping: 'standard',
-        timestamp: 0, buttons: [], axes: [0, 0, 0, 0], _instance: sourcePad.instance };
+        timestamp: 0, buttons: [], axes: [0, 0, 0, 0], _instance: sourcePad.instance,
+        _pendingReleaseMask: 0 };
       for (var button = 0; button < 17; button++) pad.buttons.push(new GamepadButton());
       nativeGamepads[i] = pad;
     }
     pad.timestamp = Date.now();
     var sourceAxes = sourcePad.axes || nativeZeroAxes;
-    pad.axes.length = sourceAxes.length;
-    for (var axis = 0; axis < sourceAxes.length; axis++) {
-      pad.axes[axis] = Number(sourceAxes[axis]) || 0;
-    }
-    for (var j = 0; j < 17; j++) {
-      var held = sourcePad.buttonsDown.indexOf(j) >= 0;
-      var edge = sourcePad.buttonsPressed.indexOf(j) >= 0;
-      var pending = pendingPadReleases.some(function(release) {
-        return release.pad === pad && release.button === j;
-      });
-      if (held && pending) {
-        pendingPadReleases = pendingPadReleases.filter(function(release) {
-          return release.pad !== pad || release.button !== j;
-        });
-        pending = false;
+    var axisLength = sourceAxes.length;
+    pad.axes.length = axisLength;
+    if (axisLength === 4) {
+      pad.axes[0] = Number(sourceAxes[0]) || 0;
+      pad.axes[1] = Number(sourceAxes[1]) || 0;
+      pad.axes[2] = Number(sourceAxes[2]) || 0;
+      pad.axes[3] = Number(sourceAxes[3]) || 0;
+    } else {
+      for (var axis = 0; axis < axisLength; axis++) {
+        pad.axes[axis] = Number(sourceAxes[axis]) || 0;
       }
-      pad.buttons[j]._value = held || edge || pending ? 1 : 0;
-      if (edge && !held && !pending) pendingPadReleases.push({ pad: pad, button: j });
     }
+    var heldMask = nativeButtonMask(sourcePad.buttonsDown);
+    var edgeMask = nativeButtonMask(sourcePad.buttonsPressed);
+    var pendingMask = pad._pendingReleaseMask | 0;
+    pendingMask &= ~heldMask;
+    for (var j = 0; j < 17; j++) {
+      var bit = 1 << j;
+      var held = (heldMask & bit) !== 0;
+      var edge = (edgeMask & bit) !== 0;
+      var pending = (pendingMask & bit) !== 0;
+      pad.buttons[j]._value = held || edge || pending ? 1 : 0;
+      if (edge && !held && !pending) pendingMask |= bit;
+    }
+    pad._pendingReleaseMask = pendingMask;
   }
   nativeGamepads.length = pads.length;
   var events = state.keyEvents || [];
@@ -249,11 +264,15 @@ globalThis.__pmjsReceiveInput = function(state) {
 globalThis.__pmjsFinishInputStep = function() {
   for (var i = 0; i < pendingKeyReleases.length; i++) dispatchNativeKey(pendingKeyReleases[i]);
   pendingKeyReleases.length = 0;
-  for (var j = 0; j < pendingPadReleases.length; j++) {
-    var release = pendingPadReleases[j];
-    release.pad.buttons[release.button]._value = 0;
+  for (var padIndex = 0; padIndex < nativeGamepads.length; padIndex++) {
+    var pad = nativeGamepads[padIndex];
+    if (!pad || !pad._pendingReleaseMask) continue;
+    var pendingMask = pad._pendingReleaseMask;
+    for (var buttonIndex = 0; buttonIndex < 17; buttonIndex++) {
+      if (pendingMask & (1 << buttonIndex)) pad.buttons[buttonIndex]._value = 0;
+    }
+    pad._pendingReleaseMask = 0;
   }
-  pendingPadReleases.length = 0;
 };
 globalThis.nw = { App: { argv: [] } };
 globalThis.location = {
