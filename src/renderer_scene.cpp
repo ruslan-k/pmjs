@@ -30,6 +30,8 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
 
   const std::size_t originalCommandCount = frame_.commands.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
+  const bool originalSceneHasEffect = sceneHasEffect_;
+  const bool originalSceneHasCustomFilter = sceneHasCustomFilter_;
   // A scene packet can emit at most one command per node. Reserve once at the
   // packet boundary instead of repeatedly growing the retained command vector.
   if (frame_.commands.capacity() < originalCommandCount + nodeCount) {
@@ -172,6 +174,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
             command.filterResolution <= 0.0F ||
             command.filterResolution > 16.0F) return false;
         if (command.filterKind == FilterKind::custom) {
+          sceneHasCustomFilter_ = true;
           const auto plan = filterPlans_.find(resource);
           if (plan != filterPlans_.end()) {
             command.customFilterPlan = plan->second.lock();
@@ -319,6 +322,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         state.alpha <= 0) continue;
     if (effectNode) {
       if (flags != 0 || state.maskImage || !effects_ || !effects_->validHandle(resource)) return false;
+      sceneHasEffect_ = true;
       RenderCommand command{};
       command.primitive = RenderCommand::Primitive::effect;
       command.effect.handle = resource;
@@ -501,10 +505,14 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   } catch (...) {
     discardCommandsFrom(originalCommandCount);
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
+    sceneHasEffect_ = originalSceneHasEffect;
+    sceneHasCustomFilter_ = originalSceneHasCustomFilter;
     throw;
   }
   discardCommandsFrom(originalCommandCount);
   sceneSubmittedThisFrame_ = originalSceneSubmitted;
+  sceneHasEffect_ = originalSceneHasEffect;
+  sceneHasCustomFilter_ = originalSceneHasCustomFilter;
   return false;
 }
 
