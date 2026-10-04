@@ -787,6 +787,30 @@ void ImageStore::update() {
     }
   }
   std::sort(warmEntries.begin(), warmEntries.end());
+
+  // A straight-alpha image can have a second full-size premultiplied texture
+  // for Pixi-compatible linear sampling. Once the image is warm (no owners),
+  // that duplicate is purely a cache: discard it before evicting the source
+  // texture itself. Reacquisition can recreate it exactly, while a low-memory
+  // device may keep twice as many source images resident within the same
+  // budget.
+  for (const auto& entry : warmEntries) {
+    if (currentWarmBytes <= warmBudgetBytes_) break;
+    auto& slot = slots_[entry.second];
+    if (!slot.live || slot.references != 0 || slot.pins != 0 ||
+        slot.cacheKey.empty() ||
+        slot.inFlight.load(std::memory_order_acquire) != 0 ||
+        !slot.premultipliedTexture ||
+        slot.premultipliedTexture == slot.texture) {
+      continue;
+    }
+    const std::size_t duplicateBytes =
+      static_cast<std::size_t>(slot.width) *
+      static_cast<std::size_t>(slot.height) * 4U;
+    clearPremultipliedTexture(slot);
+    currentWarmBytes -= std::min(currentWarmBytes, duplicateBytes);
+  }
+
   for (const auto& entry : warmEntries) {
     if (currentWarmBytes <= warmBudgetBytes_) break;
     const std::size_t index = entry.second;
