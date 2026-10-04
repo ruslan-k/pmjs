@@ -211,7 +211,13 @@ class CanvasStore {
     int dirtyY0 = 0;
     int dirtyX1 = 0;
     int dirtyY1 = 0;
-    bool dirty = false;
+    std::size_t dependencyDepth = 0;
+  };
+
+  struct Surface {
+    std::uint16_t generation = 1;
+    ImageHandle image = 0;
+    std::shared_ptr<Content> content;
     bool live = false;
   };
 
@@ -228,24 +234,21 @@ class CanvasStore {
 
   void fillRectNow(Content& surface, int x, int y, int width, int height,
                    std::uint32_t rgba);
-  void fillRectAdditiveNow(Surface& surface, int x, int y, int width, int height,
+  void fillRectAdditiveNow(Content& surface, int x, int y, int width, int height,
                            std::uint32_t rgba);
-  void clearNow(Surface& surface);
-  void clearRectNow(Surface& surface, int x, int y, int width, int height);
-  bool drawImageNow(Surface& destinationSurface, std::uint32_t source,
-                    int sourceX, int sourceY, int sourceWidth, int sourceHeight,
-                    int destinationX, int destinationY,
-                    int destinationWidth, int destinationHeight, float alpha);
-  bool drawTextNow(Surface& surface, const std::vector<std::filesystem::path>& fontPaths,
-                   const std::string& text, int x, int y, int pixelSize,
-                   std::uint32_t rgba, int strokeWidth);
-  bool blurNow(Surface& surface);
+  void clearNow(Content& surface);
+  void clearRectNow(Content& surface, int x, int y, int width, int height);
+  bool drawImageNow(Content& destination, const DrawImageCmd& command);
+  bool drawTextNow(Content& surface, const std::vector<std::filesystem::path>& fontPaths,
+                   const std::string& text, float x, float y, float pixelSize,
+                   std::uint32_t rgba, float strokeWidth, const CanvasTextStyle& style);
+  bool blurNow(Content& surface);
 
   static void blendPixel(Content& surface, int x, int y, std::uint32_t rgba,
                          std::uint8_t coverage);
   static void blendPixelAdditive(Content& surface, int x, int y,
                                  std::uint32_t rgba);
-  void markDirty(Surface& surface, int x, int y, int width, int height);
+  static void markDirty(Content& surface, int x, int y, int width, int height);
 
   ImageStore& images_;
   TextBackend textBackend_;
@@ -253,10 +256,7 @@ class CanvasStore {
   // Non-owning registry includes versions kept alive only by queued draws.
   std::unordered_set<Content*> contents_;
   std::vector<Surface> surfaces_;
-  std::vector<std::size_t> freeSurfaceSlots_;
   std::size_t liveCount_ = 0;
-  std::size_t cpuBytes_ = 0;
-  std::size_t dirtySurfaceCount_ = 0;
   std::size_t peakCpuBytes_ = 0;
   std::size_t peakLiveCount_ = 0;
 };
