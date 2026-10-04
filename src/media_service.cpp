@@ -40,6 +40,7 @@ struct MediaService::Impl {
   struct Voice {
     explicit Voice(std::unique_ptr<AudioDecoderSession> source)
         : decoder(std::move(source)), sourceChannels(decoder->sourceChannels()) {
+      mix.samples.reserve(bufferFrames * 2);
       mix.duration = decoder->duration();
       mix.loopStart = decoder->loopStartFrame();
       mix.loopEnd = decoder->loopEndFrame();
@@ -161,7 +162,7 @@ struct MediaService::Impl {
         count = std::min<std::size_t>(count, voice->mix.loopEnd - voice->producerFrame);
         decoded.resize(count * 2);
       }
-      voice->mix.samples.insert(voice->mix.samples.end(), decoded.begin(), decoded.end());
+      voice->mix.samples.append(decoded.data(), decoded.size());
       voice->producerFrame += count;
       const bool boundary = voice->mix.loop && voice->mix.loopEnd > voice->mix.loopStart &&
                             voice->producerFrame >= voice->mix.loopEnd;
