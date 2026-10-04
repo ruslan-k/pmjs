@@ -49,12 +49,20 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   const auto build = [&]() -> bool {
 
   struct SceneState {
-    std::array<float, 6> world{1, 0, 0, 1, 0, 0};
-    float alpha = 1;
-    std::array<int, 4> clip{};
-    bool clipped = false;
-    ImageHandle maskImage = 0;
-    std::array<float, 6> maskTransform{};
+    std::array<float, 6> world;
+    float alpha;
+    std::array<int, 4> clip;
+    bool clipped;
+    ImageHandle maskImage;
+    std::array<float, 6> maskTransform;
+
+    SceneState(const std::array<float, 6>& worldValue, float alphaValue,
+               const std::array<int, 4>& clipValue, bool clippedValue,
+               ImageHandle maskImageValue,
+               const std::array<float, 6>& maskTransformValue)
+        : world(worldValue), alpha(alphaValue), clip(clipValue),
+          clipped(clippedValue), maskImage(maskImageValue),
+          maskTransform(maskTransformValue) {}
   };
   // Scene submission is a per-frame hot path. Reuse its state buffer so a
   // large map does not malloc/free the same block every frame. Drop an
@@ -65,7 +73,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     std::vector<SceneState>().swap(states);
   }
   states.clear();
-  states.resize(nodeCount);
+  if (states.capacity() < nodeCount) states.reserve(nodeCount);
   std::size_t filterDepth = 0;
   for (std::size_t index = 0; index < nodeCount; ++index) {
     const std::size_t metadataOffset = index * metadataStride;
@@ -111,11 +119,12 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       values[valueOffset + 2], values[valueOffset + 3],
       values[valueOffset + 4], values[valueOffset + 5]
     };
-    static const SceneState rootState{};
+    static const SceneState rootState{
+      {1, 0, 0, 1, 0, 0}, 1.0F, {}, false, 0, {}
+    };
     const SceneState& parent = parentIndex == noParent
       ? rootState : states[parentIndex];
-    SceneState& state = states[index];
-    state.world = {
+    std::array<float, 6> world = {
       parent.world[0] * local[0] + parent.world[2] * local[1],
       parent.world[1] * local[0] + parent.world[3] * local[1],
       parent.world[0] * local[2] + parent.world[2] * local[3],
@@ -123,12 +132,10 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       parent.world[0] * local[4] + parent.world[2] * local[5] + parent.world[4],
       parent.world[1] * local[4] + parent.world[3] * local[5] + parent.world[5],
     };
-    if (spriteVertices) state.world = parent.world;
-    state.alpha = parent.alpha * values[valueOffset + 6];
-    state.clip = parent.clip;
-    state.clipped = parent.clipped;
-    state.maskImage = parent.maskImage;
-    state.maskTransform = parent.maskTransform;
+    if (spriteVertices) world = parent.world;
+    states.emplace_back(world, parent.alpha * values[valueOffset + 6],
+      parent.clip, parent.clipped, parent.maskImage, parent.maskTransform);
+    SceneState& state = states.back();
     if (flags & NodeFlags::hasAlphaMask) {
       if (state.maskImage || !images_.lookup(maskImage)) return false;
       state.maskImage = maskImage;
