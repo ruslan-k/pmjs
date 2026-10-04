@@ -416,9 +416,9 @@ void Renderer::renderScene() {
     glClearDepthf(1);
     glClear(GL_COLOR_BUFFER_BIT | (rootTarget.depth ? GL_DEPTH_BUFFER_BIT : 0));
 
-    const std::size_t requiredVertexFloats = frame_.commands.size() * 72U;
+    const std::size_t requiredVertexFloats = frame_.commands.size() * 48U;
     vertices_.clear();
-    if (vertices_.capacity() > 72U * 2048U &&
+    if (vertices_.capacity() > 48U * 2048U &&
         requiredVertexFloats * 4U < vertices_.capacity()) {
       std::vector<float>().swap(vertices_);
     }
@@ -617,6 +617,13 @@ void Renderer::renderScene() {
   if (operations.capacity() < frame_.commands.size()) {
     operations.reserve(frame_.commands.size());
   }
+  const auto appendQuad = [&](const std::array<float, 48>& quad) {
+    const std::size_t baseVertex = vertices_.size() / 12U;
+    const GLsizei firstIndex =
+      static_cast<GLsizei>((baseVertex / 4U) * 6U);
+    vertices_.insert(vertices_.end(), quad.begin(), quad.end());
+    return firstIndex;
+  };
   std::size_t preparingFilterDepth = 0;
   std::array<const RenderCommand*, scene_packet::maxFilterDepth> preparingFilters{};
   std::array<float, 4> viewportMapping{1, 1, 0, 0};
@@ -633,17 +640,14 @@ void Renderer::renderScene() {
       operation.command = &command;
       operation.action = command.action;
       if (command.action == RenderCommand::Action::filterEnd) {
-        const std::array<float, 72> vertices = {
+        const std::array<float, 48> vertices = {
           -1,  1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1,
            1,  1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1,
            1, -1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1,
-          -1,  1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1,
-           1, -1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1,
           -1, -1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1,
         };
-        operation.first = static_cast<GLsizei>(vertices_.size() / 12U);
+        operation.first = appendQuad(vertices);
         operation.count = 6;
-        vertices_.insert(vertices_.end(), vertices.begin(), vertices.end());
       }
       operations.push_back(operation);
       if (command.action == RenderCommand::Action::filterBegin) {
@@ -652,20 +656,17 @@ void Renderer::renderScene() {
       continue;
     }
     if (command.colorMatrixIndex != 0) {
-      const std::array<float, 72> vertices = {
+      const std::array<float, 48> vertices = {
         -1,  1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1,
          1,  1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1,
-         1, -1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1,
-        -1,  1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1,
          1, -1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1,
         -1, -1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1,
       };
       DrawOperation operation{};
-      operation.first = static_cast<GLsizei>(vertices_.size() / 12U);
+      operation.first = appendQuad(vertices);
       operation.count = 6;
       operation.matrixCommand = &command;
       operations.push_back(operation);
-      vertices_.insert(vertices_.end(), vertices.begin(), vertices.end());
       continue;
     }
     if (command.primitive == RenderCommand::Primitive::effect) {
@@ -778,15 +779,13 @@ void Renderer::renderScene() {
     const auto vertex1 = worldVertices ? command.spriteVertices[1] : p1;
     const auto vertex2 = worldVertices ? command.spriteVertices[2] : p2;
     const auto vertex3 = worldVertices ? command.spriteVertices[3] : p3;
-    const std::array<float, 72> vertices = {
+    const std::array<float, 48> vertices = {
       vertex0[0], vertex0[1], uv0[0], uv0[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
       vertex1[0], vertex1[1], uv1[0], uv1[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
       vertex2[0], vertex2[1], uv2[0], uv2[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      vertex0[0], vertex0[1], uv0[0], uv0[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      vertex2[0], vertex2[1], uv2[0], uv2[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
       vertex3[0], vertex3[1], uv3[0], uv3[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
     };
-    vertices_.insert(vertices_.end(), vertices.begin(), vertices.end());
+    const GLsizei quadFirstIndex = appendQuad(vertices);
     const bool operationClipped = inlineFilterMatrix[commandIndex] ?
         inlineFilterClipped[commandIndex] : command.clipped;
     const std::array<int, 4>& operationClip =
@@ -817,7 +816,7 @@ void Renderer::renderScene() {
         (operationClipped && operations.back().clip != operationClip)) {
       operations.push_back({0, texture, command.blendMode, command.repeat,
         command.nearest,
-        static_cast<GLsizei>(vertices_.size() / 12U - 6U), 6, nullptr,
+        quadFirstIndex, 6, nullptr,
         operationClip, operationClipped, textureWidth, textureHeight,
         command.blur, command.maskImage, command.maskTransform});
       operations.back().appliesSpriteColor = command.appliesSpriteColor;
@@ -838,12 +837,44 @@ void Renderer::renderScene() {
   }
 
   if (!vertices_.empty()) {
+    glBindVertexArray(vertexArray_);
     glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer_);
     glBufferData(GL_ARRAY_BUFFER,
                  static_cast<GLsizeiptr>(vertices_.size() * sizeof(float)),
                  vertices_.data(), GL_STREAM_DRAW);
+    const std::size_t quadCount = vertices_.size() / (12U * 4U);
+    if (quadCount > quadIndexCapacity_) {
+      std::size_t newCapacity = quadIndexCapacity_ == 0 ? 256U :
+        quadIndexCapacity_ * 2U;
+      newCapacity = std::max(newCapacity, quadCount);
+      std::vector<std::uint32_t> indices(newCapacity * 6U);
+      for (std::size_t quad = 0; quad < newCapacity; ++quad) {
+        const std::uint32_t base = static_cast<std::uint32_t>(quad * 4U);
+        const std::size_t offset = quad * 6U;
+        indices[offset] = base;
+        indices[offset + 1] = base + 1U;
+        indices[offset + 2] = base + 2U;
+        indices[offset + 3] = base;
+        indices[offset + 4] = base + 2U;
+        indices[offset + 5] = base + 3U;
+      }
+      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadIndexBuffer_);
+      glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                   static_cast<GLsizeiptr>(indices.size() *
+                                          sizeof(std::uint32_t)),
+                   indices.data(), GL_STATIC_DRAW);
+      quadIndexCapacity_ = newCapacity;
+    }
     if (diagnostics_) ++stats_.bufferUploads;
   }
+
+  const auto drawQuadOperation = [](const DrawOperation& operation) {
+    glDrawElements(
+      GL_TRIANGLES, operation.count, GL_UNSIGNED_INT,
+      reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(operation.first) *
+        sizeof(std::uint32_t)));
+  };
 
   BlendMode activeBlend = BlendMode::normal;
   std::uint32_t activeProgram = 0;
@@ -1020,7 +1051,7 @@ void Renderer::renderScene() {
                             targetFilter ? filterTarget_.framebuffer :
                                            groupTargets_[filterDepth].framebuffer);
           glBindTexture(GL_TEXTURE_2D, sourceTexture);
-          glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+          drawQuadOperation(operation);
           sourceYDown = false;
           glUniform1i(filterImageYDownUniform_, sourceYDown);
           if (diagnostics_) {
@@ -1037,7 +1068,7 @@ void Renderer::renderScene() {
                             targetFilter ? filterTarget_.framebuffer :
                                            groupTargets_[filterDepth].framebuffer);
           glBindTexture(GL_TEXTURE_2D, sourceTexture);
-          glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+          drawQuadOperation(operation);
           sourceYDown = false;
           glUniform1i(filterImageYDownUniform_, sourceYDown);
           if (diagnostics_) {
@@ -1067,7 +1098,7 @@ void Renderer::renderScene() {
                             targetFilter ? filterTarget_.framebuffer :
                                            groupTargets_[filterDepth].framebuffer);
           glBindTexture(GL_TEXTURE_2D, sourceTexture);
-          glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+          drawQuadOperation(operation);
           sourceYDown = false;
           glUniform1i(filterImageYDownUniform_, sourceYDown);
           if (diagnostics_) {
@@ -1146,7 +1177,7 @@ void Renderer::renderScene() {
                      extractParameters.data());
         glUniform1i(pixiFilterKindUniform_, 3);
         glBindFramebuffer(GL_FRAMEBUFFER, bloomTarget_.framebuffer);
-        glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+        drawQuadOperation(operation);
         sourceYDown = false;
         glUniform1i(filterImageYDownUniform_, sourceYDown);
         if (diagnostics_) {
@@ -1168,7 +1199,7 @@ void Renderer::renderScene() {
           glUniform1fv(pixiFilterParametersUniform_, 10,
                        passParameters.data());
           glUniform1i(pixiFilterKindUniform_, 21);
-          glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+          drawQuadOperation(operation);
           sourceYDown = false;
           glUniform1i(filterImageYDownUniform_, sourceYDown);
           if (diagnostics_) {
@@ -1271,7 +1302,7 @@ void Renderer::renderScene() {
           glUniform1fv(pixiFilterParametersUniform_, 10,
                        passParameters.data());
           glUniform1i(pixiFilterKindUniform_, 21);
-          glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+          drawQuadOperation(operation);
           sourceYDown = false;
           glUniform1i(filterImageYDownUniform_, sourceYDown);
           if (diagnostics_) {
@@ -1382,7 +1413,7 @@ void Renderer::renderScene() {
         activeBlend = filter.blendMode;
         glEnable(GL_BLEND);
         applyBlendMode(activeBlend);
-        glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+        drawQuadOperation(operation);
         if (diagnostics_) {
           ++stats_.drawCalls;
           ++stats_.filterDrawCalls;
@@ -1420,7 +1451,7 @@ void Renderer::renderScene() {
           const auto& region = filterRegions[filterDepth][regionIndex];
           rasterScissor(region[0], height_ - region[3],
                     region[2] - region[0], region[3] - region[1]);
-          glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+          drawQuadOperation(operation);
           if (diagnostics_) {
             ++stats_.drawCalls;
             ++stats_.filterDrawCalls;
@@ -1444,7 +1475,7 @@ void Renderer::renderScene() {
                     std::max(0, activeClip[2] - activeClip[0]),
                     std::max(0, activeClip[3] - activeClip[1]));
         }
-        glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+        drawQuadOperation(operation);
         if (diagnostics_) {
           ++stats_.drawCalls;
           ++stats_.filterDrawCalls;
@@ -1510,7 +1541,7 @@ void Renderer::renderScene() {
       glUniform1fv(colorMatrixUniform_, 20, toneMatrix.data());
       glUniform1f(colorMatrixAlphaUniform_,
                   operation.matrixCommand->color[3]);
-      glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+      drawQuadOperation(operation);
       if (diagnostics_) {
         ++stats_.drawCalls;
         ++stats_.filterDrawCalls;
@@ -1768,7 +1799,7 @@ void Renderer::renderScene() {
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
                       gpuRepeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
     }
-    glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+    drawQuadOperation(operation);
     if (diagnostics_) {
       ++stats_.drawCalls;
       if (operation.primitive == RenderCommand::Primitive::tilingSprite) ++stats_.tilingSpriteDrawCalls;
