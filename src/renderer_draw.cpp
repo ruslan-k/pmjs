@@ -860,6 +860,7 @@ void Renderer::renderScene() {
   std::array<bool, scene_packet::maxFilterDepth> savedScissor{};
   std::array<std::array<int, 4>, scene_packet::maxFilterDepth> savedClip{};
   std::array<int, 4> activeClip{};
+  constexpr std::size_t maxFilterRegions = 8;
   static thread_local std::array<std::vector<std::array<int, 4>>,
       scene_packet::maxFilterDepth> filterRegions;
   applyBlendMode(activeBlend);
@@ -887,8 +888,8 @@ void Renderer::renderScene() {
       std::array<int, 4> boundedRect{};
       const bool bounded = !operation.command->customFilterPlan && filterBoundsRect(operation.command, &boundedRect);
       filterRegions[filterDepth].clear();
-      if (filterRegions[filterDepth].capacity() < maxRegions) {
-        filterRegions[filterDepth].reserve(maxRegions);
+      if (filterRegions[filterDepth].capacity() < maxFilterRegions) {
+        filterRegions[filterDepth].reserve(maxFilterRegions);
       }
       const bool multiRegion = !operation.command->customFilterPlan && filterBoundsRegions(
           operation.command, &filterRegions[filterDepth]);
