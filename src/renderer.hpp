@@ -232,11 +232,13 @@ class Renderer {
                  const std::array<float, 4>& color);
   bool queueImage(ImageHandle image, const std::array<float, 6>& transform,
                   const std::array<float, 4>& source, float alpha,
-                  std::uint32_t tint, BlendMode blendMode);
+                  std::uint32_t tint, BlendMode blendMode,
+                  const ImageInfo* knownInfo = nullptr);
   bool queueTiled(ImageHandle image, const std::array<float, 6>& transform,
                   const std::array<float, 4>& source,
                   const std::array<float, 2>& destination, float alpha,
-                  std::uint32_t tint, BlendMode blendMode);
+                  std::uint32_t tint, BlendMode blendMode,
+                  const ImageInfo* knownInfo = nullptr);
   std::uint32_t createTileLayer(std::vector<TileLayerTile> tiles);
   std::uint32_t createMesh(ImageHandle image,
                            const std::vector<float>& positions,
