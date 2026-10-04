@@ -31,10 +31,10 @@ class StreamSampleBuffer {
   bool empty() const { return size_ == 0; }
 
   float& operator[](std::size_t index) {
-    return storage_[(head_ + index) % storage_.size()];
+    return storage_[physicalIndex(index)];
   }
   const float& operator[](std::size_t index) const {
-    return storage_[(head_ + index) % storage_.size()];
+    return storage_[physicalIndex(index)];
   }
 
   void reserve(std::size_t requested) {
@@ -62,7 +62,8 @@ class StreamSampleBuffer {
     if (count == 0) return;
     ensureCapacity(size_ + count);
     const std::size_t capacity = storage_.size();
-    const std::size_t tail = (head_ + size_) % capacity;
+    std::size_t tail = head_ + size_;
+    if (tail >= capacity) tail -= capacity;
     const std::size_t first = std::min(count, capacity - tail);
     std::copy_n(values, first, storage_.data() + tail);
     if (first < count) {
@@ -88,11 +89,18 @@ class StreamSampleBuffer {
       clear();
       return;
     }
-    head_ = (head_ + count) % storage_.size();
+    head_ += count;
+    if (head_ >= storage_.size()) head_ -= storage_.size();
     size_ -= count;
   }
 
  private:
+  std::size_t physicalIndex(std::size_t logicalIndex) const {
+    std::size_t index = head_ + logicalIndex;
+    if (index >= storage_.size()) index -= storage_.size();
+    return index;
+  }
+
   void ensureCapacity(std::size_t required) {
     if (required <= storage_.size()) return;
     const std::size_t doubled = storage_.empty() ? 16 : storage_.size() * 2;
