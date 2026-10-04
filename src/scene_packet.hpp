@@ -8,6 +8,8 @@ namespace pmjs::scene_packet {
 constexpr std::uint32_t version = 28;
 constexpr std::size_t metadataStride = 7;
 constexpr std::size_t valueStride = 41;
+// filterBegin's unused slot preserves zero/normal in existing version 28 writers.
+constexpr std::size_t filterCompositeBlendOffset = 34;
 constexpr std::size_t maxNodes = 65536;
 constexpr std::size_t maxPacketBytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t noParent = 0xffffffffU;
@@ -22,9 +24,12 @@ enum class NodeKind : std::uint32_t {
   filterBegin = 6,
   filterEnd = 7,
   mesh = 8,
+  // Effect: viewport 0..3; projection 7..22; camera 23..38; reset size 39..40.
+  effect = 9,
 };
 
 enum class FilterKind : std::uint32_t {
+  // Blur parameters: strength per pass, pass count, kernel (0 = MV, 5 = Pixi 5).
   blur = 0,
   displacement = 1,
   noiseGlitch = 2,
@@ -56,6 +61,7 @@ enum class FilterKind : std::uint32_t {
   blurY = 28,
   fxaa = 29,
   mzColor = 30,
+  custom = 31,
 };
 
 constexpr std::size_t maxFilterDepth = 4;
@@ -70,6 +76,12 @@ enum NodeFlags : std::uint32_t {
   textureRotationShift = 5U,
   roundPixels = 1U << 8U,
   hasMeshPostTintOverlay = 1U << 9U,
+  premultipliedSpriteTexture = 1U << 10U,
+  packedSpriteColor = 1U << 11U,
+  spriteWorldVertices = 1U << 12U,
+  standaloneBitmapRegion = 1U << 13U,
+  hasMvBitmapBlend = 1U << 14U,
+  clampedTilingSampling = 1U << 15U,
 };
 
 // All packet validators share this mask so accepted flags cannot diverge.
@@ -77,7 +89,10 @@ constexpr std::uint32_t kAllowedNodeFlags =
     NodeFlags::hasClipRectangle | NodeFlags::hasBlurFilter |
     NodeFlags::hasAlphaMask | NodeFlags::nearestSampling |
     NodeFlags::hasSpriteColor | NodeFlags::textureRotationMask |
-    NodeFlags::roundPixels | NodeFlags::hasMeshPostTintOverlay;
+    NodeFlags::roundPixels | NodeFlags::hasMeshPostTintOverlay |
+    NodeFlags::premultipliedSpriteTexture | NodeFlags::packedSpriteColor |
+    NodeFlags::spriteWorldVertices | NodeFlags::standaloneBitmapRegion | NodeFlags::hasMvBitmapBlend |
+    NodeFlags::clampedTilingSampling;
 
 static_assert((kAllowedNodeFlags & NodeFlags::roundPixels) != 0U,
               "scene packet validators must accept roundPixels");

@@ -1,7 +1,10 @@
 #include "node_addon_internal.hpp"
 
+#include <SDL.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <limits>
 
 namespace pmjs::addon {
@@ -169,6 +172,8 @@ napi_value rendererStats(napi_env env, napi_callback_info) try {
   const auto& stats = host(env).renderer.stats();
   napi_value result;
   check(env, napi_create_object(env, &result), "cannot create renderer stats");
+  check(env, napi_set_named_property(env, result, "diagnostics",
+    boolean(env, host(env).renderer.diagnosticsEnabled())), "cannot set renderer diagnostics state");
   check(env, napi_set_named_property(env, result, "frames",
     number(env, static_cast<double>(stats.frames))), "cannot set renderer frames");
   check(env, napi_set_named_property(env, result, "retainedFrames",
@@ -320,6 +325,46 @@ napi_value setWindowTitle(napi_env env, napi_callback_info info) try {
   return nullptr;
 }
 
+napi_value setFullscreen(napi_env env, napi_callback_info info) try {
+  auto args = arguments(env, info, 1);
+  host(env).platform.setFullscreen(asBoolean(env, args.at(0)));
+  return undefined(env);
+} catch (const std::exception& error) {
+  napi_throw_error(env, nullptr, error.what());
+  return nullptr;
+}
+
+napi_value isFullscreen(napi_env env, napi_callback_info) try {
+  return boolean(env, host(env).platform.fullscreen());
+} catch (const std::exception& error) {
+  napi_throw_error(env, nullptr, error.what());
+  return nullptr;
+}
+
+napi_value openExternal(napi_env env, napi_callback_info info) try {
+  auto args = arguments(env, info, 1);
+  host(env);
+  auto url = asString(env, args.at(0));
+  auto scheme = url.substr(0, url.find(':'));
+  std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  if ((scheme != "http" && scheme != "https" && scheme != "mailto") ||
+      std::any_of(url.begin(), url.end(), [](unsigned char ch) { return ch <= 32; })) {
+    return boolean(env, false);
+  }
+  // SDL_OpenURL was added in SDL 2.0.14; older firmware can still run games.
+  using OpenUrl = int (*)(const char*);
+  void* library = SDL_LoadObject("libSDL2-2.0.so.0");
+  if (!library) return boolean(env, false);
+  const auto open = reinterpret_cast<OpenUrl>(SDL_LoadFunction(library, "SDL_OpenURL"));
+  const bool opened = open && open(url.c_str()) == 0;
+  SDL_UnloadObject(library);
+  return boolean(env, opened);
+} catch (const std::exception& error) {
+  napi_throw_error(env, nullptr, error.what());
+  return nullptr;
+}
+
 void registerRuntimeBindings(napi_env env, napi_value exports) {
   method(env, exports, "initialize", initialize);
   method(env, exports, "pollEvents", pollEvents);
@@ -337,6 +382,9 @@ void registerRuntimeBindings(napi_env env, napi_value exports) {
   method(env, runtime, "displaySize", displaySize);
   method(env, runtime, "windowSize", windowSize);
   method(env, runtime, "setWindowTitle", setWindowTitle);
+  method(env, runtime, "setFullscreen", setFullscreen);
+  method(env, runtime, "isFullscreen", isFullscreen);
+  method(env, runtime, "openExternal", openExternal);
   check(env, napi_set_named_property(env, exports, "runtime", runtime),
         "cannot export runtime module");
 }

@@ -10,7 +10,17 @@
 
 namespace pmjs {
 namespace {
-void applyBlendMode(BlendMode mode) {
+std::array<int, 4> effectFrame(const RenderCommand* filter, int width, int height) {
+  if (!filter || !filter->clipped) return {0, 0, width, height};
+  return {std::clamp(filter->clip[0], 0, width),
+          std::clamp(filter->clip[1], 0, height),
+          std::clamp(filter->clip[2], 0, width),
+          std::clamp(filter->clip[3], 0, height)};
+}
+
+}  // namespace
+
+void Renderer::applyBlendMode(BlendMode mode) {
   switch (mode) {
     case BlendMode::normal:
       glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
@@ -29,7 +39,6 @@ void applyBlendMode(BlendMode mode) {
       break;
   }
 }
-}  // namespace
 
 void Renderer::render() {
   renderScene();
@@ -183,7 +192,20 @@ void Renderer::computeFilterContentBounds() {
       bool effective = false;
       const bool regionsValid = !level.unbounded &&
           filterBoundsPadding(begun.filterKind, begun.filterParameters) == 0;
-      if (!level.hasContent && !level.unbounded) {
+      if (begun.customFilterPlan) {
+        const auto& frame = begun.customFilterPlan->frame;
+        ex0 = frame[0]; ey0 = frame[1];
+        ex1 = frame[0] + frame[2]; ey1 = frame[1] + frame[3];
+        effective = true;
+      } else if (begun.filterKind == scene_packet::FilterKind::custom && level.hasContent &&
+          !level.unbounded) {
+        const float padding = begun.filterParameters[0];
+        ex0 = level.minX - padding;
+        ey0 = level.minY - padding;
+        ex1 = level.maxX + padding;
+        ey1 = level.maxY + padding;
+        effective = true;
+      } else if (!level.hasContent && !level.unbounded) {
         effective = true;
       } else if (!level.unbounded &&
                  filterBoundsPadding(begun.filterKind,
@@ -260,7 +282,8 @@ void Renderer::computeFilterContentBounds() {
     }
     if (command.tileLayer != 0 ||
         command.primitive == RenderCommand::Primitive::tileLayer ||
-        command.primitive == RenderCommand::Primitive::mesh) {
+        command.primitive == RenderCommand::Primitive::mesh ||
+        command.primitive == RenderCommand::Primitive::effect) {
       top.unbounded = true;
       continue;
     }
@@ -273,14 +296,14 @@ void Renderer::computeFilterContentBounds() {
     const float dh = command.destination[1];
     if (!(dw > 0.0F) || !(dh > 0.0F)) continue;
     const auto& t = command.transform;
-    const float x0 = t[4];
-    const float y0 = t[5];
-    const float x1 = t[0] * dw + t[4];
-    const float y1 = t[1] * dw + t[5];
-    const float x2 = t[0] * dw + t[2] * dh + t[4];
-    const float y2 = t[1] * dw + t[3] * dh + t[5];
-    const float x3 = t[2] * dh + t[4];
-    const float y3 = t[3] * dh + t[5];
+    const auto point = [&](std::size_t corner, float x, float y) {
+      return command.spriteWorldVertices ? command.spriteVertices[corner] :
+        std::array<float, 2>{t[0] * x + t[2] * y + t[4], t[1] * x + t[3] * y + t[5]};
+    };
+    const auto [x0, y0] = point(0, 0, 0);
+    const auto [x1, y1] = point(1, dw, 0);
+    const auto [x2, y2] = point(2, dw, dh);
+    const auto [x3, y3] = point(3, 0, dh);
     if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) ||
         !std::isfinite(y1) || !std::isfinite(x2) || !std::isfinite(y2) ||
         !std::isfinite(x3) || !std::isfinite(y3)) {
@@ -362,60 +385,28 @@ bool Renderer::filterBoundsRect(const RenderCommand* filterBegin,
 }
 
 void Renderer::renderScene() {
-  if (offscreenRender_) {
-    ensureTarget(offscreenTexture_, offscreenFramebuffer_);
-  }
-  std::uint32_t& rootFramebuffer = offscreenRender_ ? offscreenFramebuffer_ :
-                                                      sceneFramebuffer_;
-  std::uint32_t& rootTexture = offscreenRender_ ? offscreenTexture_ :
-                                                  sceneTexture_;
+  RenderTarget& rootTarget = offscreenRender_ ? offscreenTarget_ : sceneTarget_;
+  ensureTarget(rootTarget, width_, height_);
+  std::uint32_t& rootFramebuffer = rootTarget.framebuffer;
+  std::uint32_t& rootTexture = rootTarget.texture;
   const bool shouldRenderScene =
       sceneSubmittedThisFrame_ || offscreenRender_ || !hasValidSceneFrame_;
   if (shouldRenderScene) {
-    // Size auxiliary storage to actual scene features, not worst-case engine
-    // capability. Ordinary scenes therefore keep only the mandatory scene FBO.
-    std::size_t depth = 0;
-    std::size_t maxDepth = 0;
-    bool needsFilterTarget = false;
-    bool needsToneOverlay = false;
-    bool needsBloomTarget = false;
-    for (const auto& command : frame_.commands) {
-      if (command.action == RenderCommand::Action::filterBegin) {
-        ++depth;
-        maxDepth = std::max(maxDepth, depth);
-        needsFilterTarget = true;
-        needsBloomTarget = needsBloomTarget ||
-            command.filterKind == scene_packet::FilterKind::advancedBloom;
-      } else if (command.action == RenderCommand::Action::filterEnd) {
-        if (depth > 0) --depth;
-      }
-      if (command.appliesColorMatrix) {
-        needsFilterTarget = true;
-        needsToneOverlay = true;
-      }
-    }
-    if (needsFilterTarget) {
-      ensureTarget(filterTexture_, filterFramebuffer_);
-    }
-    if (needsToneOverlay) {
-      ensureTarget(toneOverlayTexture_, toneOverlayFramebuffer_);
-    }
-    if (needsBloomTarget) {
-      ensureTarget(bloomTexture_, bloomFramebuffer_);
-    }
-    for (std::size_t index = 0;
-         index < std::min(maxDepth, groupFramebuffers_.size()); ++index) {
-      ensureTarget(groupTextures_[index], groupFramebuffers_[index]);
-    }
+    if (!offscreenRender_ && std::any_of(frame_.commands.begin(), frame_.commands.end(), [](const auto& command) {
+      return command.primitive == RenderCommand::Primitive::effect;
+    })) ensureDepthBuffer(rootTarget);
     if (!offscreenRender_) toneCompositionActive_ = false;
     glBindFramebuffer(GL_FRAMEBUFFER, rootFramebuffer);
     glViewport(0, 0, width_, height_);
     glClearColor(clearColor_[0], clearColor_[1], clearColor_[2], clearColor_[3]);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glDepthMask(GL_TRUE);
+    glClearDepthf(1);
+    glClear(GL_COLOR_BUFFER_BIT | (rootTarget.depth ? GL_DEPTH_BUFFER_BIT : 0));
 
     vertices_.clear();
     vertices_.reserve(frame_.commands.size() * 72);
-    if (filterBoundsEnabled_) {
+    if (filterBoundsEnabled_ || std::any_of(frame_.commands.begin(), frame_.commands.end(),
+        [](const auto& command) { return command.filterKind == scene_packet::FilterKind::custom; })) {
       computeFilterContentBounds();
     } else {
       filterBounds_.clear();
@@ -474,6 +465,7 @@ void Renderer::renderScene() {
   for (std::size_t begin = 0; begin < frame_.commands.size(); ++begin) {
     const RenderCommand& filter = frame_.commands[begin];
     if (filter.action != RenderCommand::Action::filterBegin ||
+        filter.blendMode != BlendMode::normal ||
         filterDepthBefore[begin] != 0 ||
         filter.filterKind != scene_packet::FilterKind::colorMatrix ||
         !preservesAlpha(filter.filterParameters)) continue;
@@ -561,6 +553,7 @@ void Renderer::renderScene() {
          cleanTail && index < frame_.commands.size(); ++index) {
       const RenderCommand& command = frame_.commands[index];
       cleanTail = command.action == RenderCommand::Action::draw &&
+                  command.primitive != RenderCommand::Primitive::effect &&
                   !command.appliesColorMatrix &&
                   command.blendMode == BlendMode::normal;
     }
@@ -585,10 +578,16 @@ void Renderer::renderScene() {
     const RenderCommand* matrixCommand = nullptr;
     RenderCommand::Action action = RenderCommand::Action::draw;
     bool appliesSpriteColor = false;
+    bool pixiSpritePacking = false;
+    bool spriteWorldVertices = false;
+    bool premultipliedSpriteTexture = false;
+    bool clampedTilingSampling = false;
+    std::array<float, 4> spriteFrame{};
     std::array<float, 4> colorTone{};
     std::array<float, 4> blendColor{};
     const RenderCommand* inlineMatrix = nullptr;
     RenderCommand::Primitive primitive = RenderCommand::Primitive::sprite;
+    std::array<float, 4> viewportMapping{1, 1, 0, 0};
   };
   static thread_local std::vector<DrawOperation> operations;
   if (operations.capacity() > 1024 &&
@@ -600,11 +599,15 @@ void Renderer::renderScene() {
     operations.reserve(frame_.commands.size());
   }
   std::size_t preparingFilterDepth = 0;
+  std::array<const RenderCommand*, scene_packet::maxFilterDepth> preparingFilters{};
+  std::array<float, 4> viewportMapping{1, 1, 0, 0};
   for (std::size_t commandIndex = 0;
        commandIndex < frame_.commands.size(); ++commandIndex) {
     const RenderCommand& command = frame_.commands[commandIndex];
     if (inlineFilterBoundary[commandIndex]) continue;
     if (command.action != RenderCommand::Action::draw) {
+      viewportMapping = {1, 1, 0, 0};
+      if (command.action == RenderCommand::Action::filterBegin) preparingFilters[preparingFilterDepth] = &command;
       if (command.action == RenderCommand::Action::filterEnd &&
           preparingFilterDepth > 0) --preparingFilterDepth;
       DrawOperation operation{};
@@ -646,36 +649,57 @@ void Renderer::renderScene() {
       vertices_.insert(vertices_.end(), vertices.begin(), vertices.end());
       continue;
     }
+    if (command.primitive == RenderCommand::Primitive::effect) {
+      DrawOperation operation{};
+      operation.command = &command;
+      operation.primitive = command.primitive;
+      operation.clip = command.clip;
+      operation.clipped = command.clipped;
+      operations.push_back(operation);
+      const auto* filter = preparingFilterDepth ? preparingFilters[preparingFilterDepth - 1] : nullptr;
+      const auto frame = effectFrame(filter, width_, height_);
+      const float sx = command.effect.resetViewport[0] / std::max(1, frame[2] - frame[0]);
+      const float sy = command.effect.resetViewport[1] / std::max(1, frame[3] - frame[1]);
+      // Keep fractional projection offsets; rounding a virtual GL viewport changes edge pixels.
+      viewportMapping = {sx, sy, frame[0] * (1 - sx), frame[1] * (1 - sy)};
+      continue;
+    }
     if (command.tileLayer != 0) {
       operations.push_back({command.tileLayer, 0, command.blendMode,
                             false, command.nearest, 0, 0, &command, command.clip,
                             command.clipped, 1, 1, 0, 0, {}, {}});
       operations.back().primitive = command.primitive;
+      operations.back().viewportMapping = viewportMapping;
       continue;
     }
     const auto info = command.image == 0 ? std::optional<ImageInfo>{} :
-                                          images_.lookup(command.image);
+      (command.pixiSpritePacking && !command.premultipliedSpriteTexture ?
+        images_.lookupPremultiplied(command.image) : images_.lookup(command.image));
     if (command.image != 0 && !info) continue;
     const float textureWidth = info ? static_cast<float>(info->width) : 1.0F;
     const float textureHeight = info ? static_cast<float>(info->height) : 1.0F;
     const std::uint32_t texture = info ? info->texture : whiteTexture_;
+    const bool texturePremultiplied = command.premultipliedSpriteTexture || (info && info->premultiplied);
     const auto& t = command.transform;
-    const auto point = [&](float x, float y) {
+    const auto point = [&](float x, float y, std::size_t corner) {
       float px = t[0] * x + t[2] * y + t[4];
       float py = t[1] * x + t[3] * y + t[5];
+      if (command.spriteWorldVertices) { px = command.spriteVertices[corner][0]; py = command.spriteVertices[corner][1]; }
       if (command.roundPixels) {
         px = std::floor(px);
         py = std::floor(py);
       }
+      px = px * viewportMapping[0] + viewportMapping[2];
+      py = py * viewportMapping[1] + viewportMapping[3];
       return std::array<float, 2>{px / static_cast<float>(width_) * 2.0F - 1.0F,
                                   1.0F - py / static_cast<float>(height_) * 2.0F};
     };
     const float localWidth = command.destination[0];
     const float localHeight = command.destination[1];
-    const auto p0 = point(0, 0);
-    const auto p1 = point(localWidth, 0);
-    const auto p2 = point(localWidth, localHeight);
-    const auto p3 = point(0, localHeight);
+    const auto p0 = point(0, 0, 0);
+    const auto p1 = point(localWidth, 0, 1);
+    const auto p2 = point(localWidth, localHeight, 2);
+    const auto p3 = point(0, localHeight, 3);
     if (preparingFilterDepth == 0) {
       const bool left = p0[0] <= -1 && p1[0] <= -1 &&
                         p2[0] <= -1 && p3[0] <= -1;
@@ -691,9 +715,25 @@ void Renderer::renderScene() {
     const float v0 = command.source[1] / textureHeight;
     const float u1 = (command.source[0] + command.source[2]) / textureWidth;
     const float v1 = (command.source[1] + command.source[3]) / textureHeight;
-    const std::array<std::array<float, 2>, 4> sourceCorners = {
+    std::array<std::array<float, 2>, 4> sourceCorners = {
       std::array<float, 2>{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}
     };
+    // GPU Bitmap views replace private textures; their storage atlas must not
+    // introduce the atlas-wide uint16 UV rounding of an authored spritesheet.
+    if (command.pixiSpritePacking && !command.standaloneBitmapRegion) {
+      const auto packUv = [](double coordinate) {
+        // JS ToUint16 truncates and wraps; an out-of-range C++ cast is undefined.
+        double packed = std::fmod(std::trunc(coordinate * 65535.0), 65536.0);
+        if (packed < 0) packed += 65536.0;
+        return static_cast<float>(packed / 65535.0);
+      };
+      const float packedU0 = packUv(double(command.source[0]) / textureWidth);
+      const float packedV0 = packUv(double(command.source[1]) / textureHeight);
+      const float packedU1 = packUv((double(command.source[0]) + command.source[2]) / textureWidth);
+      const float packedV1 = packUv((double(command.source[1]) + command.source[3]) / textureHeight);
+      sourceCorners = {{{packedU0, packedV0}, {packedU1, packedV0},
+                        {packedU1, packedV1}, {packedU0, packedV1}}};
+    }
     constexpr std::array<std::array<std::uint8_t, 4>, 8> rotatedCorners = {{
       {{0, 1, 2, 3}}, {{1, 2, 3, 0}}, {{2, 3, 0, 1}}, {{3, 0, 1, 2}},
       {{3, 2, 1, 0}}, {{0, 3, 2, 1}}, {{1, 0, 3, 2}}, {{2, 1, 0, 3}}
@@ -703,14 +743,26 @@ void Renderer::renderScene() {
     const auto& uv1 = sourceCorners[uvOrder[1]];
     const auto& uv2 = sourceCorners[uvOrder[2]];
     const auto& uv3 = sourceCorners[uvOrder[3]];
-    const auto& color = command.color;
+    auto color = command.color;
+    if (command.pixiSpritePacking && !command.packedSpriteColor) {
+      const float alpha = std::clamp(color[3], 0.0F, 1.0F);
+      for (std::size_t channel = 0; channel < 3; ++channel) {
+        color[channel] = std::floor(color[channel] * 255.0F * alpha + 0.5F) / 255.0F;
+      }
+      color[3] = std::floor(alpha * 255.0F) / 255.0F;
+    }
+    const bool worldVertices = command.spriteWorldVertices && viewportMapping == std::array<float, 4>{1, 1, 0, 0};
+    const auto vertex0 = worldVertices ? command.spriteVertices[0] : p0;
+    const auto vertex1 = worldVertices ? command.spriteVertices[1] : p1;
+    const auto vertex2 = worldVertices ? command.spriteVertices[2] : p2;
+    const auto vertex3 = worldVertices ? command.spriteVertices[3] : p3;
     const std::array<float, 72> vertices = {
-      p0[0], p0[1], uv0[0], uv0[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      p1[0], p1[1], uv1[0], uv1[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      p2[0], p2[1], uv2[0], uv2[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      p0[0], p0[1], uv0[0], uv0[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      p2[0], p2[1], uv2[0], uv2[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      p3[0], p3[1], uv3[0], uv3[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
+      vertex0[0], vertex0[1], uv0[0], uv0[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
+      vertex1[0], vertex1[1], uv1[0], uv1[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
+      vertex2[0], vertex2[1], uv2[0], uv2[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
+      vertex0[0], vertex0[1], uv0[0], uv0[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
+      vertex2[0], vertex2[1], uv2[0], uv2[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
+      vertex3[0], vertex3[1], uv3[0], uv3[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
     };
     vertices_.insert(vertices_.end(), vertices.begin(), vertices.end());
     const bool operationClipped = inlineFilterMatrix[commandIndex] ?
@@ -723,10 +775,15 @@ void Renderer::renderScene() {
         operations.back().blendMode != command.blendMode ||
         operations.back().repeat != command.repeat ||
         operations.back().nearest != command.nearest ||
+        operations.back().clampedTilingSampling != command.clampedTilingSampling ||
         operations.back().blur != command.blur ||
         operations.back().maskImage != command.maskImage ||
         operations.back().maskTransform != command.maskTransform ||
         operations.back().appliesSpriteColor != command.appliesSpriteColor ||
+        operations.back().pixiSpritePacking != command.pixiSpritePacking ||
+        operations.back().spriteWorldVertices != worldVertices ||
+        operations.back().premultipliedSpriteTexture != texturePremultiplied ||
+        (command.appliesSpriteColor && operations.back().spriteFrame != command.source) ||
         operations.back().colorTone != command.colorTone ||
         operations.back().blendColor != command.blendColor ||
         operations.back().inlineMatrix != inlineFilterMatrix[commandIndex] ||
@@ -739,6 +796,11 @@ void Renderer::renderScene() {
         operationClip, operationClipped, textureWidth, textureHeight,
         command.blur, command.maskImage, command.maskTransform});
       operations.back().appliesSpriteColor = command.appliesSpriteColor;
+      operations.back().pixiSpritePacking = command.pixiSpritePacking;
+      operations.back().spriteWorldVertices = worldVertices;
+      operations.back().premultipliedSpriteTexture = texturePremultiplied;
+      operations.back().clampedTilingSampling = command.clampedTilingSampling;
+      operations.back().spriteFrame = command.source;
       operations.back().colorTone = command.colorTone;
       operations.back().blendColor = command.blendColor;
       operations.back().inlineMatrix = inlineFilterMatrix[commandIndex];
@@ -753,7 +815,7 @@ void Renderer::renderScene() {
     glBufferData(GL_ARRAY_BUFFER,
                  static_cast<GLsizeiptr>(vertices_.size() * sizeof(float)),
                  vertices_.data(), GL_STREAM_DRAW);
-    ++stats_.bufferUploads;
+    if (diagnostics_) ++stats_.bufferUploads;
   }
 
   BlendMode activeBlend = BlendMode::normal;
@@ -761,6 +823,34 @@ void Renderer::renderScene() {
   bool scissorActive = false;
   std::size_t filterDepth = 0;
   std::array<const RenderCommand*, scene_packet::maxFilterDepth> filterCommands{};
+  std::array<float, scene_packet::maxFilterDepth> rasterResolutions{};
+  float rasterResolution = 1;
+  std::array<float, 4> rasterFrame{0, 0, static_cast<float>(width_), static_cast<float>(height_)};
+  std::array<std::array<float, 4>, scene_packet::maxFilterDepth> rasterFrames{};
+  bool targetYDown = offscreenRender_;
+  bool targetYDown = offscreenRender_;
+  const auto projectTarget = [&](std::uint32_t program) {
+    auto [entry, inserted] = targetProjectionLocations_.try_emplace(program, -1);
+    if (inserted) entry->second = glGetUniformLocation(program, "targetProjection");
+    glUniform4f(entry->second, width_ / std::max(1.0F, rasterFrame[2]),
+      height_ / std::max(1.0F, rasterFrame[3]),
+      (width_ - 2 * rasterFrame[0]) / std::max(1.0F, rasterFrame[2]) - 1,
+      (targetYDown ? -1.0F : 1.0F) * (1 - (height_ - 2 * rasterFrame[1]) / std::max(1.0F, rasterFrame[3])));
+  };
+  const auto rasterScissor = [&](int x, int y, int width, int height) {
+    const float localY = targetYDown ? height_ - y - height - rasterFrame[1] :
+      y - (height_ - rasterFrame[1] - rasterFrame[3]);
+    glScissor(std::lround((x - rasterFrame[0]) * rasterResolution), std::lround(localY * rasterResolution),
+      std::max(0L, std::lround(width * rasterResolution)), std::max(0L, std::lround(height * rasterResolution)));
+  };
+  const auto maskMatrix = [&](const float* matrix) {
+    std::array<float, 6> result{};
+    std::copy_n(matrix, 6, result.begin());
+    result[4] += matrix[0] * rasterFrame[0] + matrix[2] * rasterFrame[1];
+    result[5] += matrix[1] * rasterFrame[0] + matrix[3] * rasterFrame[1];
+    for (int index = 0; index < 4; ++index) result[index] /= rasterResolution;
+    return result;
+  };
   std::array<bool, scene_packet::maxFilterDepth> savedScissor{};
   std::array<std::array<int, 4>, scene_packet::maxFilterDepth> savedClip{};
   std::array<int, 4> activeClip{};
@@ -769,14 +859,29 @@ void Renderer::renderScene() {
   applyBlendMode(activeBlend);
   for (const auto& operation : operations) {
     if (operation.action == RenderCommand::Action::filterBegin) {
-      ++stats_.filterTargetAcquires;
-      if (groupFramebuffers_[filterDepth] && groupTextures_[filterDepth]) {
-        ++stats_.filterTargetReuses;
+      targetYDown = true;
+      rasterResolution = operation.command->customFilterPlan ?
+        operation.command->customFilterPlan->resolutions[0] : 1.0F;
+      rasterResolutions[filterDepth] = rasterResolution;
+      rasterFrame = operation.command->customFilterPlan ? operation.command->customFilterPlan->frame :
+        std::array<float, 4>{0, 0, static_cast<float>(width_), static_cast<float>(height_)};
+      rasterFrames[filterDepth] = rasterFrame;
+      if (activeProgram) projectTarget(activeProgram);
+      const auto pot = [](int size) { int result = 1; while (result < size) result *= 2; return result; };
+      const int targetWidth = std::max(1, static_cast<int>(std::ceil(rasterFrame[2] * rasterResolution)));
+      const int targetHeight = std::max(1, static_cast<int>(std::ceil(rasterFrame[3] * rasterResolution)));
+      if (diagnostics_) ++stats_.filterTargetAcquires;
+      if (groupTargets_[filterDepth].texture &&
+          groupTargets_[filterDepth].width == targetWidth &&
+          groupTargets_[filterDepth].height == targetHeight) {
+        if (diagnostics_) ++stats_.filterTargetReuses;
       }
+      ensureTarget(groupTargets_[filterDepth], operation.command->customFilterPlan ? pot(targetWidth) : targetWidth,
+        operation.command->customFilterPlan ? pot(targetHeight) : targetHeight);
       std::array<int, 4> boundedRect{};
-      const bool bounded = filterBoundsRect(operation.command, &boundedRect);
+      const bool bounded = !operation.command->customFilterPlan && filterBoundsRect(operation.command, &boundedRect);
       filterRegions[filterDepth].clear();
-      const bool multiRegion = filterBoundsRegions(
+      const bool multiRegion = !operation.command->customFilterPlan && filterBoundsRegions(
           operation.command, &filterRegions[filterDepth]);
       if (bounded) {
         savedScissor[filterDepth] = true;
@@ -790,11 +895,11 @@ void Renderer::renderScene() {
         glDisable(GL_SCISSOR_TEST);
         scissorActive = false;
       }
-      glBindFramebuffer(GL_FRAMEBUFFER, groupFramebuffers_[filterDepth]);
-      glViewport(0, 0, width_, height_);
+      glBindFramebuffer(GL_FRAMEBUFFER, groupTargets_[filterDepth].framebuffer);
+      glViewport(0, 0, std::lround(rasterFrame[2] * rasterResolution), std::lround(rasterFrame[3] * rasterResolution));
       if (bounded && !multiRegion) {
         glEnable(GL_SCISSOR_TEST);
-        glScissor(boundedRect[0], height_ - boundedRect[3],
+        rasterScissor(boundedRect[0], height_ - boundedRect[3],
                   std::max(0, boundedRect[2] - boundedRect[0]),
                   std::max(0, boundedRect[3] - boundedRect[1]));
         scissorActive = true;
@@ -806,7 +911,7 @@ void Renderer::renderScene() {
         scissorActive = false;
       }
       glClear(GL_COLOR_BUFFER_BIT);
-      ++stats_.filterTargetClears;
+      if (diagnostics_) ++stats_.filterTargetClears;
       activeBlend = BlendMode::normal;
       applyBlendMode(activeBlend);
       ++filterDepth;
@@ -814,25 +919,35 @@ void Renderer::renderScene() {
     }
     if (operation.action == RenderCommand::Action::filterEnd) {
       --filterDepth;
+      targetYDown = offscreenRender_ || filterDepth > 0;
+      const float sourceResolution = rasterResolutions[filterDepth];
+      rasterResolution = filterDepth ? rasterResolutions[filterDepth - 1] : 1.0F;
+      rasterFrame = filterDepth ? rasterFrames[filterDepth - 1] :
+        std::array<float, 4>{0, 0, static_cast<float>(width_), static_cast<float>(height_)};
       const RenderCommand& filter = *filterCommands[filterDepth];
-      ++stats_.filterApplications[static_cast<std::size_t>(filter.filterKind)];
+      if (diagnostics_) ++stats_.filterApplications[static_cast<std::size_t>(filter.filterKind)];
       std::array<int, 4> boundedRect{};
-      if (filterBoundsRect(filterCommands[filterDepth], &boundedRect)) {
+      if (diagnostics_ && filterBoundsRect(filterCommands[filterDepth], &boundedRect)) {
         ++stats_.filterBoundedApplications;
       }
       if (scissorActive) {
         glDisable(GL_SCISSOR_TEST);
         scissorActive = false;
       }
-      glViewport(0, 0, width_, height_);
+      glViewport(0, 0, std::lround(rasterFrame[2] * rasterResolution), std::lround(rasterFrame[3] * rasterResolution));
       glUseProgram(program_);
+      projectTarget(program_);
       activeProgram = program_;
+      glUniform1i(filterTargetYDownUniform_, 0);
+      // Authored filter content projects downward; internal passes project upward.
+      bool sourceYDown = true;
+      glUniform1i(filterImageYDownUniform_, sourceYDown);
       glBindVertexArray(vertexArray_);
       glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, groupTextures_[filterDepth]);
+      glBindTexture(GL_TEXTURE_2D, groupTargets_[filterDepth].texture);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-      textureNearestState_[groupTextures_[filterDepth]] = false;
+      textureNearestState_[groupTargets_[filterDepth].texture] = false;
       glUniform2f(textureSizeUniform_,
                   static_cast<float>(width_) / filter.filterResolution,
                   static_cast<float>(height_) / filter.filterResolution);
@@ -847,72 +962,91 @@ void Renderer::renderScene() {
       const bool pictureBlend =
         filter.filterKind == scene_packet::FilterKind::pictureBlend;
       if (pictureBlend) {
+        ensureTarget(filterTarget_, width_, height_);
         glBindFramebuffer(GL_FRAMEBUFFER, filterDepth == 0 ? rootFramebuffer :
-                          groupFramebuffers_[filterDepth - 1]);
+                          groupTargets_[filterDepth - 1].framebuffer);
         glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, filterTexture_);
+        glBindTexture(GL_TEXTURE_2D, filterTarget_.texture);
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, width_, height_);
-        ++stats_.framebufferCopies;
+        if (diagnostics_) ++stats_.framebufferCopies;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glUniform1i(bloomImageUniform_, 3);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, groupTextures_[filterDepth]);
+        glBindTexture(GL_TEXTURE_2D, groupTargets_[filterDepth].texture);
       }
 
-      std::uint32_t compositeTexture = groupTextures_[filterDepth];
+      std::uint32_t compositeTexture = groupTargets_[filterDepth].texture;
       if (filter.filterKind == scene_packet::FilterKind::blur) {
+        ensureTarget(filterTarget_, width_, height_);
+        glUniform1fv(pixiFilterParametersUniform_, 3, filter.filterParameters.data());
         glUniform1f(blurUniform_, filter.filterParameters[0]);
         glUniform2f(blurDirectionUniform_, 1, 0);
         glDisable(GL_BLEND);
-        std::uint32_t sourceTexture = groupTextures_[filterDepth];
+        std::uint32_t sourceTexture = groupTargets_[filterDepth].texture;
         const int passCount = static_cast<int>(filter.filterParameters[1]);
         for (int pass = 0; pass < passCount; ++pass) {
-          const bool targetFilter = sourceTexture == groupTextures_[filterDepth];
+          const bool targetFilter = sourceTexture == groupTargets_[filterDepth].texture;
           glBindFramebuffer(GL_FRAMEBUFFER,
-                            targetFilter ? filterFramebuffer_ :
-                                           groupFramebuffers_[filterDepth]);
+                            targetFilter ? filterTarget_.framebuffer :
+                                           groupTargets_[filterDepth].framebuffer);
           glBindTexture(GL_TEXTURE_2D, sourceTexture);
           glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-          ++stats_.drawCalls;
-          ++stats_.filterDrawCalls;
-          sourceTexture = targetFilter ? filterTexture_ :
-                                         groupTextures_[filterDepth];
+          sourceYDown = false;
+          glUniform1i(filterImageYDownUniform_, sourceYDown);
+          if (diagnostics_) {
+            ++stats_.drawCalls;
+            ++stats_.filterDrawCalls;
+          }
+          sourceTexture = targetFilter ? filterTarget_.texture :
+                                         groupTargets_[filterDepth].texture;
         }
         glUniform2f(blurDirectionUniform_, 0, 1);
         for (int pass = 1; pass < passCount; ++pass) {
-          const bool targetFilter = sourceTexture == groupTextures_[filterDepth];
+          const bool targetFilter = sourceTexture == groupTargets_[filterDepth].texture;
           glBindFramebuffer(GL_FRAMEBUFFER,
-                            targetFilter ? filterFramebuffer_ :
-                                           groupFramebuffers_[filterDepth]);
+                            targetFilter ? filterTarget_.framebuffer :
+                                           groupTargets_[filterDepth].framebuffer);
           glBindTexture(GL_TEXTURE_2D, sourceTexture);
           glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-          ++stats_.drawCalls;
-          ++stats_.filterDrawCalls;
-          sourceTexture = targetFilter ? filterTexture_ :
-                                         groupTextures_[filterDepth];
+          sourceYDown = false;
+          glUniform1i(filterImageYDownUniform_, sourceYDown);
+          if (diagnostics_) {
+            ++stats_.drawCalls;
+            ++stats_.filterDrawCalls;
+          }
+          sourceTexture = targetFilter ? filterTarget_.texture :
+                                         groupTargets_[filterDepth].texture;
         }
         compositeTexture = sourceTexture;
       } else if (filter.filterKind == scene_packet::FilterKind::blurX ||
                  filter.filterKind == scene_packet::FilterKind::blurY) {
+        glUniform1fv(pixiFilterParametersUniform_, 3, filter.filterParameters.data());
+        if (filter.filterParameters[1] > 1) {
+          ensureTarget(filterTarget_, width_, height_);
+        }
         glUniform1f(blurUniform_, filter.filterParameters[0]);
         glUniform2f(blurDirectionUniform_,
                     filter.filterKind == scene_packet::FilterKind::blurX ? 1 : 0,
                     filter.filterKind == scene_packet::FilterKind::blurY ? 1 : 0);
         glDisable(GL_BLEND);
-        std::uint32_t sourceTexture = groupTextures_[filterDepth];
+        std::uint32_t sourceTexture = groupTargets_[filterDepth].texture;
         const int passCount = static_cast<int>(filter.filterParameters[1]);
         for (int pass = 1; pass < passCount; ++pass) {
-          const bool targetFilter = sourceTexture == groupTextures_[filterDepth];
+          const bool targetFilter = sourceTexture == groupTargets_[filterDepth].texture;
           glBindFramebuffer(GL_FRAMEBUFFER,
-                            targetFilter ? filterFramebuffer_ :
-                                           groupFramebuffers_[filterDepth]);
+                            targetFilter ? filterTarget_.framebuffer :
+                                           groupTargets_[filterDepth].framebuffer);
           glBindTexture(GL_TEXTURE_2D, sourceTexture);
           glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-          ++stats_.drawCalls;
-          ++stats_.filterDrawCalls;
-          sourceTexture = targetFilter ? filterTexture_ :
-                                         groupTextures_[filterDepth];
+          sourceYDown = false;
+          glUniform1i(filterImageYDownUniform_, sourceYDown);
+          if (diagnostics_) {
+            ++stats_.drawCalls;
+            ++stats_.filterDrawCalls;
+          }
+          sourceTexture = targetFilter ? filterTarget_.texture :
+                                         groupTargets_[filterDepth].texture;
         }
         compositeTexture = sourceTexture;
       } else if (filter.filterKind == scene_packet::FilterKind::displacement) {
@@ -944,12 +1078,12 @@ void Renderer::renderScene() {
         glBindTexture(GL_TEXTURE_2D, mask->texture);
         glUniform1i(maskImageUniform_, 1);
         glUniform1fv(maskTransformUniform_, 6,
-                     filter.filterParameters.data());
+                     maskMatrix(filter.filterParameters.data()).data());
         glUniform4fv(maskFrameUniform_, 1,
                      filter.filterParameters.data() + 6);
         glUniform2f(maskTextureSizeUniform_, static_cast<float>(mask->width),
                     static_cast<float>(mask->height));
-        glUniform1f(maskScreenHeightUniform_, static_cast<float>(height_));
+        glUniform1f(maskScreenHeightUniform_, rasterFrame[3] * rasterResolution);
         glUniform1f(maskAlphaUniform_, filter.filterParameters[10]);
         glUniform1i(maskUsesRedUniform_, filter.filterParameters[11] != 0);
         glUniform1i(maskRotationUniform_,
@@ -972,6 +1106,8 @@ void Renderer::renderScene() {
         glUniform1i(pixiFilterKindUniform_,
                     filter.filterKind == scene_packet::FilterKind::zoomBlur ? 1 : 2);
       } else if (filter.filterKind == scene_packet::FilterKind::advancedBloom) {
+        ensureTarget(bloomTarget_, width_, height_);
+        ensureTarget(filterTarget_, width_, height_);
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glDisable(GL_BLEND);
@@ -980,18 +1116,22 @@ void Renderer::renderScene() {
         glUniform1fv(pixiFilterParametersUniform_, 10,
                      extractParameters.data());
         glUniform1i(pixiFilterKindUniform_, 3);
-        glBindFramebuffer(GL_FRAMEBUFFER, bloomFramebuffer_);
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomTarget_.framebuffer);
         glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-        ++stats_.drawCalls;
-        ++stats_.filterDrawCalls;
+        sourceYDown = false;
+        glUniform1i(filterImageYDownUniform_, sourceYDown);
+        if (diagnostics_) {
+          ++stats_.drawCalls;
+          ++stats_.filterDrawCalls;
+        }
 
-        std::uint32_t bloomSource = bloomTexture_;
+        std::uint32_t bloomSource = bloomTarget_.texture;
         const int passCount = static_cast<int>(filter.filterParameters[3]);
         for (int pass = 0; pass < passCount; ++pass) {
-          const bool targetFilter = bloomSource == bloomTexture_;
+          const bool targetFilter = bloomSource == bloomTarget_.texture;
           glBindFramebuffer(GL_FRAMEBUFFER,
-                            targetFilter ? filterFramebuffer_ :
-                                           bloomFramebuffer_);
+                            targetFilter ? filterTarget_.framebuffer :
+                                           bloomTarget_.framebuffer);
           glBindTexture(GL_TEXTURE_2D, bloomSource);
           const std::array<float, 10> passParameters = {
             filter.filterParameters[6 + pass], filter.filterParameters[4],
@@ -1000,15 +1140,21 @@ void Renderer::renderScene() {
                        passParameters.data());
           glUniform1i(pixiFilterKindUniform_, 21);
           glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-          ++stats_.drawCalls;
-          ++stats_.filterDrawCalls;
-          bloomSource = targetFilter ? filterTexture_ : bloomTexture_;
+          sourceYDown = false;
+          glUniform1i(filterImageYDownUniform_, sourceYDown);
+          if (diagnostics_) {
+            ++stats_.drawCalls;
+            ++stats_.filterDrawCalls;
+          }
+          bloomSource = targetFilter ? filterTarget_.texture : bloomTarget_.texture;
         }
         glActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_2D, bloomSource);
         glUniform1i(bloomImageUniform_, 3);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, groupTextures_[filterDepth]);
+        glBindTexture(GL_TEXTURE_2D, groupTargets_[filterDepth].texture);
+        sourceYDown = true;
+        glUniform1i(filterImageYDownUniform_, sourceYDown);
         const std::array<float, 10> compositeParameters = {
           filter.filterParameters[0], filter.filterParameters[1],
           0, 0, 0, 0, 0, 0, 0, 0};
@@ -1078,16 +1224,17 @@ void Renderer::renderScene() {
                      filter.filterParameters.data());
         glUniform1i(pixiFilterKindUniform_, 20);
       } else if (filter.filterKind == scene_packet::FilterKind::kawaseBlur) {
+        ensureTarget(filterTarget_, width_, height_);
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glDisable(GL_BLEND);
-        std::uint32_t sourceTexture = groupTextures_[filterDepth];
+        std::uint32_t sourceTexture = groupTargets_[filterDepth].texture;
         const int passCount = static_cast<int>(filter.filterParameters[0]);
         for (int pass = 0; pass < passCount; ++pass) {
-          const bool targetFilter = sourceTexture == groupTextures_[filterDepth];
+          const bool targetFilter = sourceTexture == groupTargets_[filterDepth].texture;
           glBindFramebuffer(GL_FRAMEBUFFER,
-                            targetFilter ? filterFramebuffer_ :
-                                           groupFramebuffers_[filterDepth]);
+                            targetFilter ? filterTarget_.framebuffer :
+                                           groupTargets_[filterDepth].framebuffer);
           glBindTexture(GL_TEXTURE_2D, sourceTexture);
           const std::array<float, 10> passParameters = {
             filter.filterParameters[3 + pass], filter.filterParameters[1],
@@ -1096,10 +1243,14 @@ void Renderer::renderScene() {
                        passParameters.data());
           glUniform1i(pixiFilterKindUniform_, 21);
           glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-          ++stats_.drawCalls;
-          ++stats_.filterDrawCalls;
-          sourceTexture = targetFilter ? filterTexture_ :
-                                         groupTextures_[filterDepth];
+          sourceYDown = false;
+          glUniform1i(filterImageYDownUniform_, sourceYDown);
+          if (diagnostics_) {
+            ++stats_.drawCalls;
+            ++stats_.filterDrawCalls;
+          }
+          sourceTexture = targetFilter ? filterTarget_.texture :
+                                         groupTargets_[filterDepth].texture;
         }
         compositeTexture = sourceTexture;
         glUniform1i(pixiFilterKindUniform_, 0);
@@ -1126,8 +1277,99 @@ void Renderer::renderScene() {
           filter.filterParameters[0] == 0 ? 23 : 24);
       }
 
+      if (filter.filterKind == scene_packet::FilterKind::custom) {
+        if (filter.customFilterPlan) {
+          drawCustomFilterPlan(*filter.customFilterPlan, groupTargets_[filterDepth].framebuffer,
+            filterDepth == 0 ? rootFramebuffer : groupTargets_[filterDepth - 1].framebuffer,
+            filter, sourceResolution, rasterResolution, targetYDown, rasterFrame);
+          glUseProgram(program_);
+          projectTarget(program_);
+          activeProgram = program_;
+          activeBlend = filter.customFilterPlan->passes.empty() ? BlendMode::normal :
+            filter.customFilterPlan->passes.back().blend;
+          scissorActive = false;
+          continue;
+        }
+        const auto& custom = filterProgram(filter.filterProgram);
+        std::array<int, 4> bounds{0, 0, width_, height_};
+        const auto beginIndex = static_cast<std::size_t>(filterCommands[filterDepth] - frame_.commands.data());
+        if (filterBounds_[beginIndex].bounded) bounds = filterBounds_[beginIndex].rect;
+        bounds[0] = std::clamp(bounds[0], 0, width_);
+        bounds[1] = std::clamp(bounds[1], 0, height_);
+        bounds[2] = std::clamp(bounds[2], bounds[0], width_);
+        bounds[3] = std::clamp(bounds[3], bounds[1], height_);
+        const int frameWidth = bounds[2] - bounds[0];
+        const int frameHeight = bounds[3] - bounds[1];
+        const auto powerOfTwo = [](int size) {
+          int result = 1;
+          while (result < size) result *= 2;
+          return result;
+        };
+        auto& input = customFilterTargets_[filterDepth];
+        ensureTarget(input, powerOfTwo(frameWidth), powerOfTwo(frameHeight));
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, input.framebuffer);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, groupTargets_[filterDepth].framebuffer);
+        if (frameWidth > 0 && frameHeight > 0) {
+          // Filter texture coordinates start at the top of the cropped source frame.
+          glBlitFramebuffer(bounds[0], bounds[1], bounds[2], bounds[3],
+            0, 0, frameWidth, frameHeight, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, filterDepth == 0 ? rootFramebuffer :
+                          groupTargets_[filterDepth - 1].framebuffer);
+        glBindTexture(GL_TEXTURE_2D, input.texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        textureNearestState_[input.texture] = false;
+        glUseProgram(custom.program);
+        glUniform1i(glGetUniformLocation(custom.program, "pmjsTargetYDown"), targetYDown);
+        glUniform1i(glGetUniformLocation(custom.program, "uSampler"), 0);
+        glUniform2f(glGetUniformLocation(custom.program, "pmjsScreenSize"), width_, height_);
+        glUniform4f(glGetUniformLocation(custom.program, "pmjsFilterFrame"),
+          bounds[0], bounds[1], frameWidth, frameHeight);
+        glUniform2f(glGetUniformLocation(custom.program, "pmjsFilterTextureSize"), input.width, input.height);
+        glUniform4f(glGetUniformLocation(custom.program, "filterArea"),
+          input.width, input.height, bounds[0], bounds[1]);
+        glUniform4f(glGetUniformLocation(custom.program, "filterClamp"), 0, 0,
+          float(frameWidth - 1) / input.width, float(frameHeight - 1) / input.height);
+        int offset = 1;
+        for (const auto& uniform : custom.uniforms) {
+          const float* data = filter.filterParameters.data() + offset;
+          switch (uniform.type) {
+            case GL_FLOAT: glUniform1fv(uniform.location, uniform.count, data); break;
+            case GL_FLOAT_VEC2: glUniform2fv(uniform.location, uniform.count, data); break;
+            case GL_FLOAT_VEC3: glUniform3fv(uniform.location, uniform.count, data); break;
+            case GL_FLOAT_VEC4: glUniform4fv(uniform.location, uniform.count, data); break;
+            case GL_FLOAT_MAT2: glUniformMatrix2fv(uniform.location, uniform.count, GL_FALSE, data); break;
+            case GL_FLOAT_MAT3: glUniformMatrix3fv(uniform.location, uniform.count, GL_FALSE, data); break;
+            case GL_FLOAT_MAT4: glUniformMatrix4fv(uniform.location, uniform.count, GL_FALSE, data); break;
+          }
+          offset += uniform.components * uniform.count;
+        }
+        glEnable(GL_SCISSOR_TEST);
+        rasterScissor(bounds[0], height_ - bounds[3], bounds[2] - bounds[0], bounds[3] - bounds[1]);
+        activeBlend = filter.blendMode;
+        glEnable(GL_BLEND);
+        applyBlendMode(activeBlend);
+        glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
+        if (diagnostics_) {
+          ++stats_.drawCalls;
+          ++stats_.filterDrawCalls;
+        }
+        glUseProgram(program_);
+      projectTarget(program_);
+        activeProgram = program_;
+        glDisable(GL_SCISSOR_TEST);
+        scissorActive = false;
+        continue;
+      }
+
+      glUniform1i(filterTargetYDownUniform_, targetYDown);
+      glUniform1i(filterImageYDownUniform_, sourceYDown);
       glBindFramebuffer(GL_FRAMEBUFFER, filterDepth == 0 ? rootFramebuffer :
-                        groupFramebuffers_[filterDepth - 1]);
+                        groupTargets_[filterDepth - 1].framebuffer);
       glBindTexture(GL_TEXTURE_2D, compositeTexture);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -1135,27 +1377,28 @@ void Renderer::renderScene() {
       if (filter.filterKind == scene_packet::FilterKind::blur) {
         glUniform2f(blurDirectionUniform_, 0, 1);
       }
-      activeBlend = BlendMode::normal;
+      activeBlend = filter.blendMode;
       if (pictureBlend) {
         glDisable(GL_BLEND);
       } else {
         glEnable(GL_BLEND);
-        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
-                            GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        applyBlendMode(activeBlend);
       }
       if (!filterRegions[filterDepth].empty()) {
         glEnable(GL_SCISSOR_TEST);
         for (const auto& region : filterRegions[filterDepth]) {
-          glScissor(region[0], height_ - region[3],
+          rasterScissor(region[0], height_ - region[3],
                     region[2] - region[0], region[3] - region[1]);
           glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-          ++stats_.drawCalls;
-          ++stats_.filterDrawCalls;
+          if (diagnostics_) {
+            ++stats_.drawCalls;
+            ++stats_.filterDrawCalls;
+          }
         }
         scissorActive = savedScissor[filterDepth];
         activeClip = savedClip[filterDepth];
         if (scissorActive) {
-          glScissor(activeClip[0], height_ - activeClip[3],
+          rasterScissor(activeClip[0], height_ - activeClip[3],
                     std::max(0, activeClip[2] - activeClip[0]),
                     std::max(0, activeClip[3] - activeClip[1]));
         } else {
@@ -1166,13 +1409,15 @@ void Renderer::renderScene() {
         activeClip = savedClip[filterDepth];
         if (scissorActive) {
           glEnable(GL_SCISSOR_TEST);
-          glScissor(activeClip[0], height_ - activeClip[3],
+          rasterScissor(activeClip[0], height_ - activeClip[3],
                     std::max(0, activeClip[2] - activeClip[0]),
                     std::max(0, activeClip[3] - activeClip[1]));
         }
         glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-        ++stats_.drawCalls;
-        ++stats_.filterDrawCalls;
+        if (diagnostics_) {
+          ++stats_.drawCalls;
+          ++stats_.filterDrawCalls;
+        }
       }
       if (pictureBlend) glEnable(GL_BLEND);
       glUniform1i(displacementEnabledUniform_, 0);
@@ -1187,11 +1432,12 @@ void Renderer::renderScene() {
     }
     if (operation.matrixCommand) {
       if (operation.matrixCommand == composedToneCommand) {
+        ensureTarget(toneOverlayTarget_, width_, height_);
         presentationColorMatrix_ = operation.matrixCommand->colorMatrix;
         presentationColorMatrixAlpha_ = operation.matrixCommand->color[3];
         toneCompositionActive_ = true;
-        glBindFramebuffer(GL_FRAMEBUFFER, toneOverlayFramebuffer_);
-        glViewport(0, 0, width_, height_);
+        glBindFramebuffer(GL_FRAMEBUFFER, toneOverlayTarget_.framebuffer);
+        glViewport(0, 0, std::lround(rasterFrame[2] * rasterResolution), std::lround(rasterFrame[3] * rasterResolution));
         glDisable(GL_SCISSOR_TEST);
         scissorActive = false;
         glClearColor(0, 0, 0, 0);
@@ -1201,17 +1447,20 @@ void Renderer::renderScene() {
         applyBlendMode(activeBlend);
         continue;
       }
+      ensureTarget(filterTarget_, width_, height_);
       glDisable(GL_BLEND);
-      glBindFramebuffer(GL_FRAMEBUFFER, filterFramebuffer_);
-      glViewport(0, 0, width_, height_);
+      glBindFramebuffer(GL_FRAMEBUFFER, filterTarget_.framebuffer);
+      glViewport(0, 0, std::lround(rasterFrame[2] * rasterResolution), std::lround(rasterFrame[3] * rasterResolution));
       glUseProgram(program_);
+      projectTarget(program_);
       activeProgram = program_;
       glBindVertexArray(vertexArray_);
       glActiveTexture(GL_TEXTURE0);
+      glUniform1i(filterTargetYDownUniform_, targetYDown);
+      glUniform1i(filterImageYDownUniform_, targetYDown);
       glBindTexture(GL_TEXTURE_2D, filterDepth == 0 ? rootTexture :
-                    groupTextures_[filterDepth - 1]);
-      glUniform2f(textureSizeUniform_, static_cast<float>(width_),
-                  static_cast<float>(height_));
+                    groupTargets_[filterDepth - 1].texture);
+      glUniform2f(textureSizeUniform_, static_cast<float>(width_), static_cast<float>(height_));
       glUniform1f(blurUniform_, 0);
       glUniform2f(blurDirectionUniform_, 0, 0);
       glUniform1i(displacementEnabledUniform_, 0);
@@ -1226,18 +1475,18 @@ void Renderer::renderScene() {
       glUniform1f(colorMatrixAlphaUniform_,
                   operation.matrixCommand->color[3]);
       glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-      ++stats_.drawCalls;
-      ++stats_.filterDrawCalls;
-      ++stats_.toneAdjustDrawCalls;
+      if (diagnostics_) {
+        ++stats_.drawCalls;
+        ++stats_.filterDrawCalls;
+        ++stats_.toneAdjustDrawCalls;
+      }
       if (filterDepth == 0) {
-        std::swap(rootFramebuffer, filterFramebuffer_);
-        std::swap(rootTexture, filterTexture_);
+        swapTargetColors(rootTarget, filterTarget_);
         glBindFramebuffer(GL_FRAMEBUFFER, rootFramebuffer);
       } else {
-        std::swap(groupFramebuffers_[filterDepth - 1], filterFramebuffer_);
-        std::swap(groupTextures_[filterDepth - 1], filterTexture_);
+        swapTargetColors(groupTargets_[filterDepth - 1], filterTarget_);
         glBindFramebuffer(GL_FRAMEBUFFER,
-                          groupFramebuffers_[filterDepth - 1]);
+                          groupTargets_[filterDepth - 1].framebuffer);
       }
       glEnable(GL_BLEND);
       applyBlendMode(activeBlend);
@@ -1249,13 +1498,55 @@ void Renderer::renderScene() {
         glEnable(GL_SCISSOR_TEST);
         scissorActive = true;
       }
-      glScissor(operation.clip[0], height_ - operation.clip[3],
+      rasterScissor(operation.clip[0], height_ - operation.clip[3],
                 std::max(0, operation.clip[2] - operation.clip[0]),
                 std::max(0, operation.clip[3] - operation.clip[1]));
       activeClip = operation.clip;
     } else if (scissorActive) {
       glDisable(GL_SCISSOR_TEST);
       scissorActive = false;
+    }
+    if (operation.primitive == RenderCommand::Primitive::effect) {
+      auto draw = operation.command->effect;
+      const auto* filter = filterDepth ? filterCommands[filterDepth - 1] : nullptr;
+      const auto filterFrame = effectFrame(filter, width_, height_);
+      if (filterDepth > 0) {
+        // MZ draws directly in the filter's local GL coordinates, bypassing Pixi's
+        // projection. Crop the backdrop to that frame without reflecting particles,
+        // which changes edge rasterization and model culling.
+        const int frameWidth = filterFrame[2] - filterFrame[0];
+        const int frameHeight = filterFrame[3] - filterFrame[1];
+        if (frameWidth <= 0 || frameHeight <= 0) continue;
+        ensureTarget(effectTarget_, frameWidth, frameHeight);
+        GLint destination = 0;
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &destination);
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, destination);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, effectTarget_.framebuffer);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBlitFramebuffer(filterFrame[0], filterFrame[1],
+                          filterFrame[2], filterFrame[3],
+                          0, 0, frameWidth, frameHeight,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, effectTarget_.framebuffer);
+        const auto effectDrawCalls = effects_->draw(draw);
+        if (diagnostics_) stats_.drawCalls += effectDrawCalls;
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, effectTarget_.framebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, destination);
+        if (scissorActive) glEnable(GL_SCISSOR_TEST);
+        glBlitFramebuffer(0, 0, frameWidth, frameHeight,
+                          filterFrame[0], filterFrame[1],
+                          filterFrame[2], filterFrame[3],
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, destination);
+      } else {
+        const auto effectDrawCalls = effects_->draw(draw);
+        if (diagnostics_) stats_.drawCalls += effectDrawCalls;
+      }
+      // Subsequent geometry already includes MZ's reset viewport mapping.
+      glViewport(0, 0, std::lround(rasterFrame[2] * rasterResolution), std::lround(rasterFrame[3] * rasterResolution));
+      continue;
     }
     if (operation.blendMode != activeBlend) {
       activeBlend = operation.blendMode;
@@ -1266,24 +1557,42 @@ void Renderer::renderScene() {
       if (layer == tileLayers_.end() || !operation.command) continue;
       const auto& command = *operation.command;
       const auto& transform = command.transform;
+      const auto& mapping = operation.viewportMapping;
       const std::array<float, 9> world = {
-        transform[0], transform[1], 0.0F,
-        transform[2], transform[3], 0.0F,
-        transform[4], transform[5], 1.0F,
+        transform[0] * mapping[0], transform[1] * mapping[1], 0.0F,
+        transform[2] * mapping[0], transform[3] * mapping[1], 0.0F,
+        transform[4] * mapping[0] + mapping[2], transform[5] * mapping[1] + mapping[3], 1.0F,
       };
-      const auto program = command.appliesMeshPostTintOverlay ? meshPostTintOverlayProgram_ : tileProgram_;
-      const auto& uniforms = command.appliesMeshPostTintOverlay ? meshPostTintOverlayUniforms_ : tileUniforms_;
+      const auto& material = layer->second.material;
+      const auto* triangleMaterial = std::get_if<TriangleBitmapMaterial>(&material);
+      const auto* bitmapMaterial = std::get_if<MvBitmapMaterial>(&material);
+      const bool usesOverlay = command.appliesMeshPostTintOverlay || triangleMaterial || bitmapMaterial;
+      const bool canvasTriangleBitmap = triangleMaterial &&
+        triangleMaterial->rasterRule == TriangleBitmapMaterial::RasterRule::canvasFourSample;
+      const auto program = canvasTriangleBitmap ? canvasTriangleBitmapProgram_ :
+        usesOverlay ? meshPostTintOverlayProgram_ : tileProgram_;
+      const auto& uniforms = canvasTriangleBitmap ? canvasTriangleBitmapUniforms_ :
+        usesOverlay ? meshPostTintOverlayUniforms_ : tileUniforms_;
       glUseProgram(program);
+      projectTarget(program);
       activeProgram = program;
       glBindVertexArray(layer->second.vertexArray);
+      glUniform1i(uniforms.targetYDown, targetYDown);
       glUniformMatrix3fv(uniforms.world, 1, GL_FALSE, world.data());
-      glUniform2f(uniforms.screen, static_cast<float>(width_),
-                  static_cast<float>(height_));
+      glUniform2f(uniforms.screen, static_cast<float>(width_), static_cast<float>(height_));
       glUniform2f(uniforms.animation, command.tileAnimation[0],
                   command.tileAnimation[1]);
       glUniform4fv(uniforms.color, 1, command.color.data());
-      if (command.appliesMeshPostTintOverlay) {
+      if (usesOverlay) {
         glUniform4fv(uniforms.overlayColor, 1, command.blendColor.data());
+        glUniform1i(uniforms.trianglePaintEnabled, triangleMaterial != nullptr);
+        glUniform1i(uniforms.mvBlendEnabled, bitmapMaterial != nullptr);
+        glUniform1i(uniforms.nearestSampling, operation.nearest);
+        if (triangleMaterial) glUniform1fv(uniforms.trianglePaint, 30, triangleMaterial->coefficients.data());
+        if (bitmapMaterial != nullptr) {
+          glUniform4fv(uniforms.mvBounds, 1, bitmapMaterial->texelBounds.data());
+          glUniform1i(uniforms.mvPremultipliedInput, bitmapMaterial->alphaMode == AlphaMode::premultiplied);
+        }
       }
       if (command.maskImage) {
         const auto mask = images_.lookup(command.maskImage);
@@ -1293,18 +1602,21 @@ void Renderer::renderScene() {
         glUniform1i(uniforms.maskImage, 1);
         glUniform1i(uniforms.maskEnabled, 1);
         glUniform1fv(uniforms.maskTransform, 6,
-                     command.maskTransform.data());
+                     maskMatrix(command.maskTransform.data()).data());
         glUniform4f(uniforms.maskFrame, 0, 0,
                     static_cast<float>(mask->width),
                     static_cast<float>(mask->height));
         glUniform2f(uniforms.maskTextureSize, static_cast<float>(mask->width),
                     static_cast<float>(mask->height));
-        glUniform1f(uniforms.maskScreenHeight, static_cast<float>(height_));
+        glUniform1f(uniforms.maskScreenHeight, rasterFrame[3] * rasterResolution);
         glActiveTexture(GL_TEXTURE0);
       } else {
         glUniform1i(uniforms.maskEnabled, 0);
       }
       for (const auto& batch : layer->second.batches) {
+        glUniform1i(uniforms.texturePremultiplied, batch.premultiplied);
+        if (bitmapMaterial) glUniform1i(uniforms.mvPremultipliedInput,
+          batch.premultiplied || bitmapMaterial->alphaMode == AlphaMode::premultiplied);
         glUniform2f(uniforms.textureSize,
                     static_cast<float>(batch.textureWidth),
                     static_cast<float>(batch.textureHeight));
@@ -1319,11 +1631,10 @@ void Renderer::renderScene() {
                           operation.nearest ? GL_NEAREST : GL_LINEAR);
         }
         glDrawArrays(GL_TRIANGLES, batch.first, batch.count);
-        ++stats_.drawCalls;
-        if (operation.primitive == RenderCommand::Primitive::mesh) {
-          ++stats_.meshDrawCalls;
-        } else {
-          ++stats_.tileDrawCalls;
+        if (diagnostics_) {
+          ++stats_.drawCalls;
+          if (operation.primitive == RenderCommand::Primitive::mesh) ++stats_.meshDrawCalls;
+          else ++stats_.tileDrawCalls;
         }
       }
       continue;
@@ -1336,6 +1647,7 @@ void Renderer::renderScene() {
                                                      spriteEffectProgram_;
     if (activeProgram != spriteProgram) {
       glUseProgram(spriteProgram);
+      projectTarget(spriteProgram);
       glBindVertexArray(vertexArray_);
       activeProgram = spriteProgram;
     }
@@ -1349,7 +1661,25 @@ void Renderer::renderScene() {
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
                       operation.nearest ? GL_NEAREST : GL_LINEAR);
     }
+    // Pixi render targets project downward in GL; readback reflection cannot
+    // reproduce sampling and edge coverage at exact pixel-center boundaries.
+    const float ySign = targetYDown ? 1.0F : -1.0F;
+    const std::array<float, 9> projection = {2.0F / width_, 0, 0, 0, ySign * 2.0F / height_, 0, -1, -ySign, 1};
+    glUniform1i(simpleSprite ? simpleTargetYDownUniform_ : spriteEffectTargetYDownUniform_, targetYDown);
+    glUniformMatrix3fv(simpleSprite ? simpleSpriteProjectionUniform_ : spriteEffectProjectionUniform_, 1, GL_FALSE, projection.data());
+    glUniform1i(simpleSprite ? simpleTilingClampUniform_ : spriteEffectTilingClampUniform_,
+                operation.clampedTilingSampling);
+    if (simpleSprite) glUniform2f(simpleTextureSizeUniform_, operation.textureWidth, operation.textureHeight);
+    glUniform1i(simpleSprite ? simpleSpriteVerticesUniform_ : spriteEffectVerticesUniform_, operation.spriteWorldVertices);
+    glUniform1i(simpleSprite ? simpleSpritePackingUniform_ : spriteEffectPackingUniform_,
+                operation.pixiSpritePacking ? 1 : 0);
+    glUniform1i(simpleSprite ? simpleSpritePremultipliedUniform_ : spriteEffectPremultipliedUniform_,
+                operation.premultipliedSpriteTexture ? 1 : 0);
     if (!simpleSprite) {
+      const auto& frame = operation.spriteFrame;
+      glUniform4f(spriteEffectFrameUniform_, frame[0], frame[1],
+        frame[0] + frame[2] - 1, frame[1] + frame[3] - 1);
+      glUniform1i(spriteEffectNearestUniform_, operation.nearest);
       glUniform1i(spriteEffectColorEnabledUniform_,
                   operation.appliesSpriteColor ? 1 : 0);
       if (operation.appliesSpriteColor) {
@@ -1378,51 +1708,47 @@ void Renderer::renderScene() {
       glUniform1i(spriteEffectMaskImageUniform_, 1);
       glUniform1i(spriteEffectMaskEnabledUniform_, 1);
       glUniform1fv(spriteEffectMaskTransformUniform_, 6,
-                   operation.maskTransform.data());
+                   maskMatrix(operation.maskTransform.data()).data());
       glUniform2f(spriteEffectMaskTextureSizeUniform_,
                   static_cast<float>(mask->width),
                   static_cast<float>(mask->height));
       glUniform1f(spriteEffectScreenHeightUniform_,
-                  static_cast<float>(height_));
+                  rasterFrame[3] * rasterResolution);
       glActiveTexture(GL_TEXTURE0);
     } else if (!simpleSprite) {
       glUniform1i(spriteEffectMaskEnabledUniform_, 0);
     }
+    const bool gpuRepeat = operation.repeat && !operation.clampedTilingSampling;
     const auto repeat = textureRepeatState_.find(operation.texture);
-    if (repeat == textureRepeatState_.end() || repeat->second != operation.repeat) {
-      textureRepeatState_[operation.texture] = operation.repeat;
+    if (repeat == textureRepeatState_.end() || repeat->second != gpuRepeat) {
+      textureRepeatState_[operation.texture] = gpuRepeat;
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
-                      operation.repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+                      gpuRepeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
-                      operation.repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+                      gpuRepeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
     }
     glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
-    ++stats_.drawCalls;
-    if (operation.primitive == RenderCommand::Primitive::tilingSprite) {
-      ++stats_.tilingSpriteDrawCalls;
-    } else if (operation.primitive == RenderCommand::Primitive::screenFill) {
-      ++stats_.screenFillDrawCalls;
-    } else {
-      ++stats_.spriteDrawCalls;
-    }
-    if (simpleSprite) {
-      ++stats_.baseSpriteDrawCalls;
-    } else {
-      ++stats_.effectSpriteDrawCalls;
+    if (diagnostics_) {
+      ++stats_.drawCalls;
+      if (operation.primitive == RenderCommand::Primitive::tilingSprite) ++stats_.tilingSpriteDrawCalls;
+      else if (operation.primitive == RenderCommand::Primitive::screenFill) ++stats_.screenFillDrawCalls;
+      else ++stats_.spriteDrawCalls;
+      if (simpleSprite) ++stats_.baseSpriteDrawCalls;
+      else ++stats_.effectSpriteDrawCalls;
     }
   }
   if (scissorActive) glDisable(GL_SCISSOR_TEST);
   applyBlendMode(BlendMode::normal);
-  stats_.commands += frame_.commands.size();
+  if (diagnostics_) stats_.commands += frame_.commands.size();
   discardCommandsFrom(0);
   if (!offscreenRender_ && sceneSubmittedThisFrame_) {
     hasValidSceneFrame_ = true;
   }
 } else {
   discardCommandsFrom(0);
-  ++stats_.retainedFrames;
+  if (diagnostics_) ++stats_.retainedFrames;
 }
-++stats_.frames;
+if (diagnostics_) ++stats_.frames;
 }
 
 void Renderer::presentToDrawable() {
@@ -1433,9 +1759,9 @@ void Renderer::presentToDrawable() {
   const bool composePresentation = toneCompositionActive_ ||
       hasPresentationLayers;
   if (composePresentation) {
-    ensureTarget(filterTexture_, filterFramebuffer_);
-    drawToneComposition(filterFramebuffer_, 0, 0, width_, height_, true);
-    if (toneCompositionActive_) ++stats_.toneComposedPresentationFrames;
+    ensureTarget(filterTarget_, width_, height_);
+    drawToneComposition(filterTarget_.framebuffer, 0, 0, width_, height_, true);
+    if (diagnostics_ && toneCompositionActive_) ++stats_.toneComposedPresentationFrames;
   }
   const bool identity = presentation_.viewportX == 0 &&
       presentation_.viewportY == 0 &&
@@ -1445,7 +1771,7 @@ void Renderer::presentToDrawable() {
       presentation_.drawableHeight == height_;
   if (identity) {
     glBindFramebuffer(GL_READ_FRAMEBUFFER,
-                      composePresentation ? filterFramebuffer_ : sceneFramebuffer_);
+                      composePresentation ? filterTarget_.framebuffer : sceneTarget_.framebuffer);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glBlitFramebuffer(0, 0, width_, height_, 0, 0,
                       presentationWidth_, presentationHeight_,
@@ -1455,10 +1781,10 @@ void Renderer::presentToDrawable() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     return;
   }
-  ++stats_.scaledPresentationFrames;
+  if (diagnostics_) ++stats_.scaledPresentationFrames;
   if (presentation_.viewportWidth < presentation_.drawableWidth ||
       presentation_.viewportHeight < presentation_.drawableHeight) {
-    ++stats_.presentationLetterboxedFrames;
+    if (diagnostics_) ++stats_.presentationLetterboxedFrames;
   }
   const int drawableWidth = presentation_.drawableWidth;
   const int drawableHeight = presentation_.drawableHeight;
@@ -1481,7 +1807,7 @@ void Renderer::presentToDrawable() {
                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
   }
   glBindFramebuffer(GL_READ_FRAMEBUFFER,
-                    composePresentation ? filterFramebuffer_ : sceneFramebuffer_);
+                    composePresentation ? filterTarget_.framebuffer : sceneTarget_.framebuffer);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
   glBlitFramebuffer(0, 0, width_, height_, destX, destY,
                     destX + destWidth, destY + destHeight,
@@ -1502,10 +1828,10 @@ void Renderer::drawToneComposition(std::uint32_t framebuffer,
   glUseProgram(presentationProgram_);
   glBindVertexArray(vertexArray_);
   glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, sceneTexture_);
+  glBindTexture(GL_TEXTURE_2D, sceneTarget_.texture);
   glUniform1i(presentationSceneUniform_, 0);
   glActiveTexture(GL_TEXTURE1);
-  glBindTexture(GL_TEXTURE_2D, toneOverlayTexture_);
+  glBindTexture(GL_TEXTURE_2D, toneOverlayTarget_.texture);
   glUniform1i(presentationOverlayUniform_, 1);
   const auto video = images_.lookup(presentationVideo_);
   const auto upperCanvas = images_.lookup(presentationUpperCanvas_);
@@ -1532,8 +1858,10 @@ void Renderer::drawToneComposition(std::uint32_t framebuffer,
   glUniform1f(presentationUpperCanvasOpacityUniform_,
       separateScreenPresentation && upperCanvas
         ? presentationUpperCanvasOpacity_ : 0.0F);
+  glUniform1i(presentationVideoPremultipliedUniform_, video && video->premultiplied);
+  glUniform1i(presentationUpperCanvasPremultipliedUniform_, upperCanvas && upperCanvas->premultiplied);
   glDrawArrays(GL_TRIANGLES, 0, 6);
-  ++stats_.drawCalls;
+  if (diagnostics_) ++stats_.drawCalls;
   glActiveTexture(GL_TEXTURE0);
   glEnable(GL_BLEND);
   applyBlendMode(BlendMode::normal);
@@ -1541,11 +1869,9 @@ void Renderer::drawToneComposition(std::uint32_t framebuffer,
 
 void Renderer::materializeToneComposition() {
   if (!toneCompositionActive_) return;
-  ensureTarget(filterTexture_, filterFramebuffer_);
-  ensureTarget(toneOverlayTexture_, toneOverlayFramebuffer_);
-  drawToneComposition(filterFramebuffer_, 0, 0, width_, height_);
-  std::swap(sceneFramebuffer_, filterFramebuffer_);
-  std::swap(sceneTexture_, filterTexture_);
+  ensureTarget(filterTarget_, width_, height_);
+  drawToneComposition(filterTarget_.framebuffer, 0, 0, width_, height_);
+  swapTargetColors(sceneTarget_, filterTarget_);
   toneCompositionActive_ = false;
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }

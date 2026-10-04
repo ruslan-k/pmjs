@@ -47,7 +47,6 @@ CanvasElement.prototype._pmjsContentChanged = function() {
   this.__pmjsContentRevision++;
 };
 function isCanvasDiagnosticsEnabled() {
-  if (globalThis.__pmjsCanvasDiag) return true;
   return typeof NativeHost !== 'undefined' &&
     NativeHost.runtime &&
     typeof NativeHost.runtime.env === 'function' &&
@@ -62,11 +61,13 @@ function logCanvasCreation(width, height, url) {
 }
 
 CanvasElement.prototype._releaseNativeCanvas = function() {
+  if (this._pmjsPrimitiveContent) this._pmjsPrimitiveContent.reset();
   releaseNativeResource(this._nativeCanvas, 'canvas');
   this._nativeCanvas = null;
   this._pmjsContentChanged();
 };
 CanvasElement.prototype._ensureNativeCanvas = function() {
+  if (this._pmjsPrimitiveContent) this._pmjsPrimitiveContent.materialize();
   if (!this._nativeCanvas) {
     var width = Math.max(1, this.width);
     var height = Math.max(1, this.height);
@@ -352,7 +353,9 @@ VideoElement.prototype._loadNow = function(generation) {
       height: media.height
     });
     video.dispatchEvent({ type: 'loadedmetadata', target: video });
+    if (generation !== video._loadGeneration) return;
     video.dispatchEvent({ type: 'loadeddata', target: video });
+    if (generation !== video._loadGeneration) return;
     var graphics = typeof Graphics !== 'undefined' ? Graphics : null;
     videoTelemetry('loadeddata-dispatched', {
       generation: generation,
@@ -362,7 +365,9 @@ VideoElement.prototype._loadNow = function(generation) {
       videoOpacity: video.style ? video.style.opacity : null
     });
     video.dispatchEvent({ type: 'canplay', target: video });
+    if (generation !== video._loadGeneration) return;
     video.dispatchEvent({ type: 'canplaythrough', target: video });
+    if (generation !== video._loadGeneration) return;
     if (video._playRequested) video._startPlayback();
   }, function(error) {
     video._failLoad(generation, error);
@@ -407,6 +412,11 @@ VideoElement.prototype.play = function() {
 VideoElement.prototype._startPlayback = function() {
   if (!this._media || !this._playRequested) return;
   this._playRequested = false;
+  if (!this.paused) {
+    this._settlePlayPromises();
+    return;
+  }
+  if (this.ended) this._currentTime = 0;
   this.paused = false; this.ended = false; this._startOffset = this._currentTime;
   this._startedAt = performance.now();
   if (this._audio) {
@@ -559,7 +569,7 @@ Object.defineProperty(NativeImage.prototype, 'src', {
           image.width = image.naturalWidth = loaded.width;
           image.height = image.naturalHeight = loaded.height;
           image.complete = true;
-          if (typeof image.onload === 'function') image.onload({ type: 'load', target: image });
+          pmjsInvokeEventHandler(image, image.onload, { type: 'load', target: image });
           image.dispatchEvent({ type: 'load', target: image });
           PMJS.images.loadCompleted(image);
         }, function(error) {
@@ -571,7 +581,7 @@ Object.defineProperty(NativeImage.prototype, 'src', {
           image.complete = true;
           image._pmjsLoadFailed = true;
           image._pmjsLoadError = error;
-          if (typeof image.onerror === 'function') image.onerror({ type: 'error', target: image });
+          pmjsInvokeEventHandler(image, image.onerror, { type: 'error', target: image });
           image.dispatchEvent({ type: 'error', target: image });
         }).then(function() { pendingNativeImageLoads--; }, function(error) {
           pendingNativeImageLoads--;
@@ -605,7 +615,7 @@ Object.defineProperty(NativeImage.prototype, 'src', {
         image.complete = true;
         image._pmjsLoadFailed = false;
         image._pmjsLoadError = null;
-        if (typeof image.onload === 'function') image.onload({ type: 'load', target: image });
+        pmjsInvokeEventHandler(image, image.onload, { type: 'load', target: image });
         image.dispatchEvent({ type: 'load', target: image });
         PMJS.images.loadCompleted(image);
       }, function(error) {
@@ -627,7 +637,7 @@ Object.defineProperty(NativeImage.prototype, 'src', {
         image.complete = true;
         image._pmjsLoadFailed = true;
         image._pmjsLoadError = error;
-        if (typeof image.onerror === 'function') image.onerror({ type: 'error', target: image });
+        pmjsInvokeEventHandler(image, image.onerror, { type: 'error', target: image });
         image.dispatchEvent({ type: 'error', target: image });
       }).then(function() { pendingNativeImageLoads--; },
         function(err) {
@@ -689,7 +699,20 @@ documentTarget.createTextNode = function(text) {
   node.textContent = String(text);
   return node;
 };
-documentTarget.getElementById = function() { return null; };
+documentTarget.getElementById = function(id) {
+  id = String(id);
+  if (!id) return null;
+  function find(node) {
+    if (node.id === id) return node;
+    var children = node.children || [];
+    for (var child of children) {
+      var match = find(child);
+      if (match) return match;
+    }
+    return null;
+  }
+  return find(this.body) || find(this.head);
+};
 documentTarget.getElementsByTagName = function(tagName) {
   var elements = String(tagName).toLowerCase() === 'head' ? [this.head] : [];
   elements.item = function(index) { return this[index] || null; };
@@ -704,3 +727,66 @@ globalThis.CanvasRenderingContext2D = CanvasContext2D;
 globalThis.addEventListener = EventTarget.prototype.addEventListener.bind(documentTarget);
 globalThis.removeEventListener = EventTarget.prototype.removeEventListener.bind(documentTarget);
 globalThis.dispatchEvent = EventTarget.prototype.dispatchEvent.bind(documentTarget);
+
+function setNativeFullscreen(enabled, element) {
+  NativeHost.runtime.setFullscreen(enabled);
+  documentTarget.fullscreenElement = enabled ? (element || documentTarget.body) : null;
+  documentTarget.mozFullScreen = enabled;
+  documentTarget.webkitIsFullScreen = enabled;
+  documentTarget.webkitFullscreenElement = documentTarget.fullscreenElement;
+  documentTarget.mozFullScreenElement = documentTarget.fullscreenElement;
+  documentTarget.msFullscreenElement = documentTarget.fullscreenElement;
+  documentTarget.dispatchEvent({ type: 'fullscreenchange', target: documentTarget });
+}
+
+GenericElement.prototype.requestFullscreen = function() {
+  try {
+    setNativeFullscreen(true, this);
+    return Promise.resolve();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+};
+GenericElement.prototype.requestFullScreen = function() { setNativeFullscreen(true, this); };
+GenericElement.prototype.webkitRequestFullscreen = GenericElement.prototype.requestFullScreen;
+GenericElement.prototype.webkitRequestFullScreen = GenericElement.prototype.requestFullScreen;
+GenericElement.prototype.mozRequestFullScreen = GenericElement.prototype.requestFullScreen;
+GenericElement.prototype.msRequestFullscreen = GenericElement.prototype.requestFullScreen;
+documentTarget.fullscreenElement = null;
+documentTarget.webkitFullscreenElement = null;
+documentTarget.mozFullScreenElement = null;
+documentTarget.msFullscreenElement = null;
+documentTarget.mozFullScreen = false;
+documentTarget.webkitIsFullScreen = false;
+documentTarget.exitFullscreen = function() {
+  try {
+    setNativeFullscreen(false);
+    return Promise.resolve();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+};
+documentTarget.cancelFullScreen = function() { setNativeFullscreen(false); };
+documentTarget.webkitCancelFullScreen = documentTarget.cancelFullScreen;
+documentTarget.mozCancelFullScreen = documentTarget.cancelFullScreen;
+documentTarget.msExitFullscreen = documentTarget.cancelFullScreen;
+
+GenericElement.prototype.focus = function() {
+  if (documentTarget.activeElement === this) return;
+  var previous = documentTarget.activeElement;
+  documentTarget.activeElement = this;
+  if (previous) previous.dispatchEvent({ type: 'blur', target: previous });
+  this.dispatchEvent({ type: 'focus', target: this });
+};
+GenericElement.prototype.blur = function() {
+  if (documentTarget.activeElement !== this) return;
+  documentTarget.activeElement = documentTarget.body;
+  this.dispatchEvent({ type: 'blur', target: this });
+};
+documentTarget.activeElement = documentTarget.body;
+
+['requestFullscreen', 'requestFullScreen', 'webkitRequestFullscreen',
+  'webkitRequestFullScreen', 'mozRequestFullScreen', 'msRequestFullscreen',
+  'focus', 'blur'].forEach(function(name) {
+  CanvasElement.prototype[name] = GenericElement.prototype[name];
+});

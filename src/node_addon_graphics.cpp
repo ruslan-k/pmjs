@@ -1,5 +1,6 @@
 #include "node_addon_internal.hpp"
 #include <GLES3/gl3.h>
+#include <cmath>
 
 namespace pmjs::addon {
 napi_value graphicsInfo(napi_env env, napi_callback_info) try {
@@ -52,6 +53,130 @@ napi_value configurePixiFragmentPrecision(napi_env env, napi_callback_info info)
   return undefined(env);
 } catch (const std::exception& error) {
   napi_throw_type_error(env, nullptr, error.what()); return nullptr;
+}
+
+napi_value createFilterProgram(napi_env env, napi_callback_info info) try {
+  const auto args = arguments(env, info, 2);
+  if (args.empty()) throw std::invalid_argument("createFilterProgram requires fragment source");
+  auto& renderer = host(env).renderer;
+  const auto handle = renderer.createFilterProgram(asString(env, args[0]),
+    args.size() > 1 ? asString(env, args[1]) : "");
+  const auto& program = renderer.filterProgram(handle);
+  napi_value result = moduleObject(env);
+  check(env, napi_set_named_property(env, result, "handle", number(env, handle)),
+    "cannot set filter handle");
+  napi_value uniforms;
+  check(env, napi_create_array_with_length(env, program.uniforms.size(), &uniforms),
+    "cannot create filter uniforms");
+  for (std::size_t index = 0; index < program.uniforms.size(); ++index) {
+    const auto& uniform = program.uniforms[index];
+    napi_value entry = moduleObject(env);
+    std::string name = uniform.name;
+    if (name.ends_with("[0]")) name.resize(name.size() - 3);
+    check(env, napi_set_named_property(env, entry, "name", string(env, name)),
+      "cannot set uniform name");
+    check(env, napi_set_named_property(env, entry, "size",
+      number(env, uniform.components * uniform.count)), "cannot set uniform size");
+    check(env, napi_set_named_property(env, entry, "sampler",
+      boolean(env, uniform.type == GL_SAMPLER_2D)), "cannot set uniform type");
+    check(env, napi_set_element(env, uniforms, index, entry), "cannot set filter uniform");
+  }
+  check(env, napi_set_named_property(env, result, "uniforms", uniforms),
+    "cannot set filter uniforms");
+  return result;
+} catch (const std::exception& error) {
+  napi_throw_error(env, nullptr, error.what()); return nullptr;
+}
+
+napi_value createFilterPlan(napi_env env, napi_callback_info info) try {
+  const auto args = arguments(env, info, 1);
+  if (args.empty()) throw std::invalid_argument("createFilterPlan requires a plan");
+  auto& value = host(env);
+  auto plan = std::make_shared<CustomFilterPlan>();
+  const auto elements = [&](napi_value array, std::size_t limit) {
+    std::uint32_t count = 0;
+    check(env, napi_get_array_length(env, array, &count), "filter plan requires arrays");
+    if (count > limit) throw std::invalid_argument("filter plan capacity exceeded");
+    std::vector<napi_value> result(count);
+    for (std::uint32_t i = 0; i < count; ++i)
+      check(env, napi_get_element(env, array, i, &result[i]), "cannot read filter plan");
+    return result;
+  };
+  const auto finite = [&](napi_value number) {
+    const double result = asNumber(env, number);
+    if (!std::isfinite(result) || std::abs(result) > 1e30)
+      throw std::invalid_argument("invalid filter plan number");
+    return result;
+  };
+  const auto frame = elements(property(env, args[0], "frame"), 4);
+  if (frame.size() != 4) throw std::invalid_argument("filter frame requires four values");
+  for (std::size_t i = 0; i < 4; ++i) plan->frame[i] = finite(frame[i]);
+  if (std::abs(plan->frame[0]) > 65536 || std::abs(plan->frame[1]) > 65536 ||
+      plan->frame[2] < 0 || plan->frame[3] < 0 ||
+      plan->frame[2] > 65536 || plan->frame[3] > 65536)
+    throw std::invalid_argument("invalid filter frame");
+  for (auto item : elements(property(env, args[0], "resolutions"), 64)) {
+    const float resolution = finite(item);
+    if (resolution <= 0 || resolution > 16) throw std::invalid_argument("invalid filter resolution");
+    plan->resolutions.push_back(resolution);
+  }
+  if (plan->resolutions.size() < 2) throw std::invalid_argument("filter plan requires input and output");
+  for (auto item : elements(property(env, args[0], "passes"), 256)) {
+    CustomFilterPass pass;
+    pass.program = asUint32(env, property(env, item, "program"));
+    const auto& program = value.renderer.filterProgram(pass.program);
+    pass.input = asUint32(env, property(env, item, "input"));
+    pass.output = asUint32(env, property(env, item, "output"));
+    pass.clear = asBoolean(env, property(env, item, "clear"));
+    pass.blend = asBlendMode(env, property(env, item, "blend"));
+    if (hasProperty(env, item, "transform")) {
+      const auto transform = elements(property(env, item, "transform"), 6);
+      if (transform.size() != 6) throw std::invalid_argument("invalid filter transform");
+      for (std::size_t i = 0; i < 6; ++i) pass.transform[i] = finite(transform[i]);
+    }
+    if (pass.input >= plan->resolutions.size() || pass.output >= plan->resolutions.size() ||
+        pass.input == pass.output || pass.input == 1)
+      throw std::invalid_argument("invalid filter pass targets");
+    for (auto component : elements(property(env, item, "uniforms"), 4096))
+      pass.uniforms.push_back(finite(component));
+    for (auto sampler : elements(property(env, item, "samplers"), 32)) {
+      CustomFilterPass::Sampler binding;
+      binding.image = asUint32(env, property(env, sampler, "image"));
+      binding.target = asUint32(env, property(env, sampler, "target"));
+      binding.nearest = hasProperty(env, sampler, "nearest") && asBoolean(env, property(env, sampler, "nearest"));
+      if (binding.image) {
+        const auto image = resolveImage(value, binding.image);
+        if (!image) throw std::invalid_argument("invalid filter sampler image");
+        binding.image = *image;
+      } else if (binding.target >= plan->resolutions.size() || binding.target == 1 ||
+                 binding.target == pass.output) {
+        throw std::invalid_argument("invalid filter sampler target");
+      }
+      pass.samplers.push_back(binding);
+    }
+    std::size_t components = 0, samplers = 0;
+    for (const auto& uniform : program.uniforms) {
+      if (uniform.type == GL_SAMPLER_2D) samplers += uniform.count;
+      else components += uniform.components * uniform.count;
+    }
+    GLint textureUnits = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &textureUnits);
+    if (components != pass.uniforms.size() || samplers != pass.samplers.size() ||
+        samplers + 1 > static_cast<std::size_t>(textureUnits))
+      throw std::invalid_argument("invalid filter uniform or sampler count");
+    plan->passes.push_back(std::move(pass));
+  }
+  const auto handle = value.renderer.registerFilterPlan(plan);
+  napi_value result = moduleObject(env);
+  check(env, napi_set_named_property(env, result, "handle", uint32(env, handle)), "cannot set filter plan handle");
+  auto owner = std::make_unique<std::shared_ptr<CustomFilterPlan>>(plan);
+  check(env, napi_add_finalizer(env, result, owner.get(),
+    [](napi_env, void* data, void*) { delete static_cast<std::shared_ptr<CustomFilterPlan>*>(data); },
+    nullptr, nullptr), "cannot retain filter plan");
+  owner.release();
+  return result;
+} catch (const std::exception& error) {
+  napi_throw_error(env, nullptr, error.what()); return nullptr;
 }
 
 napi_value setPresentationLayers(napi_env env, napi_callback_info info) try {
@@ -190,17 +315,63 @@ napi_value createTileLayer(napi_env env, napi_callback_info info) try {
   napi_throw_range_error(env, nullptr, error.what()); return nullptr;
 }
 
-napi_value createMesh(napi_env env, napi_callback_info info) try {
-  auto args = arguments(env, info, 5);
-  if (args.size() != 5) throw std::runtime_error("createMesh requires five arguments");
+pmjs::AlphaMode imageAlphaMode(napi_env env, napi_value options) {
+  napi_valuetype type;
+  check(env, napi_typeof(env, options, &type), "invalid alpha options");
+  if (type != napi_object) throw std::runtime_error("alphaMode requires an options object");
+  if (!hasProperty(env, options, "alphaMode")) return pmjs::AlphaMode::straight;
+  const auto mode = asString(env, property(env, options, "alphaMode"));
+  if (mode == "straight") return pmjs::AlphaMode::straight;
+  if (mode == "premultiplied") return pmjs::AlphaMode::premultiplied;
+  throw std::runtime_error("alphaMode must be straight or premultiplied");
+}
+
+napi_value createMeshResource(napi_env env, const std::vector<napi_value>& args,
+                            const pmjs::MeshMaterial& material) {
   State& value = host(env);
   const auto image = resolveImage(value, asUint32(env, args[0]));
   if (!image) throw std::runtime_error("invalid mesh image");
   const auto mesh = value.renderer.createMesh(*image, floatVector(env, args[1]),
-    floatVector(env, args[2]), uintVector(env, args[3]),
-    asUint32(env, args[4]) == 0);
-  if (!mesh) throw std::runtime_error("invalid mesh geometry");
+    floatVector(env, args[2]), uintVector(env, args[3]), asUint32(env, args[4]) == 0, material);
+  if (!mesh) throw std::runtime_error("invalid mesh geometry or material");
   return uint32(env, mesh);
+}
+
+napi_value createMesh(napi_env env, napi_callback_info info) try {
+  auto args = arguments(env, info, 6);
+  if (args.size() != 5) throw std::runtime_error("createMesh requires exactly five geometry arguments");
+  return createMeshResource(env, args, pmjs::TexturedMeshMaterial{});
+} catch (const std::exception& error) {
+  napi_throw_range_error(env, nullptr, error.what()); return nullptr;
+}
+
+napi_value createMppBitmapMesh(napi_env env, napi_callback_info info) try {
+  auto args = arguments(env, info, 6);
+  if (args.size() != 6) throw std::runtime_error("MPP bitmap mesh requires geometry and raster options");
+  if (hasProperty(env, args[5], "rasterRule")) throw std::runtime_error("triangle raster rule is encoded in coefficients");
+  pmjs::TriangleBitmapMaterial material;
+  const auto coefficients = floatVector(env, property(env, args[5], "coefficients"));
+  if (coefficients.size() != material.coefficients.size()) throw std::runtime_error("invalid compiled triangle coefficients");
+  std::copy(coefficients.begin(), coefficients.end(), material.coefficients.begin());
+  const float compiledMode = material.coefficients[29];
+  if (!std::isfinite(compiledMode) || compiledMode < 0 || compiledMode > 31 ||
+      compiledMode != std::floor(compiledMode)) throw std::runtime_error("invalid triangle raster mode");
+  const auto modeBits = static_cast<unsigned>(compiledMode) & 24U;
+  if (modeBits == 24U) material.rasterRule = pmjs::TriangleBitmapMaterial::RasterRule::canvasFourSample;
+  return createMeshResource(env, args, material);
+} catch (const std::exception& error) {
+  napi_throw_range_error(env, nullptr, error.what()); return nullptr;
+}
+
+napi_value createMvBitmapMesh(napi_env env, napi_callback_info info) try {
+  auto args = arguments(env, info, 6);
+  if (args.size() != 6) throw std::runtime_error("MV bitmap mesh requires geometry and bitmap options");
+  pmjs::MvBitmapMaterial material;
+  const auto bounds = floatVector(env, property(env, args[5], "texelBounds"));
+  if (bounds.size() != 4) throw std::runtime_error("invalid MV bitmap texel bounds");
+  std::copy(bounds.begin(), bounds.end(), material.texelBounds.begin());
+  material.alphaMode = imageAlphaMode(env, args[5]);
+  return createMeshResource(env, args, material);
 } catch (const std::exception& error) {
   napi_throw_range_error(env, nullptr, error.what()); return nullptr;
 }
@@ -214,6 +385,19 @@ napi_value releaseTileLayer(napi_env env, napi_callback_info info) try {
 
 napi_value releaseMesh(napi_env env, napi_callback_info info) {
   return releaseTileLayer(env, info);
+}
+
+napi_value clearImageTriangles(napi_env env, napi_callback_info info) try {
+  auto args = arguments(env, info, 4);
+  if (args.size() < 2) throw std::runtime_error("image triangle clear requires an image and points");
+  if (!host(env).renderer.clearImageTriangles(asUint32(env, args[0]), floatVector(env, args[1]),
+      args.size() > 2 ? floatVector(env, args[2]) : std::vector<float>{},
+      args.size() > 3 ? floatVector(env, args[3]) : std::vector<float>{})) {
+    throw std::runtime_error("triangle clear requires a live GPU-only image and finite triangle coordinates");
+  }
+  return undefined(env);
+} catch (const std::exception& error) {
+  napi_throw_range_error(env, nullptr, error.what()); return nullptr;
 }
 
 napi_value createPrimitiveSurface(napi_env env, napi_callback_info info) try {
@@ -293,9 +477,9 @@ napi_value renderToCanvas(napi_env env, napi_callback_info info) try {
   const auto target = value.canvases.info(asUint32(env, args.at(0)));
   if (!target) throw std::runtime_error("invalid render target canvas");
   value.canvases.uploadDirty();
-  const bool written = value.canvases.writePixels(
-      asUint32(env, args.at(0)), 0, 0, target->width, target->height,
-      value.renderer.renderToRgba(target->width, target->height));
+  const bool written = value.canvases.replacePixels(
+    asUint32(env, args.at(0)),
+    value.renderer.renderToRgba(target->width, target->height));
   value.renderer.beginFrame();
   if (!written) {
     throw std::runtime_error("could not write native render target");
@@ -306,14 +490,15 @@ napi_value renderToCanvas(napi_env env, napi_callback_info info) try {
 }
 
 napi_value renderToImage(napi_env env, napi_callback_info info) try {
-  auto args = arguments(env, info, 2);
-  if (args.size() != 2) {
+  auto args = arguments(env, info, 3);
+  if (args.size() < 2) {
     throw std::runtime_error("renderToImage requires width and height");
   }
   State& value = host(env);
   value.canvases.uploadDirty();
   const auto image = value.renderer.renderToImage(
-    asInt32(env, args[0]), asInt32(env, args[1]));
+    asInt32(env, args[0]), asInt32(env, args[1]),
+    args.size() > 2 ? imageAlphaMode(env, args[2]) : pmjs::AlphaMode::straight);
   value.renderer.beginFrame();
   if (!image) throw std::runtime_error("could not create GPU render image");
   return imageInfo(env, image->handle, image->width, image->height);
@@ -422,6 +607,8 @@ void registerGraphicsBindings(napi_env env, napi_value exports) {
   napi_value render = moduleObject(env);
   method(env, render, "setClearColor", setClearColor);
   method(env, render, "configurePixiFragmentPrecision", configurePixiFragmentPrecision);
+  method(env, render, "createFilterProgram", createFilterProgram);
+  method(env, render, "createFilterPlan", createFilterPlan);
   method(env, render, "graphicsInfo", graphicsInfo);
   method(env, render, "setPresentationLayers", setPresentationLayers);
   method(env, render, "setRenderTargetSize", setRenderTargetSize);
@@ -432,6 +619,13 @@ void registerGraphicsBindings(napi_env env, napi_value exports) {
   method(env, render, "releaseTileLayer", releaseTileLayer);
   method(env, render, "createMesh", createMesh);
   method(env, render, "releaseMesh", releaseMesh);
+  napi_value plugins = moduleObject(env), mpp = moduleObject(env), mv = moduleObject(env);
+  method(env, mpp, "createBitmapMesh", createMppBitmapMesh);
+  method(env, mpp, "clearBackgroundTriangles", clearImageTriangles);
+  method(env, mv, "createBitmapMesh", createMvBitmapMesh);
+  napi_set_named_property(env, plugins, "mpp", mpp);
+  napi_set_named_property(env, exports, "plugins", plugins);
+  napi_set_named_property(env, exports, "mv", mv);
   method(env, render, "createPrimitiveSurface", createPrimitiveSurface);
   method(env, render, "renderPrimitiveSurface", renderPrimitiveSurface);
   method(env, render, "releasePrimitiveSurface", releasePrimitiveSurface);
@@ -464,6 +658,10 @@ void registerGraphicsBindings(napi_env env, napi_value exports) {
   napi_set_named_property(env, schema, "maxNodes", uint32(env, pmjs::scene_packet::maxNodes));
   napi_set_named_property(env, schema, "maxPacketBytes", uint32(env, pmjs::scene_packet::maxPacketBytes));
   napi_set_named_property(env, schema, "transactionalSubmit", boolean(env, true));
+  napi_set_named_property(env, schema, "gpuSpriteTextures", boolean(env, true));
+  napi_set_named_property(env, schema, "clampedTilingSampling", boolean(env, true));
+  napi_set_named_property(env, schema, "filterCompositeBlend", boolean(env, true));
+  napi_set_named_property(env, schema, "effects", boolean(env, true));
   napi_set_named_property(env, scene, "schema", schema);
   check(env, napi_set_named_property(env, exports, "render", render), "cannot export render module");
   check(env, napi_set_named_property(env, exports, "scene", scene), "cannot export scene module");

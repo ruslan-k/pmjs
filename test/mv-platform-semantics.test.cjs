@@ -62,14 +62,13 @@ test('two-pass PluginManager.setup allows cross-plugin parameter lookups', () =>
   const pluginLoaderCode = fs.readFileSync(path.join(jsDir, 'pmjs-mv/plugin-loader.js'), 'utf8');
   vm.runInContext(setupCode, context);
   vm.runInContext(pluginLoaderCode, context);
-  context.pmjsMvInstallPluginManagerHooks();
 
   let p1SawP2Params = null;
-  context.PluginManager.loadScript = function(name) {
-    if (name === 'PluginA.js') {
+  context.NativeHost = { runtime: { loadScript(name) {
+    if (name === 'js/plugins/PluginA.js') {
       p1SawP2Params = context.PluginManager.parameters('PluginB');
     }
-  };
+  } } };
 
   const samplePlugins = [
     { name: 'PluginA', status: true, description: '', parameters: { optA: '123' } },
@@ -77,7 +76,8 @@ test('two-pass PluginManager.setup allows cross-plugin parameter lookups', () =>
     { name: 'PluginA', status: true, description: 'dup', parameters: { optA: 'dup' } }
   ];
 
-  context.PluginManager.setup(samplePlugins);
+  context.$plugins = samplePlugins;
+  context.pmjsMvInitializePlugins();
   assert.deepEqual(p1SawP2Params, { optB: '456' }, 'PluginA should see PluginB parameters before PluginB script loads');
   assert.equal(context.PluginManager._scripts.length, 2, 'Duplicate plugins should be suppressed');
   assert.equal(context.PluginManager._scripts[0], 'PluginA');
@@ -97,7 +97,7 @@ test('plugin lifecycle hooks install after PluginManager becomes available', () 
   vm.runInContext(setupCode, context);
   vm.runInContext(pluginLoaderCode, context);
 
-  assert.equal(context.pmjsMvInstallPluginManagerHooks(), false);
+  assert.equal(context.PluginManager, undefined);
   context.PluginManager = {
     _path: 'js/plugins/',
     _scripts: [],
@@ -107,11 +107,8 @@ test('plugin lifecycle hooks install after PluginManager becomes available', () 
   const events = [];
   context.PMJS.plugins.onLoaded('YED_Tiled', () => events.push('loaded'));
 
-  assert.equal(context.pmjsMvInstallPluginManagerHooks(), true);
-  assert.equal(context.pmjsMvInstallPluginManagerHooks(), true);
-  context.PluginManager.setup([
-    { name: 'YED_Tiled', status: true, parameters: {} }
-  ]);
+  context.$plugins = [{ name: 'YED_Tiled', status: true, parameters: {} }];
+  context.pmjsMvInitializePlugins();
 
   assert.deepEqual(loaded, ['js/plugins/YED_Tiled.js']);
   assert.deepEqual(events, ['loaded']);
@@ -171,9 +168,11 @@ test('document.currentScript stack exposes file:///game/ URL and restores on ret
   assert.equal(scriptsLoaded[4].currentScriptSrc, 'file:///game/outer.js');
 });
 
-test('nw.gui stubs count their use without changing behavior', () => {
+test('nw.gui unsupported calls are diagnosed and external links reach the host', () => {
   const hits = [];
+  const opened = [];
   const context = {
+    NativeHost: { runtime: { openExternal(url) { opened.push(url); return true; } } },
     process: { platform: 'linux', arch: 'x64', versions: {} },
     nativePlatform: { platform: 'linux', arch: 'x64' },
     nativeLogicalWidth: 800,
@@ -203,10 +202,10 @@ test('nw.gui stubs count their use without changing behavior', () => {
   gui.Menu().append({});
   gui.MenuItem({}).click();
   gui.App.clearCache();
+  assert.deepEqual(opened, ['https://example.com']);
   assert.deepEqual(hits, [
     ['browser.nwGui', 'Window.show'],
     ['browser.nwGui', 'Window.show'],
-    ['browser.nwGui', 'Shell.openExternal'],
     ['browser.nwGui', 'Menu.append'],
     ['browser.nwGui', 'MenuItem.click'],
     ['browser.nwGui', 'App.clearCache']
@@ -391,14 +390,13 @@ test('bootstrap dispatches window load event listeners and window.onload', () =>
           for (const l of listeners) l(event);
         }
       }
-    },
-    PMJS_MANUAL_BOOTSTRAP: true
+    }
   };
   listeners.push(() => { addEventListenerCalled = true; });
 
   vm.createContext(context);
   const setupCode = readPluginInfra();
-  const bootstrapCode = fs.readFileSync(path.join(jsDir, 'pmjs-mv/bootstrap.js'), 'utf8');
+  const bootstrapCode = fs.readFileSync(path.join(jsDir, 'pmjs-mv/boot.js'), 'utf8');
   vm.runInContext(setupCode, context);
   vm.runInContext(bootstrapCode, context);
 
@@ -440,14 +438,14 @@ test('integrated stack: PluginManager.setup -> loadScript -> document.currentScr
   vm.runInContext(setupCode, context);
   vm.runInContext(scriptLoaderCode, context);
   vm.runInContext(pluginLoaderCode, context);
-  context.pmjsMvInstallPluginManagerHooks();
 
   const plugins = [
     { name: 'PluginOne', status: true, description: '', parameters: { opt1: 'v1' } },
     { name: 'PluginTwo', status: true, description: '', parameters: { opt2: 'v2' } }
   ];
 
-  context.PluginManager.setup(plugins);
+  context.$plugins = plugins;
+  context.pmjsMvInitializePlugins();
 
   assert.equal(loadedScripts.length, 2);
   assert.equal(loadedScripts[0].path, 'js/plugins/PluginOne.js');
@@ -493,10 +491,9 @@ test('lifecycle pulses beforePlugins, afterPlugins, and beforeBoot', () => {
 
   const setupCode = readPluginInfra();
   const pluginLoaderCode = fs.readFileSync(path.join(jsDir, 'pmjs-mv/plugin-loader.js'), 'utf8');
-  const bootstrapCode = fs.readFileSync(path.join(jsDir, 'pmjs-mv/bootstrap.js'), 'utf8');
+  const bootstrapCode = fs.readFileSync(path.join(jsDir, 'pmjs-mv/boot.js'), 'utf8');
 
   vm.runInContext(setupCode, context);
-  context.globalThis.PMJS_MANUAL_BOOTSTRAP = true;
   context.PMJS.phases.on('beforePlugins', () => events.push('beforePlugins'));
   context.PMJS.phases.on('afterPlugins', () => events.push('afterPlugins'));
   context.PMJS.phases.on('beforeBoot', () => events.push('beforeBoot'));
@@ -554,15 +551,14 @@ test('phases run multiple hooks in registration order', () => {
   assert.deepEqual(events, ['hook-1', 'hook-2']);
 });
 
-test('named plugin callbacks run once and errors do not stop peers', () => {
+test('named plugin installer failures stop peers and propagate', () => {
   const context = vm.createContext({ console });
   vm.runInContext(readPluginInfra(), context);
   const seen = [];
   context.PMJS.plugins.onLoaded('SomePlugin', () => { throw new Error('boom'); });
   context.PMJS.plugins.onLoaded('someplugin.js', () => seen.push('loaded'));
-  context.PMJS.plugins.execute('SomePlugin', function() {});
-  context.PMJS.plugins.execute('SomePlugin', function() {});
-  assert.deepEqual(seen, ['loaded']);
+  assert.throws(() => context.PMJS.plugins.execute('SomePlugin', function() {}), /boom/);
+  assert.deepEqual(seen, []);
 });
 
 test('Scene_Map same-map transfer does not short-circuit through reuse and preserves stock transfer hooks', () => {
@@ -789,7 +785,7 @@ test('Bitmap.prototype.drawText installs native acceleration only for stock pipe
   stockBmp.drawText('alpha', 10, 0, 0, 20, 'left');
   assert.equal(nativeDrawArguments.at(-2)[6] & 255, 255,
     'outline preserves MV globalAlpha=1 behavior');
-  assert.equal(nativeDrawArguments.at(-1)[6] & 255, 64,
+  assert.equal(nativeDrawArguments.at(-1)[6] & 255, 63,
     'body preserves the caller globalAlpha');
   nativeDrawCalls = 0;
   stockBmp.drawText(undefined, 0, 0, 0, 20, 'left');
@@ -821,7 +817,7 @@ test('Bitmap.prototype.drawText installs native acceleration only for stock pipe
   const disabledContext = createContext(DisabledBitmap, true);
   new disabledContext.Bitmap().drawText('ordinary', 0, 0, 0, 20, 'left');
   assert.equal(nativeDrawCalls, 0, 'disabled text optimization must keep the ordinary path');
-  assert.equal(disabledContext.PMJS.optimizations.reason('bitmap.native-draw-text'), 'disabled by port');
+  assert.equal(disabledContext.PMJS.optimizations.reason('bitmap.native-draw-text'), 'disabled by configuration');
 });
 
 test('synchronous-burst storage read coalescing preserves stock DataManager object identity and coalesces storage I/O', async () => {
@@ -1103,7 +1099,61 @@ test('storage read coalescing runs underneath plugin wrappers and respects dynam
   assert.equal(physicalReads, 4, 'Live burst must survive reinstall (still a hit, no new physical read)');
 });
 
-test('native renderer ownership is restored after game plugins compose', () => {
+function markTestRenderers(context) {
+  const renderers = new WeakSet();
+  const create = context.createNativePixiRenderer;
+  context.createNativePixiRenderer = function(...args) {
+    const renderer = create(...args);
+    renderers.add(renderer);
+    return renderer;
+  };
+  context.PMJS.pixi4 = { isNativeRenderer: value => renderers.has(value) };
+}
+
+test('MV rejects a nondelegating browser renderer and records its plugin mutation', () => {
+  const context = vm.createContext({ console, Graphics: {},
+    createNativePixiRenderer() { return { render() {} }; } });
+  vm.runInContext(fs.readFileSync(path.join(jsDir, 'pmjs-core/methods.js'), 'utf8'), context);
+  markTestRenderers(context);
+  const source = fs.readFileSync(path.join(jsDir, 'pmjs-mv/renderer.js'), 'utf8');
+  vm.runInContext(source.slice(0, source.indexOf('var originalIsOptionValid')), context);
+  const token = context.PMJS.methods.beginPlugin('ReplacementRenderer');
+  let setups = 0;
+  context.Graphics._createRenderer = function() {
+    setups++;
+    this._renderer = { render() {}, gl: {}, _pmjsNative: true };
+  };
+  context.PMJS.methods.endPlugin(token);
+  context.PMJS.methods.install();
+  assert.throws(() => context.Graphics._createRenderer(), /must create a PMJS native renderer/);
+  assert.equal(setups, 1);
+  const record = context.PMJS.methods.dump().find(value => value.key === 'Graphics._createRenderer');
+  assert.equal(record.mutations[0].plugin, 'ReplacementRenderer');
+});
+
+test('MV accepts a replacement that creates a native renderer and preserves return and errors', () => {
+  const context = vm.createContext({ console, Graphics: {},
+    createNativePixiRenderer() { return { render() {} }; } });
+  vm.runInContext(fs.readFileSync(path.join(jsDir, 'pmjs-core/methods.js'), 'utf8'), context);
+  markTestRenderers(context);
+  const source = fs.readFileSync(path.join(jsDir, 'pmjs-mv/renderer.js'), 'utf8');
+  vm.runInContext(source.slice(0, source.indexOf('var originalIsOptionValid')), context);
+  let fail = false;
+  const error = new Error('guest setup failed');
+  context.Graphics._createRenderer = function() {
+    if (fail) throw error;
+    this._renderer = context.createNativePixiRenderer();
+    this._renderer.guestReady = true;
+    return 'created';
+  };
+  context.PMJS.methods.install();
+  assert.equal(context.Graphics._createRenderer(), 'created');
+  assert.equal(context.Graphics._renderer.guestReady, true);
+  fail = true;
+  assert.throws(() => context.Graphics._createRenderer(), value => value === error);
+});
+
+test('native presentation ownership is restored without discarding guest renderer creation', () => {
   const source = fs.readFileSync(path.join(jsDir, 'pmjs-mv/renderer.js'), 'utf8');
   const methodsSource = fs.readFileSync(path.join(jsDir, 'pmjs-core/methods.js'), 'utf8');
   const rendererInstaller = source.slice(0, source.indexOf('var originalIsOptionValid'));
@@ -1115,8 +1165,14 @@ test('native renderer ownership is restored after game plugins compose', () => {
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(methodsSource, context, { filename: 'methods.js' });
+  markTestRenderers(context);
   vm.runInContext(rendererInstaller, context);
-  const pluginCreateRenderer = function() {};
+  const baseCreateRenderer = context.Graphics._createRenderer;
+  let pluginCreates = 0;
+  const pluginCreateRenderer = function() {
+    pluginCreates++;
+    return baseCreateRenderer.apply(this, arguments);
+  };
   const pluginRender = function() {};
   context.Graphics._createRenderer = pluginCreateRenderer;
   context.Graphics.render = pluginRender;
@@ -1125,6 +1181,7 @@ test('native renderer ownership is restored after game plugins compose', () => {
   assert.notEqual(context.Graphics._createRenderer, pluginCreateRenderer);
   assert.notEqual(context.Graphics.render, pluginRender);
   context.Graphics._createRenderer();
+  assert.equal(pluginCreates, 1);
   assert.equal(typeof context.Graphics._renderer.render, 'function');
   context.Graphics.frameCount = 1023;
   context.Graphics.render({});
@@ -1135,6 +1192,74 @@ test('native renderer ownership is restored after game plugins compose', () => {
   assert.equal(context.Graphics.frameCount, 60 * 60 * 24 + 1,
     'a loaded playtime frame count must survive the next presentation');
 });
+
+for (const composition of ['alias', 'subclass']) {
+  test(`MV renderer preserves ${composition} setup, defaults and post-creation behavior`, () => {
+    for (const roundPixels of [false, true]) {
+      const source = fs.readFileSync(path.join(jsDir, 'pmjs-mv/renderer.js'), 'utf8');
+      const context = {
+        console,
+        calls: [],
+        roundPixels,
+        PIXI: { settings: { RENDER_OPTIONS: { roundPixels: false } } },
+        createNativePixiRenderer(w, h, options) {
+          context.calls.push('create');
+          return { width: w, height: h, view: options.view,
+            roundPixels: context.PIXI.settings.RENDER_OPTIONS.roundPixels };
+        },
+      };
+      context.globalThis = context;
+      vm.createContext(context);
+      vm.runInContext(`
+        var Graphics = class {
+          static _createRenderer() { throw new Error('Browser renderer reached'); }
+          static render() {}
+        };
+        Graphics._width = 640;
+        Graphics._height = 480;
+        Graphics._canvas = {};
+      `, context);
+      vm.runInContext(fs.readFileSync(path.join(jsDir, 'pmjs-core/methods.js'), 'utf8'), context);
+      markTestRenderers(context);
+      vm.runInContext(source.slice(0, source.indexOf('var originalIsOptionValid')), context);
+      const preparation = `
+        calls.push('prepare');
+        if (roundPixels) PIXI.settings.RENDER_OPTIONS.roundPixels = true;
+        this._width = 960;
+      `;
+      vm.runInContext(composition === 'alias' ? `
+        var parentCreateRenderer = Graphics._createRenderer;
+        Graphics._createRenderer = function() {
+          ${preparation}
+          parentCreateRenderer.apply(this, arguments);
+          calls.push('post');
+          this._renderer.guestReady = true;
+        };
+      ` : `
+        Graphics = class extends Graphics {
+          static _createRenderer() {
+            ${preparation}
+            super._createRenderer();
+            calls.push('post');
+            this._renderer.guestReady = true;
+          }
+        };
+      `, context);
+      context.PMJS.methods.install();
+      context.PMJS.methods.install();
+      context.Graphics._createRenderer();
+      assert.deepEqual(context.calls, ['prepare', 'create', 'post']);
+      assert.equal(context.Graphics._renderer.roundPixels, roundPixels);
+      assert.equal(context.Graphics._renderer.width, 960);
+      assert.equal(context.Graphics._renderer.height, 480);
+      assert.equal(context.Graphics._renderer.view, context.Graphics._canvas);
+      assert.equal(context.Graphics._renderer.guestReady, true);
+      context.calls.length = 0;
+      context.Graphics._createRenderer();
+      assert.deepEqual(context.calls, ['prepare', 'create', 'post']);
+    }
+  });
+}
 
 test('document.title and nw.Window.title read from and write to authoritative __pmjsGameInfo', () => {
   const eventsCode = fs.readFileSync(path.join(jsDir, 'pmjs-web/events.js'), 'utf8');
@@ -1263,6 +1388,7 @@ test('Graphics._createRenderer uses the game-authored logical dimensions', () =>
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(methodsSource, context, { filename: 'methods.js' });
+  markTestRenderers(context);
   vm.runInContext(rendererInstaller, context);
   context.PMJS.methods.install();
 

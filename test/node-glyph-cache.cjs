@@ -1,5 +1,8 @@
 'use strict';
 
+// This test exercises the legacy cache implementation, irrespective of the local default.
+process.env.PMJS_TEXT_BACKEND = 'freetype';
+
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const native = require(path.resolve(process.argv[2]));
@@ -112,7 +115,7 @@ assert.ok(widthSmall < width1, '14px text should have smaller width than 24px te
 stats = native.canvas.glyphStats();
 assert.ok(stats.fontStrikes >= 2, 'Different pixel sizes must create distinct font strikes');
 
-// 7. Test exact ABC sequence from review
+// Measuring creates metrics; subsequent fill and stroke draws reuse that layout.
 // measureText("ABC") -> metrics entries created -> glyphMaskMisses remains 0
 const glyphEntriesBeforeABC = stats.glyphEntries;
 const maskMissesBeforeABC = stats.glyphMaskMisses;

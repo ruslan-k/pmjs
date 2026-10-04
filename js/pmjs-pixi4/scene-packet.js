@@ -30,9 +30,6 @@ function nativeNodeRenderType(node) {
   if (!type && node && typeof node._pmjsType === 'string') {
     type = node._pmjsType;
   }
-  if (!type && typeof globalThis.__pmjsNodeRenderType === 'function') {
-    type = globalThis.__pmjsNodeRenderType(node);
-  }
   if (type === 'tilingSprite') type = 'tilingsprite';
   if (type) {
     return String(type).toLowerCase();
@@ -147,8 +144,10 @@ var nativePlainSpriteSegmentScratch = [];
 
 function nativePlainSpriteBinding(node) {
   if (nativeSceneNodeRejected(node, null) || node.children && node.children.length ||
-      node.shader || node.mask || typeof node.updateChowRender === 'function' ||
-      nativeNodeRenderType(node) !== 'sprite' || nativeScenePictureBlend(node) >= 0) {
+      node._cacheAsBitmap ||
+      node.shader || node.mask ||
+      nativeNodeRenderType(node) !== 'sprite' || nativeScenePictureBlend(node) >= 0 ||
+      nativeScenePreparation(node) || pmjsPixiRenderPreflight.unsupportedMethod(node)) {
     return null;
   }
   var filters = nativeSceneFilters(node);
@@ -202,8 +201,10 @@ function nativePlainSpriteBinding(node) {
 }
 
 function writeNativePlainSpriteSegment(bindings, parentIndex) {
-  nativeSceneSegmentStats.runs++;
-  nativeSceneSegmentStats.sprites += bindings.length;
+  if (nativeSceneSegmentTracing) {
+    nativeSceneSegmentStats.runs++;
+    nativeSceneSegmentStats.sprites += bindings.length;
+  }
   for (var bindingIndex = 0; bindingIndex < bindings.length; bindingIndex++) {
     var binding = bindings[bindingIndex];
     var node = binding.node;
@@ -211,7 +212,7 @@ function writeNativePlainSpriteSegment(bindings, parentIndex) {
     if (transform && typeof transform.updateLocalTransform === 'function') {
       transform.updateLocalTransform();
     }
-    var local = transform && transform.localTransform || nativeIdentityTransform;
+    var local = nativeSpriteLocalTransform(node, transform && transform.localTransform || nativeIdentityTransform);
     var frame = binding.frame;
     var localX = binding.localX;
     var localY = binding.localY;
@@ -220,6 +221,8 @@ function writeNativePlainSpriteSegment(bindings, parentIndex) {
     var nodeIndex = nativeSceneRecord(parentIndex, 1, binding.nativeImage.handle,
       node.tint === undefined ? 0xffffff : node.tint, binding.blendMode,
       local, node.alpha, null, 0, null);
+    nativePackSpriteColor(node, nodeIndex, node.tint === undefined ? 0xffffff : node.tint);
+    nativeSpriteVertices(node, nodeIndex);
     var metadataOffset = nodeIndex * nativeSceneMetadataStride;
     var valueOffset = nodeIndex * nativeSceneValueStride;
     nativeSceneValues[valueOffset + 7] = localX;
@@ -229,6 +232,8 @@ function writeNativePlainSpriteSegment(bindings, parentIndex) {
       nativeSceneMetadata[metadataOffset + 5] |= 8;
     }
     if (nativeSceneRoundPixels) nativeSceneMetadata[metadataOffset + 5] |= 256;
+    if (binding.base.__pmjsPremultiplied) nativeSceneMetadata[metadataOffset + 5] |= 1024;
+    if (binding.texture.__pmjsStandaloneBitmapRegion) nativeSceneMetadata[metadataOffset + 5] |= 8192;
     var resolution = Math.max(0.000001, Number(binding.base.resolution) || 1);
     nativeSceneValues[valueOffset + 9] = frame.x * resolution;
     nativeSceneValues[valueOffset + 10] = frame.y * resolution;
@@ -243,6 +248,7 @@ function writeNativeSceneNode(node, parentIndex, forcedClip, forcedMask,
     particleContext, forcedAlpha) {
   if (!node) return;
   if (nativeIsRectTileLayer(node)) {
+    pmjsPixiRenderPreflight.check(node);
     writeNativeSceneRectTileLayer(node, parentIndex);
     return;
   }
@@ -252,6 +258,7 @@ function writeNativeSceneNode(node, parentIndex, forcedClip, forcedMask,
     var cacheProducer = node.constructor && node.constructor.name || 'node';
     var cachedSprite = node._cacheData && node._cacheData.sprite;
     if (cachedSprite) {
+      pmjsPixiRenderPreflight.check(node);
       PMJS.compat.observed('render.cacheAsBitmap', cacheProducer);
       var cachedTransform = node.transform;
       if (cachedTransform && !nativeSceneRootUsesWorldTransform &&
@@ -283,10 +290,10 @@ function writeNativeSceneNode(node, parentIndex, forcedClip, forcedMask,
       !particleContext && forcedAlpha === undefined) {
     forcedAlpha = node.worldAlpha;
   }
-  if (!particleContext && typeof globalThis.__pmjsBeforeRenderNode === 'function') {
-    globalThis.__pmjsBeforeRenderNode(node);
+  if (!particleContext) {
+    pmjsPixiRenderPreflight.check(node);
+    prepareNativeSceneNode(node);
   }
-  if (!particleContext) prepareNativeSceneNode(node);
   if (!particleContext && node.shader) {
     PMJS.compat.hit('render.shader',
       (node.constructor && node.constructor.name || 'node') + ':' +
@@ -358,6 +365,9 @@ function writeNativeSceneNode(node, parentIndex, forcedClip, forcedMask,
     local = transform && (parentIndex === 0xffffffff &&
       nativeSceneRootUsesWorldTransform ? transform.worldTransform :
       transform.localTransform) || nativeIdentityTransform;
+  }
+  if (!particleValues && !(parentIndex === 0xffffffff && nativeSceneRootUsesWorldTransform)) {
+    local = nativeSpriteLocalTransform(node, local);
   }
   if (parentIndex === 0xffffffff && nativeSceneRootTransform !== nativeIdentityTransform) {
     local = nativeComposeTransform(nativeSceneRootTransform, local);
@@ -440,6 +450,9 @@ function writeNativeSceneNode(node, parentIndex, forcedClip, forcedMask,
   nativeSceneValues[valueOffset + 7] = localX;
   nativeSceneValues[valueOffset + 8] = localY;
   if (kind === 1) {
+    if (!particleContext && forcedAlpha === undefined) nativePackSpriteColor(node, nodeIndex, tint);
+    if (!particleContext) nativeSpriteVertices(node, nodeIndex);
+    if (texture && texture.__pmjsStandaloneBitmapRegion) nativeSceneMetadata[nodeIndex * nativeSceneMetadataStride + 5] |= 8192;
     textureRotation = ((Number(texture && texture.rotate) || 0) % 16 + 16) % 16;
     nativeSceneMetadata[nodeIndex * nativeSceneMetadataStride + 5] |=
       textureRotation / 2 << 5;
@@ -455,6 +468,9 @@ function writeNativeSceneNode(node, parentIndex, forcedClip, forcedMask,
     nativeSceneValues[valueOffset + 9] = frame.x;
     nativeSceneValues[valueOffset + 10] = frame.y;
     var textureBase = texture && texture.baseTexture;
+    if (textureBase && textureBase.__pmjsPremultiplied) {
+      nativeSceneMetadata[nodeIndex * nativeSceneMetadataStride + 5] |= 1024;
+    }
     var spriteResolution = Math.max(0.000001,
       Number(textureBase && textureBase.resolution) || 1);
     var particleSampleX = 1;
@@ -544,9 +560,10 @@ function writeNativeSceneNode(node, parentIndex, forcedClip, forcedMask,
         texture.baseTexture.scaleMode === PIXI.SCALE_MODES.NEAREST) {
       nativeSceneMetadata[nodeIndex * nativeSceneMetadataStride + 5] |= 8;
     }
-    var meshPostTintOverlayColor = node._pmjsMeshPostTintOverlay;
+    var mvBitmapColor = PMJS.mv && PMJS.mv.bitmapMeshColor && PMJS.mv.bitmapMeshColor(node);
+    var meshPostTintOverlayColor = mvBitmapColor || node._pmjsMeshPostTintOverlay;
     if (meshPostTintOverlayColor && meshPostTintOverlayColor[3] > 0) {
-      nativeSceneMetadata[nodeIndex * nativeSceneMetadataStride + 5] |= 512;
+      nativeSceneMetadata[nodeIndex * nativeSceneMetadataStride + 5] |= mvBitmapColor ? 16384 : 512;
       for (var meshColorIndex = 0; meshColorIndex < 4; meshColorIndex++) {
         nativeSceneValues[valueOffset + 37 + meshColorIndex] =
           Math.max(0, Math.min(255,
@@ -620,7 +637,7 @@ function writeNativeSceneNode(node, parentIndex, forcedClip, forcedMask,
           segment.push(binding);
           segmentIndex++;
         }
-        nativeSceneSegmentStats.candidates += segment.length;
+        if (nativeSceneSegmentTracing) nativeSceneSegmentStats.candidates += segment.length;
         if (segment.length >= 4) {
           writeNativePlainSpriteSegment(segment, nodeIndex);
           index = segmentIndex - 1;
@@ -676,26 +693,27 @@ function prepareNativeBitmapCaches(node, renderer, root) {
   }
 }
 
-function encodeNativeScene(stage) {
+function encodeNativeScene(stage, backgroundColor = null) {
+  nativeCustomFilterPlans = [];
   resetNativeSceneRecords();
   nativePlainSpriteBindingPoolUsed = 0;
   nativePlainSpriteSegmentScratch.length = 0;
   nativeSceneFilterDepth = 0;
   nativeSceneSegmentTracing = !!(globalThis.__pmjsTrace &&
     __pmjsTrace.active());
-  if (nativeSceneBackgroundColor !== null) {
-    nativeSceneRecord(0xffffffff, 3, 0, nativeSceneBackgroundColor,
+  if (backgroundColor !== null) {
+    nativeSceneRecord(0xffffffff, 3, 0, backgroundColor,
       0, nativeIdentityTransform, 1, null, 0, null);
   }
   writeNativeSceneNode(stage, 0xffffffff);
   traceNativeScenePacket();
   return { version: nativeScenePacketVersion,
     metadata: nativeSceneMetadata, values: nativeSceneValues,
-    count: nativeSceneCount };
+    count: nativeSceneCount, customFilterPlans: nativeCustomFilterPlans };
 }
 
-function submitNativeScene(stage) {
-  var packet = encodeNativeScene(stage);
+function submitNativeScene(stage, backgroundColor = null) {
+  var packet = encodeNativeScene(stage, backgroundColor);
   if (!NativeHost.scene) {
     throw new Error('native scene was not rendered: scene service unavailable');
   }
@@ -739,9 +757,7 @@ function collectNativeTilemaps(node, output) {
 }
 
 function renderNativeStage(stage, rootTransform, filterResolution, roundPixels,
-    skipUpdateTransform) {
-  var profiling = typeof automationProfiling !== 'undefined' && automationProfiling;
-  var stageStarted = profiling ? performance.now() : 0;
+    skipUpdateTransform, backgroundColor = null, options = {}) {
   nativeScreenOverlays.length = 0;
   nativeTileRects = 0;
   var parent = stage.parent;
@@ -766,16 +782,17 @@ function renderNativeStage(stage, rootTransform, filterResolution, roundPixels,
   try {
     if (NativeHost.scene) {
       if (newStage) renderNativeStage._tilemaps = collectNativeTilemaps(stage, []);
-      submitNativeScene(stage);
+      nativeSceneUsePixiWorldState = !!skipUpdateTransform || options.worldState === 'pixi';
+      if (nativeSceneUsePixiWorldState && !skipUpdateTransform && typeof stage.updateTransform === 'function') {
+        stage.updateTransform();
+      }
+      submitNativeScene(stage, backgroundColor);
     }
   } catch (error) {
     renderNativeStage._ready = false;
     throw error;
   } finally {
-    if (profiling) {
-      nativeQueueMs += performance.now() - stageStarted;
-      nativeStageSamples++;
-    }
+    nativeSceneUsePixiWorldState = false;
     nativeSceneRootTransform = nativeIdentityTransform;
     nativeSceneRootUsesWorldTransform = false;
     nativeSceneFilterResolution = 1;

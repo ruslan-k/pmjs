@@ -41,31 +41,33 @@ function axisAlignedRect(context, x, y, width, height) {
     width: Math.abs(x1 - x0), height: Math.abs(y1 - y0) };
 }
 
-function canvasSourcePixels(source, nativeSource, operationId) {
+function canvasSourcePixels(source, nativeSource, operationId, region) {
+  var x = region ? region.x : 0;
+  var y = region ? region.y : 0;
+  var width = region ? region.width : source.width;
+  var height = region ? region.height : source.height;
   var trace = globalThis.__pmjsTrace;
   var sourceResource = trace && trace.active() ?
     trace.revision(nativeSource, source && source._nativeCanvas ? 'canvas' : 'image') : null;
   if (source && source._nativeCanvas) {
-    var canvasPixels = NativeHost.canvas.readPixels(nativeSource.handle, 0, 0,
-      source.width, source.height);
+    var canvasPixels = NativeHost.canvas.readPixels(nativeSource.handle, x, y, width, height);
     if (trace && trace.active()) trace.event('canvas', 'canvas.source-read', {
       parentOperationId: operationId, sourceId: sourceResource.id,
-      sourceRevision: sourceResource.revision, width: source.width,
-      height: source.height, bytes: canvasPixels.length, temporary: false
+      sourceRevision: sourceResource.revision, x: x, y: y, width: width,
+      height: height, bytes: canvasPixels.length, temporary: false
     });
     return canvasPixels;
   }
-  var temporary = NativeHost.canvas.create(source.width, source.height);
+  var temporary = NativeHost.canvas.create(width, height);
   try {
     NativeHost.canvas.drawImage(temporary.handle, nativeSource.handle,
-      0, 0, source.width, source.height, 0, 0, source.width, source.height, 1);
-    var imagePixels = NativeHost.canvas.readPixels(temporary.handle, 0, 0,
-      source.width, source.height);
+      x, y, width, height, 0, 0, width, height, 1);
+    var imagePixels = NativeHost.canvas.readPixels(temporary.handle, 0, 0, width, height);
     if (trace && trace.active()) trace.event('canvas', 'canvas.source-read', {
       parentOperationId: operationId, sourceId: sourceResource.id,
-      sourceRevision: sourceResource.revision, width: source.width,
-      height: source.height, bytes: imagePixels.length, temporary: true,
-      temporaryWidth: source.width, temporaryHeight: source.height
+      sourceRevision: sourceResource.revision, x: x, y: y, width: width,
+      height: height, bytes: imagePixels.length, temporary: true,
+      temporaryWidth: width, temporaryHeight: height
     });
     return imagePixels;
   } finally {
@@ -157,6 +159,7 @@ function clampCanvasChannel(value) {
 
 function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
     dx, dy, dw, dh, operationId) {
+  if (!sw || !sh || !dw || !dh || source.width <= 0 || source.height <= 0) return;
   var t = context._transform;
   var determinant = t[0] * t[3] - t[1] * t[2];
   if (Math.abs(determinant) < 0.000001) return;
@@ -173,7 +176,19 @@ function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
   var right = Math.min(context.canvas.width, Math.ceil(Math.max(x0, x1, x2, x3)));
   var bottom = Math.min(context.canvas.height, Math.ceil(Math.max(y0, y1, y2, y3)));
   if (right <= left || bottom <= top) return;
-  var sourcePixels = canvasSourcePixels(source, nativeSource, operationId);
+  var sourceLeft = Math.max(0, Math.min(source.width - 1,
+    Math.floor(Math.min(sx, sx + sw))));
+  var sourceTop = Math.max(0, Math.min(source.height - 1,
+    Math.floor(Math.min(sy, sy + sh))));
+  var sourceRight = Math.max(sourceLeft + 1, Math.min(source.width,
+    Math.floor(Math.max(sx, sx + sw)) + 1));
+  var sourceBottom = Math.max(sourceTop + 1, Math.min(source.height,
+    Math.floor(Math.max(sy, sy + sh)) + 1));
+  var sourceWidth = sourceRight - sourceLeft;
+  var sourcePixels = canvasSourcePixels(source, nativeSource, operationId, {
+    x: sourceLeft, y: sourceTop, width: sourceWidth,
+    height: sourceBottom - sourceTop
+  });
   var destination = context.canvas._ensureNativeCanvas();
   var destinationPixels = NativeHost.canvas.readPixels(destination.handle,
     left, top, right - left, bottom - top);
@@ -525,8 +540,9 @@ function colorToRgba(color) {
 function colorWithGlobalAlpha(color, globalAlpha) {
   var rgba = colorToRgba(color);
   var sourceAlpha = rgba & 255;
-  var alpha = Math.round(sourceAlpha *
-    Math.max(0, Math.min(1, Number(globalAlpha))));
+  // Chromium 65 scales paint alpha with an eight-bit fixed-point factor.
+  var scale = Math.round(Math.max(0, Math.min(1, Number(globalAlpha))) * 256);
+  var alpha = (sourceAlpha * scale) >> 8;
   return ((rgba & 0xffffff00) | alpha) >>> 0;
 }
 
@@ -577,17 +593,19 @@ function contextFont(context) {
     var resolved = PMJS.fonts.resolveDescriptor(fontStr);
     return {
       paths: resolved.faces.map(function(face) { return face.path; }),
-      size: resolved.size,
+      size: canvasFontSize(resolved.size), style: resolved.style, weight: resolved.weight,
       family: (resolved.faces && resolved.faces[0] && resolved.faces[0].family) || 'GameFont'
     };
   }
   var sizeMatch = /(\d+(?:\.\d+)?)px/.exec(String(fontStr));
-  var size = sizeMatch ? Math.max(1, Math.round(Number(sizeMatch[1]))) : 10;
+  var size = sizeMatch ? Math.max(1, Number(sizeMatch[1])) : 10;
   var config = PMJS.config;
   var files = config.fonts || {};
   var family = String(fontStr).split(/\s+/).pop().replace(/["']/g, '');
   return { paths: [files[family] || files.GameFont || 'fonts/gamefont.ttf'],
-    size: size, family: family };
+    size: canvasFontSize(size), family: family,
+    style: /\b(italic|oblique)\b/.test(String(fontStr)) ? 'italic' : 'normal',
+    weight: /\bbold\b/.test(String(fontStr)) ? 700 : Number((/\b([1-9]00)\b/.exec(String(fontStr)) || [0, 400])[1]) };
 }
 
 
@@ -732,12 +750,12 @@ CanvasContext2D.prototype.strokeRect = function(x, y, width, height) {
   this.fillStyle = old;
 };
 CanvasContext2D.prototype.drawImage = function(source) {
+  if (source && source._pmjsPrimitiveContent) source._pmjsPrimitiveContent.materialize();
   var nativeSource = source && (source._nativeImage || source._nativeCanvas);
-  if (!nativeSource && source && typeof source._ensureNativeCanvas === 'function') {
-    nativeSource = source._ensureNativeCanvas();
+  if (!nativeSource && !(source instanceof NativeImage) &&
+      !(source && typeof source._ensureNativeCanvas === 'function')) {
+    throw new TypeError('drawImage source has no native resource');
   }
-  if (!nativeSource && source instanceof NativeImage) return;
-  if (!nativeSource) throw new TypeError('drawImage source has no native resource');
 
   var sx = 0;
   var sy = 0;
@@ -748,19 +766,44 @@ CanvasContext2D.prototype.drawImage = function(source) {
   var dw;
   var dh;
   if (arguments.length === 3) {
-    dx = arguments[1]; dy = arguments[2]; dw = sw; dh = sh;
+    dx = +arguments[1]; dy = +arguments[2]; dw = sw; dh = sh;
   } else if (arguments.length === 5) {
-    dx = arguments[1]; dy = arguments[2]; dw = arguments[3]; dh = arguments[4];
+    dx = +arguments[1]; dy = +arguments[2]; dw = +arguments[3]; dh = +arguments[4];
   } else if (arguments.length === 9) {
-    sx = arguments[1]; sy = arguments[2]; sw = arguments[3]; sh = arguments[4];
-    dx = arguments[5]; dy = arguments[6]; dw = arguments[7]; dh = arguments[8];
+    sx = +arguments[1]; sy = +arguments[2]; sw = +arguments[3]; sh = +arguments[4];
+    dx = +arguments[5]; dy = +arguments[6]; dw = +arguments[7]; dh = +arguments[8];
   } else {
     throw new TypeError('unsupported drawImage overload');
   }
-  // Canvas ignores non-finite draw arguments, including plugin measurement draws.
-  if (![sx, sy, sw, sh, dx, dy, dw, dh].every(function(value) {
-    return Number.isFinite(Number(value));
-  })) return;
+  // HTML Canvas drawImage is a no-op if any numeric argument is NaN or infinite.
+  if (!Number.isFinite(sx) || !Number.isFinite(sy) ||
+      !Number.isFinite(sw) || !Number.isFinite(sh) ||
+      !Number.isFinite(dx) || !Number.isFinite(dy) ||
+      !Number.isFinite(dw) || !Number.isFinite(dh)) return;
+  if (!nativeSource && typeof source._ensureNativeCanvas === 'function') {
+    nativeSource = source._ensureNativeCanvas();
+  }
+  if (!nativeSource && source instanceof NativeImage) return;
+  if (!nativeSource) throw new TypeError('drawImage source has no native resource');
+  // Negative dimensions grow the rectangle backwards without reflecting pixels.
+  if (sw < 0) { sx += sw; sw = -sw; }
+  if (sh < 0) { sy += sh; sh = -sh; }
+  if (dw < 0) { dx += dw; dw = -dw; }
+  if (dh < 0) { dy += dh; dh = -dh; }
+  if (!sw || !sh || !dw || !dh) return;
+  var sourceWidth = nativeSource.width || source.width;
+  var sourceHeight = nativeSource.height || source.height;
+  var clippedLeft = Math.max(0, sx), clippedTop = Math.max(0, sy);
+  var clippedRight = Math.min(sourceWidth, sx + sw);
+  var clippedBottom = Math.min(sourceHeight, sy + sh);
+  if (clippedRight <= clippedLeft || clippedBottom <= clippedTop) return;
+  // Crop the destination proportionally, before transforming or compositing it.
+  dx += (clippedLeft - sx) / sw * dw;
+  dy += (clippedTop - sy) / sh * dh;
+  dw *= (clippedRight - clippedLeft) / sw;
+  dh *= (clippedBottom - clippedTop) / sh;
+  sx = clippedLeft; sy = clippedTop;
+  sw = clippedRight - clippedLeft; sh = clippedBottom - clippedTop;
   var trace = globalThis.__pmjsTrace;
   var tracedDestination = trace && trace.active() ?
     this.canvas._ensureNativeCanvas() : null;
@@ -801,6 +844,11 @@ CanvasContext2D.prototype.drawImage = function(source) {
     });
   }
 };
+function nativeTextStyle(context, font) {
+  return { bold: font.weight >= 600, italic: font.style === 'italic' || font.style === 'oblique',
+    lineJoin: context.lineJoin || 'miter', lineCap: context.lineCap || 'butt',
+    miterLimit: context.miterLimit || 10 };
+}
 function canvasTextPosition(context, text, x, y) {
   var font = contextFont(context);
   var width = measuredTextWidth(font, String(text));
@@ -829,24 +877,24 @@ function drawCanvasText(context, text, x, y, stroke, maxWidth) {
   var t = context._transform;
   var style = stroke ? context.strokeStyle : context.fillStyle;
   var color = colorWithGlobalAlpha(style, context.globalAlpha);
-  var strokeWidth = stroke ? Math.max(0, Math.round(context.lineWidth)) : 0;
+  var strokeWidth = stroke ? Math.max(0, usesLegacyText() ? Math.round(context.lineWidth) : Number(context.lineWidth)) : 0;
   if (Math.abs(t[0] - 1) < 0.000001 && Math.abs(t[1]) < 0.000001 &&
       Math.abs(t[2]) < 0.000001 && Math.abs(t[3] - 1) < 0.000001 &&
       !context._clipPaths.length && horizontalScale === 1) {
     NativeHost.canvas.drawText(context.canvas._ensureNativeCanvas().handle,
-      placement.font.paths, text, Math.round(placement.x + t[4]),
-      Math.round(placement.top + placement.font.size + t[5]),
-      placement.font.size, color, strokeWidth);
+      placement.font.paths, text, placement.x + t[4],
+      placement.top + placement.font.size + t[5],
+      placement.font.size, color, strokeWidth, nativeTextStyle(context, placement.font));
     return;
   }
   var padding = strokeWidth + 2;
   var temporary = NativeHost.canvas.create(
-    Math.max(1, Math.ceil(placement.width) + padding * 2),
-    Math.max(1, placement.font.size * 2 + padding * 2));
+    Math.max(1, Math.ceil(Math.ceil(placement.width) + padding * 2)),
+    Math.max(1, Math.ceil(placement.font.size * 2 + padding * 2)));
   try {
     NativeHost.canvas.drawText(temporary.handle, placement.font.paths, text,
       padding, padding + placement.font.size, placement.font.size,
-      colorToRgba(style), strokeWidth);
+      colorToRgba(style), strokeWidth, nativeTextStyle(context, placement.font));
     var source = { width: temporary.width, height: temporary.height,
       _nativeCanvas: temporary };
     drawAffineImage(context, source, temporary, 0, 0, temporary.width,
@@ -988,6 +1036,7 @@ CanvasContext2D.prototype.createRadialGradient = function(x0, y0, r0, x1, y1, r1
     } };
 };
 CanvasContext2D.prototype.createPattern = function(source, repetition) {
+  if (source && source._pmjsPrimitiveContent) source._pmjsPrimitiveContent.materialize();
   var nativeSource = source && (source._nativeImage || source._nativeCanvas);
   if (!nativeSource && source && typeof source._ensureNativeCanvas === 'function') {
     nativeSource = source._ensureNativeCanvas();
@@ -1098,6 +1147,7 @@ CanvasContext2D.prototype.putImageData = function(imageData, x, y) {
         typeof NativeHost.render.releasePrimitiveSurface !== 'function') return null;
     var context = canvas && typeof canvas.getContext === 'function' && canvas.getContext('2d');
     if (!context || typeof context.fillRect !== 'function') return null;
+    if (canvas._pmjsPrimitiveContent) return null;
     var surfaceWidth = canvas.width;
     var surfaceHeight = canvas.height;
     var surface = NativeHost.render.createPrimitiveSurface(surfaceWidth, surfaceHeight);
@@ -1106,16 +1156,19 @@ CanvasContext2D.prototype.putImageData = function(imageData, x, y) {
     var originalFill = context.fill;
     var records = [];
     var replay = [];
+    var priorReplay = [];
     var clearColor = [0, 0, 0, 0];
     var recording = false;
     var fallback = false;
 
-    function replayRecordedCanvasOperations() {
-      if (fallback) return;
+    function replayRecordedCanvasOperations(force) {
+      if (fallback || !force && !recording && canvas._nativeImage !== surface.image) return;
       fallback = true;
       delete canvas._nativeImage;
-      for (var index = 0; index < replay.length; index++) {
-        var operation = replay[index];
+      var operations = priorReplay.concat(replay);
+      priorReplay.length = 0;
+      for (var index = 0; index < operations.length; index++) {
+        var operation = operations[index];
         context.save();
         context.fillStyle = operation.style;
         context.globalAlpha = operation.alpha;
@@ -1157,7 +1210,20 @@ CanvasContext2D.prototype.putImageData = function(imageData, x, y) {
       var y1 = transform[3] * (y + height) + transform[5];
       var bounds = [Math.min(x0, x1), Math.min(y0, y1),
         Math.abs(x1 - x0), Math.abs(y1 - y0)];
-      replay.push({ style: style, alpha: this.globalAlpha,
+      var fullOpaque = supportedSolid && blendMode === 0 &&
+        bounds[0] <= 0 && bounds[1] <= 0 && bounds[0] + bounds[2] >= canvas.width &&
+        bounds[1] + bounds[3] >= canvas.height && lightColor(style, this.globalAlpha)[3] === 1;
+      // A full opaque first fill reconstructs the surface independently. Other
+      // updates must preserve existing Canvas content through its ordinary owner.
+      if (replay.length === 0 && !fullOpaque) {
+        replayRecordedCanvasOperations();
+        return originalFillRect.apply(this, arguments);
+      }
+      if (replay.length === 0) priorReplay.length = 0;
+      var replayStyle = supportedGradient ? Object.assign({}, style, { stops: style.stops.map(function(stop) {
+        return { offset: stop.offset, color: stop.color };
+      }) }) : style;
+      replay.push({ style: replayStyle, alpha: this.globalAlpha,
         composite: this.globalCompositeOperation,
         transform: Array.prototype.slice.call(transform),
         arguments: Array.prototype.slice.call(arguments) });
@@ -1193,6 +1259,7 @@ CanvasContext2D.prototype.putImageData = function(imageData, x, y) {
 
     function record(draw) {
       if (!surface) return draw();
+      priorReplay = canvas._nativeImage === surface.image ? replay.slice() : [];
       records.length = 0;
       replay.length = 0;
       clearColor = [0, 0, 0, 0];
@@ -1209,24 +1276,36 @@ CanvasContext2D.prototype.putImageData = function(imageData, x, y) {
       } finally {
         recording = false;
       }
+      if (!replay.length) replayRecordedCanvasOperations();
       if (!fallback) {
         try {
           NativeHost.render.renderPrimitiveSurface(
             surface.handle, clearColor, records);
           canvas._nativeImage = surface.image;
+          if (canvas._pmjsContentChanged) canvas._pmjsContentChanged();
         } catch (_) {
-          replayRecordedCanvasOperations();
+          replayRecordedCanvasOperations(true);
         }
       }
       return result;
     }
 
+    var content = canvas._pmjsPrimitiveContent = {
+      materialize: replayRecordedCanvasOperations,
+      reset: function() {
+        fallback = true;
+        replay.length = priorReplay.length = 0;
+        if (canvas._nativeImage === surface.image) delete canvas._nativeImage;
+      }
+    };
     var recordingFillRect = context.fillRect;
     var recordingFill = context.fill;
     return {
       record: record,
       destroy: function() {
         if (!surface) return;
+        replayRecordedCanvasOperations();
+        if (canvas._pmjsPrimitiveContent === content) delete canvas._pmjsPrimitiveContent;
         if (surfaceFinalizer) surfaceFinalizer.unregister(canvas);
         if (canvas._nativeImage === surface.image) delete canvas._nativeImage;
         if (context.fillRect === recordingFillRect) context.fillRect = originalFillRect;
@@ -1266,14 +1345,16 @@ Object.assign(PMJS.web.canvas, {
   drawNativeText: function(context, text, x, baseline, style) {
     var font = contextFont(style.font);
     var canvas = context.canvas._ensureNativeCanvas();
+    var options = nativeTextStyle(context, font);
+    options.lineJoin = 'round'; // MV Bitmap._drawTextOutline sets this before stroking.
     if (style.outlineWidth > 0) {
       NativeHost.canvas.drawText(canvas.handle, font.paths, text,
         x, baseline, font.size, colorWithGlobalAlpha(style.outlineColor, 1),
-        Math.max(0, Math.floor(style.outlineWidth)));
+        Math.max(0, Number(style.outlineWidth)), options);
     }
     NativeHost.canvas.drawText(canvas.handle, font.paths, text,
       x, baseline, font.size,
-      colorWithGlobalAlpha(style.color, context.globalAlpha), 0);
+      colorWithGlobalAlpha(style.color, context.globalAlpha), 0, options);
   },
   measureTextWidth: function(text, descriptor) {
     var font = contextFont(descriptor);

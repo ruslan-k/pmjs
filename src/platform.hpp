@@ -44,6 +44,8 @@ class Platform {
   int displayWidth() const { return displayWidth_ > 0 ? displayWidth_ : windowWidth_; }
   int displayHeight() const { return displayHeight_ > 0 ? displayHeight_ : windowHeight_; }
   void setWindowTitle(const std::string& title);
+  void setFullscreen(bool enabled);
+  bool fullscreen() const;
   void finishLogicStep();
   // Clears edges consumed by a simulation step.
   void consumePressed();
@@ -61,8 +63,7 @@ class Platform {
   std::vector<SDL_GameController*> controllers_;
   std::uint16_t down_ = 0;
   std::uint16_t pressed_ = 0;
-  bool hotkeyDown_ = false;
-  bool startDown_ = false;
+  std::vector<int> exitHotkeys_ = {8, 16};
   std::vector<int> keysDown_;
   std::vector<int> keysPressed_;
   std::vector<KeyEvent> keyEvents_;

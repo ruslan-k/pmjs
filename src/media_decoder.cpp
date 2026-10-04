@@ -54,7 +54,11 @@ struct MemoryInput {
     context = avio_alloc_context(buffer, bufferSize, 0, this, read, nullptr, seek);
     if (!context) { av_free(buffer); throw std::runtime_error("cannot allocate media input"); }
   }
-  ~MemoryInput() { avio_context_free(&context); }
+  ~MemoryInput() {
+    // FFmpeg may replace this buffer; avio_context_free frees only the context.
+    av_freep(&context->buffer);
+    avio_context_free(&context);
+  }
   MemoryInput(const MemoryInput&) = delete;
   MemoryInput& operator=(const MemoryInput&) = delete;
 
@@ -299,7 +303,8 @@ std::optional<DecodedAudio> MediaDecoder::decodeAudio(
 }
 
 struct VideoDecoderSession::Impl {
-  explicit Impl(const std::filesystem::path& path) {
+  explicit Impl(const std::filesystem::path& path, bool telemetry)
+      : telemetryEnabled(telemetry) {
     std::string error;
     format = open(path, &error);
     if (!format) throw std::runtime_error(error);
@@ -340,26 +345,27 @@ struct VideoDecoderSession::Impl {
     queued.clear();
     sentEof = false; exhausted = false; lastTimestamp = -1.0;
     hasPresentedFrame = false;
-    ++stats.seeks;
+    if (telemetryEnabled) ++stats.seeks;
     if (lastRequestedTimestamp && timestamp < *lastRequestedTimestamp)
-      ++stats.backwardSeeks;
+      if (telemetryEnabled) ++stats.backwardSeeks;
     countingAfterSeek = true;
     return true;
   }
 
   std::optional<double> decodeNext(std::string* error) {
-    const auto decodeStarted = std::chrono::steady_clock::now();
+    const auto decodeStarted = telemetryEnabled ? std::chrono::steady_clock::now()
+      : std::chrono::steady_clock::time_point{};
     while (true) {
       int result = avcodec_receive_frame(codec.get(), decoded.get());
       if (result >= 0) {
-        stats.decodeMs += std::chrono::duration<double, std::milli>(
+        if (telemetryEnabled) stats.decodeMs += std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - decodeStarted).count();
         const auto best = decoded->best_effort_timestamp;
         const double timestamp = best == AV_NOPTS_VALUE ? 0.0
           : best * av_q2d(stream->time_base);
         lastTimestamp = timestamp;
-        ++stats.decodedFrames;
-        if (countingAfterSeek) ++stats.decodedAfterSeek;
+        if (telemetryEnabled) ++stats.decodedFrames;
+        if (telemetryEnabled && countingAfterSeek) ++stats.decodedAfterSeek;
         return timestamp;
       }
       if (result != AVERROR(EAGAIN) && result != AVERROR_EOF) {
@@ -409,18 +415,19 @@ struct VideoDecoderSession::Impl {
       return std::nullopt;
     }
     const auto rgbaBytes = static_cast<std::size_t>(width) * height * 4U;
-    if (rgba.capacity() < rgbaBytes) ++stats.rgbaAllocations;
+    if (telemetryEnabled && rgba.capacity() < rgbaBytes) ++stats.rgbaAllocations;
     rgba.resize(rgbaBytes);
     VideoFrame output{width, height, timestamp, std::move(rgba)};
     std::uint8_t* planes[] = {output.rgba.data(), nullptr, nullptr, nullptr};
     int strides[] = {width * 4, 0, 0, 0};
-    const auto convertStarted = std::chrono::steady_clock::now();
+    const auto convertStarted = telemetryEnabled ? std::chrono::steady_clock::now()
+      : std::chrono::steady_clock::time_point{};
     sws_scale(scaler.get(), decoded->data, decoded->linesize, 0, height,
               planes, strides);
-    stats.convertMs += std::chrono::duration<double, std::milli>(
+    if (telemetryEnabled) stats.convertMs += std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - convertStarted).count();
     av_frame_unref(decoded.get());
-    ++stats.convertedFrames;
+    if (telemetryEnabled) ++stats.convertedFrames;
     return output;
   }
 
@@ -438,10 +445,11 @@ struct VideoDecoderSession::Impl {
   bool countingAfterSeek = false;
   MediaInfo info;
   VideoDecodeStats stats;
+  const bool telemetryEnabled;
 };
 
-VideoDecoderSession::VideoDecoderSession(const std::filesystem::path& path)
-    : impl_(std::make_unique<Impl>(path)) {}
+VideoDecoderSession::VideoDecoderSession(const std::filesystem::path& path, bool telemetry)
+    : impl_(std::make_unique<Impl>(path, telemetry)) {}
 VideoDecoderSession::~VideoDecoderSession() = default;
 const MediaInfo& VideoDecoderSession::info() const { return impl_->info; }
 VideoDecodeStats VideoDecoderSession::stats() const { return impl_->stats; }
@@ -455,8 +463,8 @@ bool VideoDecoderSession::prefetchOne(std::string* error) {
     impl_->exhausted = true; return false; }
   av_frame_move_ref(raw.get(), impl_->decoded.get());
   impl_->queued.push_back({*timestamp, std::move(raw)});
-  ++impl_->stats.prefetchedFrames;
-  impl_->stats.maxQueuedFrames = std::max<std::uint64_t>(
+  if (impl_->telemetryEnabled) ++impl_->stats.prefetchedFrames;
+  if (impl_->telemetryEnabled) impl_->stats.maxQueuedFrames = std::max<std::uint64_t>(
     impl_->stats.maxQueuedFrames, impl_->queued.size());
   return true;
 }
@@ -495,12 +503,12 @@ std::optional<VideoFrame> VideoDecoderSession::frame(
       break;
     if (impl_->queued.front().timestamp > timestamp + epsilon &&
         impl_->hasPresentedFrame && !selectedTimestamp) {
-      ++impl_->stats.noNewFrameDue;
+      if (impl_->telemetryEnabled) ++impl_->stats.noNewFrameDue;
       return std::nullopt;
     }
     if (selectedTimestamp) {
       av_frame_unref(impl_->selected.get());
-      ++impl_->stats.skippedFrames;
+      if (impl_->telemetryEnabled) ++impl_->stats.skippedFrames;
     }
     selectedTimestamp = impl_->queued.front().timestamp;
     av_frame_move_ref(impl_->selected.get(), impl_->queued.front().frame.get());
@@ -508,7 +516,7 @@ std::optional<VideoFrame> VideoDecoderSession::frame(
   }
   if (!selectedTimestamp) {
     if (error && !error->empty()) return std::nullopt;
-    ++impl_->stats.noNewFrameDue;
+    if (impl_->telemetryEnabled) ++impl_->stats.noNewFrameDue;
     return std::nullopt;
   }
   av_frame_move_ref(impl_->decoded.get(), impl_->selected.get());
@@ -573,14 +581,31 @@ struct AudioDecoderSession::Impl {
       fail(error, "invalid seek timestamp or stream time base");
       return false;
     }
-    const int result = av_seek_frame(format.get(), streamIndex, target,
-                                     AVSEEK_FLAG_BACKWARD);
+    int result = av_seek_frame(format.get(), streamIndex, target,
+                               AVSEEK_FLAG_BACKWARD);
+    std::int64_t replayFrames = 0;
+    // Short FLAC streams may have no usable interior seek point. Rewind and
+    // discard resampled frames so recovery preserves the requested position.
+    if (result < 0 && target > 0 && codec->codec_id == AV_CODEC_ID_FLAC &&
+        timeToStreamTimestamp(timestamp, {1, 48000}, &replayFrames)) {
+      replayFrames = std::llround(timestamp * 48000);
+      result = av_seek_frame(format.get(), streamIndex, 0, AVSEEK_FLAG_BACKWARD);
+    }
     if (result < 0) { fail(error, "audio seek failed: " + ffError(result)); return false; }
     avcodec_flush_buffers(codec.get()); swr_close(resampler.get());
     if (swr_init(resampler.get()) < 0) { fail(error, "audio resampler reset failed"); return false; }
     pending.clear(); pendingOffset = 0; sentEof = false;
-    discardUntil = timestamp;
+    seekFramesToDiscard = replayFrames;
+    discardUntil = replayFrames > 0 ? 0.0 : timestamp;
     return true;
+  }
+
+  void discardSeekFrames(std::size_t start) {
+    const auto frames = std::min<std::uint64_t>(seekFramesToDiscard,
+                                               (pending.size() - start) / 2);
+    if (!frames) return;
+    pending.erase(pending.begin() + start, pending.begin() + start + frames * 2);
+    seekFramesToDiscard -= frames;
   }
 
   bool decodeOne(std::string* error) {
@@ -600,19 +625,16 @@ struct AudioDecoderSession::Impl {
         if (discardUntil > 0.0) {
           const auto frameTime = frame->best_effort_timestamp == AV_NOPTS_VALUE ? 0.0
             : frame->best_effort_timestamp * av_q2d(stream->time_base);
-          const auto frameEnd = frameTime + static_cast<double>(frame->nb_samples) /
-            codec->sample_rate;
-          if (frameEnd <= discardUntil) pending.resize(start);
-          else if (frameTime < discardUntil) {
-            const auto discardFrames = static_cast<std::size_t>(
-              (discardUntil - frameTime) * 48000.0);
-            const auto discardSamples = std::min(discardFrames * 2U,
-                                                  pending.size() - start);
-            pending.erase(pending.begin() + start,
-                          pending.begin() + start + discardSamples);
+          const double remaining = std::max(0.0, discardUntil - frameTime);
+          std::int64_t frames = 0;
+          if (!timeToStreamTimestamp(remaining, {1, 48000}, &frames)) {
+            fail(error, "audio seek position is out of range");
+            return false;
           }
-          if (frameEnd >= discardUntil) discardUntil = 0.0;
+          seekFramesToDiscard = std::llround(remaining * 48000);
+          discardUntil = 0.0;
         }
+        discardSeekFrames(start);
         av_frame_unref(frame.get());
         return true;
       }
@@ -626,6 +648,7 @@ struct AudioDecoderSession::Impl {
             const int converted = swr_convert(resampler.get(), &destination, delay, nullptr, 0);
             if (converted > 0) {
               pending.resize(start + static_cast<std::size_t>(converted) * 2U);
+              discardSeekFrames(start);
               return true;
             }
             pending.resize(start);
@@ -659,6 +682,7 @@ struct AudioDecoderSession::Impl {
   Frame frame{nullptr}; Swr resampler{nullptr}; AVStream* stream = nullptr;
   int streamIndex = -1; double durationSeconds = 0.0, discardUntil = 0.0;
   std::uint64_t loopStart = 0, loopEnd = 0; bool sentEof = false;
+  std::uint64_t seekFramesToDiscard = 0;
   std::vector<float> pending; std::size_t pendingOffset = 0;
 };
 
@@ -668,6 +692,7 @@ AudioDecoderSession::AudioDecoderSession(std::vector<std::uint8_t> bytes)
     : impl_(std::make_unique<Impl>(std::move(bytes))) {}
 AudioDecoderSession::~AudioDecoderSession() = default;
 double AudioDecoderSession::duration() const { return impl_->durationSeconds; }
+int AudioDecoderSession::sourceChannels() const { return impl_->codec->ch_layout.nb_channels; }
 std::uint64_t AudioDecoderSession::loopStartFrame() const { return impl_->loopStart; }
 std::uint64_t AudioDecoderSession::loopEndFrame() const { return impl_->loopEnd; }
 bool AudioDecoderSession::seek(double timestamp, std::string* error) {

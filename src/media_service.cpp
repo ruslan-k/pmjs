@@ -39,18 +39,19 @@ struct MediaService::Impl {
   static constexpr std::size_t bufferFrames = 24000, decodeFrames = 8192;
   struct Voice {
     explicit Voice(std::unique_ptr<AudioDecoderSession> source)
-        : decoder(std::move(source)) {
+        : decoder(std::move(source)), sourceChannels(decoder->sourceChannels()) {
       mix.duration = decoder->duration();
       mix.loopStart = decoder->loopStartFrame();
       mix.loopEnd = decoder->loopEndFrame();
     }
-    explicit Voice(std::shared_ptr<const PreparedAudioAsset> asset) {
+    explicit Voice(std::shared_ptr<const PreparedAudioAsset> asset) : sourceChannels(asset->sourceChannels) {
       mix.duration = asset->sourceDuration;
       mix.loopStart = std::min<std::uint64_t>(asset->loopStartFrame, asset->samples.size() / 2);
       mix.loopEnd = std::min<std::uint64_t>(asset->loopEndFrame, asset->samples.size() / 2);
       mix.asset = std::move(asset);
     }
     std::unique_ptr<AudioDecoderSession> decoder;
+    const int sourceChannels;
     mutable std::mutex mutex;
     VoiceMixState mix;
     std::uint64_t producerFrame = 0, generation = 0;
@@ -66,6 +67,15 @@ struct MediaService::Impl {
     requested.channels = 2; requested.samples = 1024;
     requested.callback = callback; requested.userdata = this;
     device = SDL_OpenAudioDevice(nullptr, 0, &requested, &obtained, 0);
+    if (diagnostics) {
+      const char* driver = SDL_GetCurrentAudioDriver();
+      std::cout << "[pmjs-audio] driver=" << (driver ? driver : "none")
+                << " device_open=" << (device ? "yes" : "no")
+                << " frequency=" << obtained.freq << " channels=" << int(obtained.channels)
+                << " format=" << obtained.format << " samples=" << obtained.samples;
+      if (!device) std::cout << " error=\"" << SDL_GetError() << '\"';
+      std::cout << std::endl;
+    }
     worker = std::thread([this] { decodeLoop(); });
     if (device) SDL_PauseAudioDevice(device, 0);
   }
@@ -239,10 +249,10 @@ struct MediaService::Impl {
     const auto found = cache.find(key);
     if (found != cache.end()) {
       lru.splice(lru.begin(), lru, found->second.lru);
-      ++cacheStats.hits;
+      if (diagnostics) ++cacheStats.hits;
       return found->second.asset;
     }
-    ++cacheStats.misses;
+    if (diagnostics) ++cacheStats.misses;
     return {};
   }
   std::uint32_t loadDecoder(std::unique_ptr<AudioDecoderSession> decoder,
@@ -274,6 +284,7 @@ struct MediaService::Impl {
         auto* prepared = new PreparedAudioAsset;
         prepared->samples = std::move(samples);
         prepared->sourceDuration = duration;
+        prepared->sourceChannels = decoder->sourceChannels();
         prepared->loopStartFrame = decoder->loopStartFrame();
         prepared->loopEndFrame = decoder->loopEndFrame();
         const auto pcmBytes = prepared->samples.capacity() * sizeof(float);
@@ -341,6 +352,10 @@ struct MediaService::Impl {
 MediaService::MediaService(std::filesystem::path root)
   : impl_(std::make_unique<Impl>(std::move(root))) {}
 MediaService::~MediaService() = default;
+int MediaService::sourceChannels(std::uint32_t handle) const {
+  const auto voice = impl_->voice(handle);
+  return voice ? voice->sourceChannels : 0;
+}
 std::uint32_t MediaService::loadAudio(const std::string& path, std::string* error,
                                       const AudioLoadOptions& options) {
   const std::filesystem::path requested(path);
@@ -442,6 +457,12 @@ bool MediaService::play(std::uint32_t handle, bool loop, double offset) {
   impl_->wakeWorker();
   return available;
 }
+bool MediaService::setSuspended(std::uint32_t handle, bool suspended) {
+  auto voice = impl_->voice(handle); if (!voice) return false;
+  std::lock_guard lock(voice->mutex);
+  voice->mix.suspended = suspended;
+  return true;
+}
 bool MediaService::stop(std::uint32_t handle) {
   auto voice = impl_->voice(handle); if (!voice) return false;
   {
@@ -460,6 +481,14 @@ bool MediaService::setParameters(std::uint32_t handle, float volume,
   std::lock_guard lock(voice->mutex); voice->mix.volume = std::max(0.0F, volume);
   voice->mix.pitch = std::clamp(pitch, 0.05F, 8.0F);
   voice->mix.pan = std::clamp(pan, -1.0F, 1.0F); return true;
+}
+bool MediaService::setStereoGains(std::uint32_t handle, float left, float right) {
+  if (!std::isfinite(left) || !std::isfinite(right) || left < 0 || right < 0) return false;
+  auto voice = impl_->voice(handle); if (!voice) return false;
+  std::lock_guard lock(voice->mutex);
+  voice->mix.leftGain = left;
+  voice->mix.rightGain = right;
+  return true;
 }
 bool MediaService::fade(std::uint32_t handle, float from, float to,
                         double duration, bool stopWhenFinished) {

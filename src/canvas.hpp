@@ -1,6 +1,7 @@
 #pragma once
 
 #include "resources.hpp"
+#include "text_backend.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include <variant>
+#include <unordered_set>
 
 namespace pmjs {
 
@@ -24,12 +26,12 @@ struct CanvasInfo {
 
 struct CanvasTextMetrics {
   double width = 0;
-  int actualLeft = 0;
-  int actualRight = 0;
-  int actualAscent = 0;
-  int actualDescent = 0;
-  int fontAscent = 0;
-  int fontDescent = 0;
+  double actualLeft = 0;
+  double actualRight = 0;
+  double actualAscent = 0;
+  double actualDescent = 0;
+  double fontAscent = 0;
+  double fontDescent = 0;
 };
 
 struct CanvasTextStats {
@@ -90,22 +92,22 @@ class CanvasStore {
                  int destinationX, int destinationY,
                  int destinationWidth, int destinationHeight, float alpha);
   bool drawText(CanvasHandle handle, const std::vector<std::filesystem::path>& fontPaths,
-                const std::string& text, int x, int y, int pixelSize,
-                std::uint32_t rgba, int strokeWidth = 0);
+                const std::string& text, float x, float y, float pixelSize,
+                std::uint32_t rgba, float strokeWidth = 0, const CanvasTextStyle& style = {});
   std::optional<double> measureText(const std::vector<std::filesystem::path>& fontPaths,
-                                 const std::string& text, int pixelSize) const;
+                                 const std::string& text, float pixelSize, const CanvasTextStyle& style = {}) const;
   std::optional<CanvasTextMetrics> measureTextMetrics(
     const std::vector<std::filesystem::path>& fontPaths, const std::string& text,
-    int pixelSize) const;
+    float pixelSize, const CanvasTextStyle& style = {}) const;
   bool drawText(CanvasHandle handle, const std::filesystem::path& fontPath,
-                const std::string& text, int x, int y, int pixelSize,
-                std::uint32_t rgba, int strokeWidth = 0) {
+                const std::string& text, float x, float y, float pixelSize,
+                std::uint32_t rgba, float strokeWidth = 0, const CanvasTextStyle& style = {}) {
     return drawText(handle, std::vector<std::filesystem::path>{fontPath}, text,
-                    x, y, pixelSize, rgba, strokeWidth);
+                    x, y, pixelSize, rgba, strokeWidth, style);
   }
   std::optional<double> measureText(const std::filesystem::path& fontPath,
-                                    const std::string& text, int pixelSize) const {
-    return measureText(std::vector<std::filesystem::path>{fontPath}, text, pixelSize);
+                                    const std::string& text, float pixelSize, const CanvasTextStyle& style = {}) const {
+    return measureText(std::vector<std::filesystem::path>{fontPath}, text, pixelSize, style);
   }
   bool canLoadFont(const std::filesystem::path& fontPath);
   std::optional<std::uint32_t> pixel(CanvasHandle handle, int x, int y);
@@ -114,6 +116,7 @@ class CanvasStore {
   std::optional<std::vector<std::uint8_t>> encodePng(CanvasHandle handle);
   bool writePixels(CanvasHandle handle, int x, int y, int width, int height,
                    const std::vector<std::uint8_t>& pixels);
+  bool replacePixels(CanvasHandle handle, std::vector<std::uint8_t> pixels);
   bool blur(CanvasHandle handle);
   bool release(CanvasHandle handle);
   bool realize(CanvasHandle handle);
@@ -131,6 +134,8 @@ class CanvasStore {
   std::size_t deferredCommandCount() const;
   std::size_t deferredCommandBytes() const;
   CanvasTextStats glyphCacheStats() const;
+  const char* textBackendName() const { return textBackend_.name(); }
+  TextBackendStats textBackendStats() const { return textBackend_.stats(); }
   void setGlyphCacheLimits(std::size_t maxBytes, std::size_t maxEntries);
 
  private:
@@ -151,8 +156,11 @@ class CanvasStore {
     int height;
   };
 
+  struct Content;
+
   struct DrawImageCmd {
     ImageHandle source;
+    std::shared_ptr<Content> canvas;
     int sourceX;
     int sourceY;
     int sourceWidth;
@@ -167,11 +175,12 @@ class CanvasStore {
   struct DrawTextCmd {
     std::vector<std::filesystem::path> fontPaths;
     std::string text;
-    int x;
-    int y;
-    int pixelSize;
+    float x;
+    float y;
+    float pixelSize;
     std::uint32_t rgba;
-    int strokeWidth;
+    float strokeWidth;
+    CanvasTextStyle style;
   };
 
   struct BlurCmd {};
@@ -179,18 +188,22 @@ class CanvasStore {
   using CanvasCommand = std::variant<FillRectCmd, ClearRectCmd,
                                      DrawImageCmd, DrawTextCmd, BlurCmd>;
 
-  enum class SurfaceState {
+  enum class ContentState {
     Deferred,
     Realizing,
-    Realized
+    Realized  // CPU pixels are current.
   };
 
-  struct Surface {
-    std::uint16_t generation = 1;
-    ImageHandle image = 0;
+  struct Content {
+    explicit Content(CanvasStore& owner);
+    ~Content();
+    Content(const Content&) = delete;
+    Content& operator=(const Content&) = delete;
+
+    CanvasStore& owner;
     int width = 0;
     int height = 0;
-    SurfaceState state = SurfaceState::Deferred;
+    ContentState state = ContentState::Deferred;
     std::vector<std::uint8_t> pixels;
     std::vector<CanvasCommand> commands;
     std::size_t queuedCommandBytes = 0;
@@ -206,11 +219,14 @@ class CanvasStore {
   Surface* lookup(CanvasHandle handle);
   const Surface* lookup(CanvasHandle handle) const;
 
-  bool realizeSurface(Surface& surface);
-  void discardCommands(Surface& surface);
+  Content* lookupContent(CanvasHandle handle) const;
+  Content* writableContent(CanvasHandle handle);
+  bool realizeContent(Content& surface);
+  bool uploadSurface(Surface& surface);
+  void discardCommands(Content& surface);
   void releaseCommandDependencies(CanvasCommand& cmd);
 
-  void fillRectNow(Surface& surface, int x, int y, int width, int height,
+  void fillRectNow(Content& surface, int x, int y, int width, int height,
                    std::uint32_t rgba);
   void fillRectAdditiveNow(Surface& surface, int x, int y, int width, int height,
                            std::uint32_t rgba);
@@ -225,14 +241,17 @@ class CanvasStore {
                    std::uint32_t rgba, int strokeWidth);
   bool blurNow(Surface& surface);
 
-  static void blendPixel(Surface& surface, int x, int y, std::uint32_t rgba,
+  static void blendPixel(Content& surface, int x, int y, std::uint32_t rgba,
                          std::uint8_t coverage);
-  static void blendPixelAdditive(Surface& surface, int x, int y,
+  static void blendPixelAdditive(Content& surface, int x, int y,
                                  std::uint32_t rgba);
   void markDirty(Surface& surface, int x, int y, int width, int height);
 
   ImageStore& images_;
+  TextBackend textBackend_;
   std::unique_ptr<FontState> fonts_;
+  // Non-owning registry includes versions kept alive only by queued draws.
+  std::unordered_set<Content*> contents_;
   std::vector<Surface> surfaces_;
   std::vector<std::size_t> freeSurfaceSlots_;
   std::size_t liveCount_ = 0;

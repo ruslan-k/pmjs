@@ -7,6 +7,20 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const { makeHarness } = require('./helpers/scene-encoder-harness.cjs');
+function traceScene(harness) {
+  harness.sandbox.performance = { now: () => 0 };
+  vm.runInContext(fs.readFileSync(path.join(__dirname,
+    '../js/pmjs-core/operation-trace.js'), 'utf8'), harness.sandbox);
+  harness.sandbox.__pmjsTrace.arm(10);
+  harness.sandbox.__pmjsTrace.beginFrame(0, 0);
+}
+function setTriangleBitmap(sandbox, mesh, values, options = {}) {
+  sandbox.PMJS.plugins.mpp.setTriangleBitmap(mesh, {
+    points: [values.slice(0,2), values.slice(2,4), values.slice(4,6)], sourceBounds: values.slice(6,10),
+    stroke: { color: values.slice(10,13), alpha: values[13], width: values[14], miterLimit: values[15] },
+    strokeSamples: 0, clipCoverage: 'area', ...options
+  });
+}
 
 test('blank tile retains its canvas owner for later layer compilations', () => {
   const { sandbox } = makeHarness();
@@ -174,13 +188,13 @@ test('rendered frames report exact versus degraded counts', () => {
   const { sandbox, sprite } = harness;
   const root = new sandbox.PIXI.Container();
   root.addChild(sprite());
-  sandbox.renderNativeStage(root);
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
   assert.equal(sandbox.renderNativeStage._framesTotal, 1);
   assert.equal(sandbox.renderNativeStage._framesDegraded || 0, 0);
   const filtered = sprite();
   filtered._filters = [{ enabled: true }];
   root.addChild(filtered);
-  sandbox.renderNativeStage(root);
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
   assert.equal(sandbox.renderNativeStage._framesTotal, 2);
   assert.equal(sandbox.renderNativeStage._framesDegraded, 1);
 });
@@ -197,7 +211,7 @@ test('unrealized tile layers log instead of vanishing silently', () => {
     [['render.tilemap', 'Object:layer-unrealized']]);
 });
 
-test('custom render hooks do not affect native encoding', () => {
+test('reached custom render hooks report the native approximation', () => {
   const harness = makeHarness();
   const { sandbox, sprite } = harness;
   class WeirdSprite extends sandbox.PIXI.Sprite {
@@ -208,21 +222,24 @@ test('custom render hooks do not affect native encoding', () => {
   root.addChild(subclass);
   root.addChild(sprite());
   assert.equal(sandbox.submitNativeScene(root), true);
-  assert.deepEqual(harness.compatHits, []);
+  assert.deepEqual(harness.compatHits,
+    [['render.render-method', 'WeirdSprite._renderWebGL']]);
   assert.deepEqual(harness.submitted[0].metadata.filter((_, index) => index % 7 === 0),
     [0, 1, 1]);
   root.children.length = 0;
   harness.submitted.length = 0;
+  harness.compatHits.length = 0;
   const instance = sprite();
   instance.renderWebGL = function() {};
   root.addChild(instance);
   assert.equal(sandbox.submitNativeScene(root), true);
-  assert.deepEqual(harness.compatHits, []);
+  assert.deepEqual(harness.compatHits,
+    [['render.render-method', 'Sprite.renderWebGL']]);
   assert.deepEqual(harness.submitted[0].metadata.filter((_, index) => index % 7 === 0),
     [0, 1]);
 });
 
-test('late prototype patches do not affect native encoding', () => {
+test('late prototype render patches are reported on the next traversal', () => {
   const harness = makeHarness();
   const { sandbox, sprite } = harness;
   const root = new sandbox.PIXI.Container();
@@ -231,21 +248,94 @@ test('late prototype patches do not affect native encoding', () => {
   submitOnly(harness, root);
   sandbox.PIXI.Sprite.prototype._renderWebGL = function() {};
   assert.equal(sandbox.submitNativeScene(root), true);
-  assert.deepEqual(harness.compatHits, []);
+  assert.deepEqual(harness.compatHits,
+    [['render.render-method', 'Sprite._renderWebGL']]);
   assert.deepEqual(harness.submitted[harness.submitted.length - 1].metadata
     .filter((_, index) => index % 7 === 0), [0, 1]);
 });
 
-test('plain sprite segments ignore render hooks', () => {
+test('plain sprite segments cannot conceal overridden render hooks', () => {
   const harness = makeHarness();
   const { sandbox, sprite } = harness;
   const root = new sandbox.PIXI.Container();
   for (let index = 0; index < 5; index++) root.addChild(sprite());
   root.children[3]._renderWebGL = function() {};
   assert.equal(sandbox.submitNativeScene(root), true);
-  assert.deepEqual(harness.compatHits, []);
+  assert.deepEqual(harness.compatHits,
+    [['render.render-method', 'Sprite._renderWebGL']]);
   assert.deepEqual(harness.submitted[0].metadata.filter((_, index) => index % 7 === 0),
     [0, 1, 1, 1, 1, 1]);
+});
+
+test('unreached render hooks and Canvas-only overrides do not report unsupported drawing', () => {
+  const harness = makeHarness();
+  const { sandbox, sprite } = harness;
+  const root = new sandbox.PIXI.Container();
+  const hidden = root.addChild(sprite());
+  hidden.visible = false;
+  hidden.renderWebGL = function() {};
+  const hiddenParent = root.addChild(new sandbox.PIXI.Container());
+  hiddenParent.renderable = false;
+  hiddenParent.addChild(sprite())._renderWebGL = function() {};
+  const detached = sprite();
+  detached._renderWebGL = function() {};
+  root.addChild(sprite()).renderCanvas = function() {};
+  submitOnly(harness, root);
+
+  const particles = root.addChild(new sandbox.PIXI.particles.ParticleContainer());
+  particles.addChild(sprite()).renderWebGL = function() {};
+  submitOnly(harness, root);
+});
+
+test('strict render-hook rejection precedes submission and restores the stage parent', () => {
+  const harness = makeHarness();
+  const { sandbox, sprite } = harness;
+  sandbox.NativeHost.runtime.env = name =>
+    name === 'PMJS_STRICT_COMPAT' ? '1' : undefined;
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..',
+    'js/pmjs-core/compatibility.js'), 'utf8'), sandbox);
+  const parent = new sandbox.PIXI.Container();
+  const root = parent.addChild(new sandbox.PIXI.Container());
+  for (let index = 0; index < 6; index++) root.addChild(sprite());
+  root.children[4]._renderWebGL = function() {
+    throw new Error('unsupported hook must not be invoked');
+  };
+  assert.throws(() => sandbox.renderNativeStage(root),
+    /unsupported native capability: render\.render-method: Sprite\._renderWebGL/);
+  assert.equal(harness.submitted.length, 0);
+  assert.equal(sandbox.renderNativeStage._ready, false);
+  assert.equal(root.parent, parent);
+  delete root.children[4]._renderWebGL;
+  sandbox.renderNativeStage(root);
+  assert.equal(harness.submitted.length, 1);
+  assert.equal(sandbox.renderNativeStage._ready, true);
+});
+
+test('a reached render override marks each affected frame degraded', () => {
+  const harness = makeHarness();
+  const { sandbox, sprite } = harness;
+  const root = new sandbox.PIXI.Container();
+  const child = root.addChild(sprite());
+  child.renderWebGL = function() {};
+  sandbox.renderNativeStage(root);
+  sandbox.renderNativeStage(root);
+  assert.equal(sandbox.renderNativeStage._framesDegraded, 2);
+  delete child.renderWebGL;
+  sandbox.renderNativeStage(root);
+  assert.equal(sandbox.renderNativeStage._framesTotal, 3);
+  assert.equal(sandbox.renderNativeStage._framesDegraded, 2);
+});
+
+test('structural tile layers cannot bypass render-method reporting', () => {
+  const harness = makeHarness();
+  const { sandbox } = harness;
+  const root = new sandbox.PIXI.Container();
+  root.addChild({ pointsBuf: [], textures: [], renderWebGL() {} });
+  sandbox.submitNativeScene(root);
+  assert.deepEqual(harness.compatHits, [
+    ['render.render-method', 'Object.renderWebGL'],
+    ['render.tilemap', 'Object:layer-unrealized']
+  ]);
 });
 
 test('skipUpdateTransform uses the rendered root world transform', () => {
@@ -505,7 +595,7 @@ test('encoders observe state instead of advancing semantics', () => {
     readModule('js/pmjs-pixi4/scene-prepare.js');
   const classify = readModule('js/pmjs-pixi4/scene-classify.js');
 
-  ['updateChowRender', '_paintAllTiles', '_sortChildren', 'updateText(',
+  ['_paintAllTiles', '_sortChildren', 'updateText(',
     '.validate(', '_updateCursor', '_updateArrows', '_updatePauseSign',
     '_updateContents', 'nativeSceneFilter(', 'nativeRectangleMask(',
     'nativeAlphaMask('].forEach(forbidden => {
@@ -715,14 +805,14 @@ test('filtered scenes submit and keep readiness', () => {
   const { sandbox, sprite } = harness;
   const root = new sandbox.PIXI.Container();
   root.addChild(sprite());
-  sandbox.renderNativeStage(root);
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
   assert.equal(harness.submitted.length, 1);
   assert.equal(sandbox.renderNativeStage._ready, true);
   const filtered = sprite();
   filtered._filters = [{ enabled: true }];
   root.addChild(filtered);
   const parent = root.parent;
-  sandbox.renderNativeStage(root);
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
   assert.equal(harness.submitted.length, 2);
   assert.equal(sandbox.renderNativeStage._ready, true);
   assert.equal(root.parent, parent);
@@ -739,8 +829,8 @@ test('production counts filter hits without quitting', () => {
   const filtered = sprite();
   filtered._filters = [{ enabled: true }];
   root.addChild(filtered);
-  sandbox.renderNativeStage(root);
-  sandbox.renderNativeStage(root);
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
   assert.equal(harness.submitted.length, 2);
   assert.equal(sandbox.renderNativeStage._ready, true);
   assert.deepEqual(harness.compatHits,
@@ -793,7 +883,7 @@ test('native submit failure clears readiness and restores the stage parent', () 
   const { sandbox, sprite } = harness;
   const root = new sandbox.PIXI.Container();
   root.addChild(sprite());
-  sandbox.renderNativeStage(root);
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
   const parent = root.parent;
   sandbox.NativeHost.scene.submit = () => { throw new Error('addon rejected packet'); };
 
@@ -822,61 +912,6 @@ function directPacket(harness, node, clip, mask) {
   delete harness.sandbox.__mask;
   return JSON.parse(JSON.stringify(result));
 }
-
-test('custom type hooks select the encoder while hooks run in order', () => {
-  const harness = makeHarness();
-  const { sandbox, sprite } = harness;
-  let hookCalls = 0;
-  sandbox.__pmjsBeforeRenderNode = function(node) {
-    hookCalls++;
-    if (node && typeof node.updateChowRender === 'function') {
-      node.updateChowRender();
-    }
-  };
-  sandbox.__pmjsNodeRenderType = function(node) {
-    return (node && node._chowType) || '';
-  };
-  const root = new sandbox.PIXI.Container();
-  const hooked = sprite();
-  let hookUpdated = 0;
-  hooked._chowType = 'mesh';
-  hooked.vertices = new Float32Array([0, 0, 10, 0, 0, 10]);
-  hooked.uvs = new Float32Array([0, 0, 1, 0, 0, 1]);
-  hooked.indices = new Uint16Array([0, 1, 2]);
-  hooked.updateChowRender = function() { hookUpdated++; };
-  root.addChild(hooked);
-  assert.equal(sandbox.submitNativeScene(root), true);
-  assert.equal(hookCalls, 2);
-  assert.equal(hookUpdated, 1);
-  assert.deepEqual(harness.compatHits, []);
-  assert.deepEqual(harness.submitted[0].metadata.filter((_, index) => index % 7 === 0),
-    [0, 8]);
-});
-
-test('custom type hook observes post-transform-update state', () => {
-  const harness = makeHarness();
-  const { sandbox, sprite } = harness;
-  const root = new sandbox.PIXI.Container();
-  const node = sprite();
-  node.x = 7;
-  node.y = 3;
-
-  node.transform.localTransform = { a: 1, b: 0, c: 0, d: 1,
-    tx: 12345, ty: 6789 };
-  let observed = null;
-  sandbox.__pmjsNodeRenderType = function(current) {
-    if (current === node) {
-      observed = { tx: current.transform.localTransform.tx,
-        ty: current.transform.localTransform.ty };
-    }
-    return '';
-  };
-  root.addChild(node);
-  const packet = submitOnly(harness, root);
-  assert.deepEqual(observed, { tx: 7, ty: 3 });
-  assert.deepEqual(packet.metadata.filter((_, index) => index % 7 === 0),
-    [0, 1]);
-});
 
 test('classifier adds no label reads beyond type resolution', () => {
   const harness = makeHarness();
@@ -1447,13 +1482,78 @@ test('registry disable selects ordinary sprite encoding with the same packet', (
     child.tint = 0xabcdef;
     root.addChild(child);
   }
+  const untraced = submitOnly(harness, root);
+  assert.ok(Object.values(sandbox.nativeSceneSegmentStats).every(value => value === 0));
+  traceScene(harness);
   const optimized = submitOnly(harness, root);
+  assert.deepEqual(optimized, untraced);
   assert.equal(sandbox.nativeSceneSegmentStats.runs, 1);
   assert.equal(sandbox.nativeSceneSegmentStats.sprites, 6);
   sandbox.PMJS.optimizations.isEnabled = id => id !== 'scene.plain-sprite-segment';
   const ordinary = submitOnly(harness, root);
   assert.equal(sandbox.nativeSceneSegmentStats.runs, 1);
   assert.deepEqual(ordinary, optimized);
+});
+
+test('sprite segments preserve Text preparation and later text changes', () => {
+  const harness = makeHarness();
+  traceScene(harness);
+  const { sandbox, sprite, makeTexture } = harness;
+  class Text extends sandbox.PIXI.Sprite {
+    constructor() {
+      super(makeTexture(8, 8));
+      this.resolution = 1;
+      this.dirty = true;
+      this.nextTexture = makeTexture(40, 16);
+      this.prepared = [];
+    }
+    updateText(respectDirty) {
+      this.prepared.push([this.resolution, this.dirty, respectDirty]);
+      if (this.dirty) this.texture = this.nextTexture;
+      this.dirty = false;
+    }
+  }
+  sandbox.PIXI.Text = Text;
+  const root = new sandbox.PIXI.Container();
+  const label = new Text();
+  root.addChild(label);
+  for (let i = 0; i < 4; i++) root.addChild(sprite());
+  sandbox.nativeSceneFilterResolution = 2;
+  let packet = submitOnly(harness, root);
+  assert.deepEqual(label.prepared, [[2, true, true]]);
+  assert.equal(packet.metadata[7 + 2], label.nextTexture.baseTexture.source._nativeImage.handle);
+  assert.equal(packet.values[41 + 13], 40);
+  assert.equal(sandbox.nativeSceneSegmentStats.sprites, 4);
+
+  label.nextTexture = makeTexture(72, 16);
+  label.dirty = true;
+  packet = submitOnly(harness, root);
+  assert.equal(label.prepared.length, 2);
+  assert.equal(packet.values[41 + 13], 72);
+  sandbox.PMJS.optimizations.isEnabled = id => id !== 'scene.plain-sprite-segment';
+  assert.deepEqual(submitOnly(harness, root), packet);
+});
+
+test('sprite segments honor bitmap cache activation and removal', () => {
+  const harness = makeHarness();
+  const { sandbox, sprite } = harness;
+  const root = new sandbox.PIXI.Container();
+  const cached = root.addChild(sprite(16, 16));
+  for (let i = 0; i < 4; i++) root.addChild(sprite());
+  submitOnly(harness, root);
+  const snapshot = sprite(64, 48);
+  cached._cacheAsBitmap = true;
+  cached._cacheData = { sprite: snapshot };
+  const packet = submitOnly(harness, root);
+  const handles = packet.metadata.filter((_, index) => index % 7 === 2);
+  assert.ok(handles.includes(snapshot.texture.baseTexture.source._nativeImage.handle));
+  assert.ok(!handles.includes(cached.texture.baseTexture.source._nativeImage.handle));
+  sandbox.PMJS.optimizations.isEnabled = id => id !== 'scene.plain-sprite-segment';
+  assert.deepEqual(submitOnly(harness, root), packet);
+  cached._cacheAsBitmap = false;
+  const ordinary = submitOnly(harness, root);
+  sandbox.PMJS.optimizations.isEnabled = () => true;
+  assert.deepEqual(submitOnly(harness, root), ordinary);
 });
 
 test('scene submission asks the video owner for diagnostics only on failure', () => {
@@ -1466,11 +1566,258 @@ test('scene submission asks the video owner for diagnostics only on failure', ()
   sandbox.PMJS.web = { video: { diagnostics() { requests++; return snapshot; } } };
   const errors = [];
   sandbox.console = { log() {}, error(message) { errors.push(message); } };
-  sandbox.renderNativeStage(root);
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
   assert.equal(requests, 0);
   const error = new Error('native submission failed');
   sandbox.NativeHost.scene.submit = () => { throw error; };
   assert.throws(() => sandbox.renderNativeStage(root), thrown => thrown === error);
   assert.equal(requests, 1);
   assert.ok(errors[0].endsWith('videos=' + JSON.stringify(snapshot)));
+});
+
+
+test('retained triangle material leaves scene fields available and can be cleared', () => {
+  const harness = makeHarness();
+  const { sandbox, makeTexture } = harness;
+  const root = new sandbox.PIXI.Container();
+  const mesh = new sandbox.PIXI.mesh.Mesh(makeTexture(64, 64));
+  const paint = [0, 0, 12, 0, 0, 12, -2, -2, 14, 14, 1, 1, 1, 0.5, 4, 10];
+  setTriangleBitmap(sandbox, mesh, paint);
+  sandbox.PMJS.pixi4.retainMeshGeometry(mesh);
+  root.addChild(mesh);
+  const first = submitOnly(harness, root);
+  assert.equal(first.metadata[12] & 1024, 0);
+  assert.equal(mesh._pmjsMppTriangleBitmap.length, 30);
+  const resource = first.metadata[9];
+  sandbox.PMJS.pixi4.setMeshPostTintOverlay(mesh, [255, 0, 0, 128]);
+  const flashed = submitOnly(harness, root);
+  assert.equal(flashed.metadata[9], resource);
+  assert.equal(flashed.metadata[12] & (1024 | 512), 512);
+  sandbox.PMJS.plugins.mpp.setTriangleBitmap(mesh, null);
+  assert.equal(mesh._pmjsMppTriangleBitmap, undefined);
+  const cleared = submitOnly(harness, root);
+  assert.notEqual(cleared.metadata[9], resource);
+  assert.throws(() => setTriangleBitmap(sandbox, mesh, [NaN]), /finite points/);
+});
+
+
+test('MV bitmap flash retains its material and rejects ambiguous generic overlays', () => {
+  const harness = makeHarness();
+  const { sandbox, makeTexture } = harness;
+  const root = new sandbox.PIXI.Container();
+  const mesh = new sandbox.PIXI.mesh.Mesh(makeTexture(64, 64));
+  sandbox.PMJS.pixi4.retainMeshGeometry(mesh);
+  root.addChild(mesh);
+  sandbox.PMJS.mv.setBitmapMeshBlend(mesh, [0, 0, 0, 0], [2, 3, 15, 20]);
+  const first = submitOnly(harness, root);
+  sandbox.PMJS.mv.setBitmapMeshBlend(mesh, [255, 0, 0, 128]);
+  const flashed = submitOnly(harness, root);
+  assert.equal(flashed.metadata[9], first.metadata[9]);
+  assert.equal(flashed.metadata[12] & (512 | 16384), 16384);
+  assert.throws(() => sandbox.PMJS.pixi4.setMeshPostTintOverlay(mesh, [255, 0, 0, 128]), /MV blend operation/);
+  sandbox.PMJS.mv.setBitmapMeshBlend(mesh, null);
+  const cleared = submitOnly(harness, root);
+  assert.equal(cleared.metadata[12] & 512, 0);
+  assert.equal(cleared.metadata[9], first.metadata[9]);
+});
+
+test('Pixi owns exactly one specialized mesh material claim', () => {
+  const { sandbox, makeTexture } = makeHarness();
+  const mesh = new sandbox.PIXI.mesh.Mesh(makeTexture(64, 64));
+  const paint = [0, 0, 12, 0, 0, 12, -2, -2, 14, 14, 1, 1, 1, 0.5, 4, 10];
+  setTriangleBitmap(sandbox, mesh, paint);
+  assert.equal(sandbox.PMJS.pixi4.meshNativeMaterialOwner(mesh), 'mpp-triangle-bitmap');
+  assert.throws(() => sandbox.PMJS.mv.setBitmapMeshBlend(mesh, [255, 0, 0, 128],
+    [2, 3, 15, 20]), /owned by mpp-triangle-bitmap/);
+  assert.equal(sandbox.PMJS.mv.hasBitmapMesh(mesh), false, 'rejected MV claim leaves no MV state');
+  sandbox.PMJS.plugins.mpp.setTriangleBitmap(mesh, null);
+  assert.equal(sandbox.PMJS.pixi4.meshNativeMaterialOwner(mesh), null);
+  sandbox.PMJS.mv.setBitmapMeshBlend(mesh, [255, 0, 0, 128], [2, 3, 15, 20]);
+  assert.equal(sandbox.PMJS.pixi4.meshNativeMaterialOwner(mesh), 'mv-bitmap');
+  assert.throws(() => setTriangleBitmap(sandbox, mesh, paint), /owned by mv-bitmap/);
+  assert.throws(() => sandbox.PMJS.plugins.mpp.setTriangleBitmap(mesh, null), /owned by mv-bitmap/);
+  assert.equal(mesh._pmjsMppTriangleBitmap, undefined, 'rejected MPP claim leaves no MPP state');
+  assert.throws(() => sandbox.PMJS.pixi4.setMeshNativeMaterial(mesh, 'unknown', {}), /Unknown mesh material owner/);
+});
+
+test('background fill is explicit per scene submission and never persists into offscreen encoding', () => {
+  const harness = makeHarness();
+  const root = new harness.sandbox.PIXI.Container();
+  harness.sandbox.submitNativeScene(root, 0);
+  assert.equal(harness.submitted[0].metadata[0], 3, 'black screen clear is an opaque fill');
+  harness.sandbox.submitNativeScene(root);
+  assert.equal(harness.submitted[1].metadata[0], 0, 'offscreen submission starts with content');
+  harness.sandbox.submitNativeScene(root, 0x102030);
+  assert.equal(harness.submitted[2].metadata[0], 3, 'following screen can explicitly clear');
+  assert.equal(harness.submitted[2].metadata[3], 0x102030);
+});
+
+
+test('triangle stroke coverage is retained material state with validated sample count', () => {
+  const { sandbox, makeTexture } = makeHarness();
+  const mesh = new sandbox.PIXI.mesh.Mesh(makeTexture(64, 64));
+  const paint = [0, 0, 12, 0, 0, 12, -2, -2, 14, 14, 1, 1, 1, 0.5, 4, 10];
+  setTriangleBitmap(sandbox, mesh, paint);
+  const bevels = mesh._pmjsMppTriangleBitmap[29];
+  setTriangleBitmap(sandbox, mesh, paint, { strokeSamples: 4 });
+  assert.equal(mesh._pmjsMppTriangleBitmap[29], bevels | 8);
+  assert.equal(mesh._pmjsMppTriangleBitmap.length, 30);
+  setTriangleBitmap(sandbox, mesh, paint, { strokeSamples: 0 });
+  assert.equal(mesh._pmjsMppTriangleBitmap[29], bevels);
+  setTriangleBitmap(sandbox, mesh, paint,
+    { strokeSamples: 4, clipCoverage: 'canvas-crop' });
+  assert.equal(mesh._pmjsMppTriangleBitmap[29], bevels | 24);
+  for (const clipCoverage of ['unknown', null, '']) {
+    assert.throws(() => setTriangleBitmap(sandbox, mesh, paint, { clipCoverage }),
+      /Triangle clip coverage/);
+  }
+  for (const strokeSamples of [2, NaN, null]) {
+    assert.throws(() => setTriangleBitmap(sandbox, mesh, paint, { strokeSamples }),
+      /Triangle stroke samples/);
+  }
+});
+
+test('Sprite world hooks and packed color are consumed before Float32 scene serialization', () => {
+  const harness = makeHarness(), { sandbox, sprite } = harness;
+  Object.defineProperty(sandbox.PIXI.Container.prototype, 'worldTransform', {
+    get() { return this.transform.worldTransform; } });
+  sandbox.PIXI.Sprite.prototype.updateTransform = function() {
+    this.transformCalls = (this.transformCalls || 0) + 1;
+    this.worldTransform.tx = Math.floor(this.x); this.worldTransform.ty = Math.floor(this.y);
+    this.worldAlpha = this.parent.worldAlpha * this.alpha;
+  };
+  const root = new sandbox.PIXI.Container(); root.worldAlpha = 1;
+  sandbox.PMJS.pixi4.setStageRenderOptions(root, {worldState:'pixi'});
+  root.updateTransform = function() { this.children.forEach(child => child.updateTransform()); };
+  for (let index = 0; index < 5; index++) {
+    const child = sprite(); child.x = 90.75; child.y = -28.55;
+    child.alpha = 0.19999999999999996; child.texture.baseTexture.__pmjsPremultiplied = true;
+    root.addChild(child);
+  }
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
+  const packet = harness.submitted.at(-1);
+  for (let index = 1; index <= 5; index++) {
+    assert.equal(packet.values[index * 41 + 4], 90);
+    assert.equal(packet.values[index * 41 + 5], -29);
+    assert.equal(packet.metadata[index * 7 + 3], 0x32333333);
+    assert.equal(packet.metadata[index * 7 + 5] & 3072, 3072);
+  }
+  assert.equal(root.children[0].x, 90.75);
+  for (const child of root.children) assert.equal(child.transformCalls, 1);
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, true);
+  for (const child of root.children) assert.equal(child.transformCalls, 1);
+  const skipped = harness.submitted.at(-1);
+  for (let index = 1; index <= 5; index++) {
+    assert.equal(skipped.values[index * 41 + 4], 90);
+    assert.equal(skipped.values[index * 41 + 5], -29);
+    assert.equal(skipped.metadata[index * 7 + 3], 0x32333333);
+  }
+});
+
+
+test('Sprite vertex packets preserve Pixi Float32 corners and logical GPU bitmap views', () => {
+  const harness = makeHarness(), { sandbox, sprite } = harness;
+  Object.defineProperty(sandbox.PIXI.Container.prototype, 'worldTransform', {
+    get() { return this.transform.worldTransform; } });
+  sandbox.PIXI.Sprite.prototype.updateTransform = function() { this.worldAlpha = this.alpha; };
+  const vertices = new Float32Array([3.125, 4.375, 19.75, 5.5, 18.25, 23.625, 1.625, 22.5]);
+  sandbox.PIXI.Sprite.prototype.calculateVertices = function() { this.vertexData = vertices; };
+  const root = new sandbox.PIXI.Container();
+  sandbox.PMJS.pixi4.setStageRenderOptions(root, {worldState:'pixi'});
+  root.updateTransform = function() { this.children.forEach(child => child.updateTransform()); };
+  for (let index = 0; index < 5; index++) {
+    const child = sprite(); child.texture.baseTexture.__pmjsPremultiplied = true;
+    child.texture.__pmjsStandaloneBitmapRegion = true;
+    root.addChild(child);
+  }
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
+  const packet = harness.submitted.at(-1);
+  for (let index = 1; index <= 5; index++) {
+    const offset = index * 41;
+    assert.deepEqual(Array.from(packet.values.slice(offset, offset + 6)), Array.from(vertices.slice(0, 6)));
+    assert.deepEqual(Array.from(packet.values.slice(offset + 15, offset + 17)), Array.from(vertices.slice(6)));
+    assert.equal(packet.metadata[index * 7 + 5] & 12288, 12288);
+  }
+});
+
+
+test('stock transform scenes retain the native transform path', () => {
+  const harness = makeHarness(), { sandbox, sprite } = harness;
+  const root = new sandbox.PIXI.Container(); root.addChild(sprite());
+  let transforms = 0;
+  root.updateTransform = () => { transforms++; };
+  sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(root));
+  assert.equal(transforms, 0);
+  assert.equal(harness.submitted.at(-1).metadata[12] & 4096, 0);
+});
+
+test('bitmap bake and clear share quantized triangle coefficient construction', () => {
+  const harness = makeHarness(), { sandbox } = harness;
+  const coordinates = [0.123456789, 0.987654321, 21.23456789, 2.3456789, 4.567891, 19.87654321];
+  const material = sandbox.nativeTrianglePaintParameters(coordinates.concat([-1,-1,30,30,1,1,1,.5,4,10]), 4, 'canvas-crop');
+  assert.deepEqual(Array.from(material.slice(16,22)),
+    Array.from(sandbox.nativeTriangleClipNormals(Float32Array.from(coordinates))));
+});
+
+
+test('skipped Sprite world vertices receive the explicit render root transform once', () => {
+  const harness = makeHarness(), { sandbox, sprite } = harness;
+  const child = sprite(); child.worldAlpha = 0.5;
+  const vertices = new Float32Array([3.125,4.375,19.75,5.5,18.25,23.625,1.625,22.5]);
+  child.calculateVertices = function() { this.vertexData = vertices; };
+  let updates = 0;
+  const root = new sandbox.PIXI.Container(); root.addChild(child);
+  root.updateTransform = () => { updates++; };
+  const transform = {a:2,b:0.25,c:-0.5,d:3,tx:11,ty:-7};
+  sandbox.renderNativeStage(root, transform, 2, false, true);
+  const packet = harness.submitted.at(-1);
+  for (let corner = 0; corner < 4; corner++) {
+    const x=vertices[corner*2], y=vertices[corner*2+1], offset=41+(corner<3?corner*2:15);
+    assert.equal(packet.values[offset], Math.fround(2*x-.5*y+11));
+    assert.equal(packet.values[offset+1], Math.fround(.25*x+3*y-7));
+  }
+  assert.equal(updates,0);
+  assert.deepEqual(Array.from(vertices), [3.125,4.375,19.75,5.5,18.25,23.625,1.625,22.5]);
+  assert.equal(packet.metadata[12]&4096,4096);
+});
+
+
+test('a global guest Sprite transform hook does not force unrelated scenes onto Pixi traversal', () => {
+  const harness = makeHarness(), { sandbox, sprite } = harness;
+  sandbox.Sprite = function() {};
+  sandbox.Sprite.prototype.updateTransform = function() {};
+  sandbox.PIXI.Sprite.prototype.updateTransform = function() {};
+  const scene = new sandbox.PIXI.Container(); scene.addChild(sprite());
+  let calls=0; scene.updateTransform=()=>{calls++;};
+  sandbox.renderNativeStage(scene, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(scene));
+  assert.equal(calls,0);
+  sandbox.PMJS.pixi4.setStageRenderOptions(scene, {worldState:'pixi'});
+  sandbox.renderNativeStage(scene, undefined, undefined, undefined, false, null, sandbox.PMJS.pixi4.getStageRenderOptions(scene));
+  assert.equal(calls,1);
+});
+
+test('real compatibility observations preserve exact frames while unsupported hits degrade them', () => {
+  for (const strict of [false, true]) {
+    const h = makeHarness(), { sandbox, sprite } = h;
+    sandbox.NativeHost.runtime = { env: name => name === 'PMJS_STRICT_COMPAT' && strict ? '1' : undefined };
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../js/pmjs-core/compatibility.js'), 'utf8'), sandbox);
+    const root = new sandbox.PIXI.Container(), cached = sprite();
+    cached._cacheAsBitmap = true;
+    cached._cacheData = { sprite: sprite() };
+    root.addChild(cached);
+    const render = () => sandbox.renderNativeStage(root, undefined, undefined, undefined, false, null,
+      sandbox.PMJS.pixi4.getStageRenderOptions(root));
+    render(); render();
+    assert.equal(sandbox.PMJS.compat.count('render.'), 0);
+    assert.equal(sandbox.renderNativeStage._framesDegraded || 0, 0);
+    const custom = sprite(); custom.pluginName = 'custom'; root.addChild(custom);
+    if (strict) {
+      const submissions = h.submitted.length;
+      assert.throws(render, /unsupported native capability/);
+      assert.equal(h.submitted.length, submissions);
+    } else {
+      render(); render();
+      assert.equal(sandbox.renderNativeStage._framesDegraded, 2);
+    }
+  }
 });

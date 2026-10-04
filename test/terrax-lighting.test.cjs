@@ -235,7 +235,10 @@ test('Terrax adapter leaves an unknown createLightmask implementation untouched'
 
   assert.equal(context.Spriteset_Map.prototype.createLightmask,
     customCreateLightmask);
-  assert.equal(context.pmjsInstallTerraxLightingFastPaths(), false);
+  context.PMJS.phases.emit('afterGuestPlugins');
+  assert.equal(context.Spriteset_Map.prototype.createLightmask, customCreateLightmask);
+  assert.match(context.PMJS.optimizations.reason('terrax.native-lighting'),
+    /unrecognized Terrax createLightmask/);
 });
 
 test('Terrax adapter preserves unknown per-instance sprite methods', () => {
@@ -363,7 +366,7 @@ function terraxDisabledContext({ config, env }) {
   return { mask: spriteset._lightmask, updates, stockAdds, context2d };
 }
 
-test('terrax.native-lighting disabled by port runs the ordinary Canvas path', () => {
+test('terrax.native-lighting disabled by configuration runs the ordinary Canvas path', () => {
   const { mask, updates, stockAdds, context2d } = terraxDisabledContext({
     config: { disableOptimizations: ['terrax.native-lighting'] }, env: {},
   });
@@ -486,7 +489,7 @@ test('scaled recorder does not treat a one-pixel inset as a full-surface clear',
 test('Canvas recorder falls back on native submission failure and preserves drawing exceptions', () => {
   const h = recorderHarness();
   h.context.NativeHost.render.renderPrimitiveSurface = () => { throw new Error('GPU failed'); };
-  h.recorder.record(() => h.drawing.fillRect(1, 2, 3, 4));
+  h.recorder.record(() => h.drawing.fillRect(0, 0, 64, 48));
   assert.equal(h.cpu.length, 1);
   assert.equal(h.canvas._nativeImage, undefined);
   const error = new Error('guest failed');
@@ -509,7 +512,7 @@ test('Bitmap destruction releases its Canvas surface once and restores ordinary 
   assert.equal(h.drawing.fillRect, h.originalFillRect);
   h.recorder.record(() => h.drawing.fillRect(0, 0, 64, 48));
   assert.equal(h.renders.length, 1);
-  assert.equal(h.cpu.length, 1);
+  assert.equal(h.cpu.length, 2, 'Destroy preserves pixels in the surviving Canvas owner before ordinary drawing');
 });
 
 test('Canvas recorder keeps clipped or resized drawing on the ordinary path', () => {

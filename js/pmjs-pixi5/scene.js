@@ -1,6 +1,48 @@
 'use strict';
 
 (function() {
+  var contracts = new WeakMap();
+  var rendererReleases = [];
+  function registerRenderContract(prototype, contract) {
+    if (!prototype) return;
+    var registered = Object.assign({
+      render: prototype.render, leaf: prototype._render,
+      advanced: prototype.renderAdvanced, callsLeaf: true
+    }, contract || {});
+    contracts.set(prototype, registered);
+    if (registered.releaseRenderer) rendererReleases.push(registered.releaseRenderer);
+  }
+  [PIXI.Container, PIXI.Sprite, PIXI.TilingSprite].forEach(function(type) {
+    if (type) registerRenderContract(type.prototype);
+  });
+  function findRenderContract(node) {
+    var prototype = Object.getPrototypeOf(node);
+    var contract;
+    while (prototype && !(contract = contracts.get(prototype))) {
+      prototype = Object.getPrototypeOf(prototype);
+    }
+    return contract;
+  }
+  function renderContract(node) {
+    var contract = findRenderContract(node);
+    if (!contract || node.render !== contract.render ||
+        (contract.callsLeaf && node._render !== contract.leaf) ||
+        ((node.mask || activeFilters(node)) && node.renderAdvanced !== contract.advanced)) {
+      if (!contract || !contract.accept || !contract.accept(node)) {
+        reject('render.render-method', node);
+      }
+    }
+    return contract;
+  }
+  globalThis.PMJS = globalThis.PMJS || {};
+  PMJS.pixi5 = {
+    registerRenderContract: registerRenderContract,
+    nativeSource: nativeSource,
+    rejectRender: reject,
+    releaseRenderer: function(renderer) {
+      rendererReleases.forEach(function(release) { release(renderer); });
+    }
+  };
   var schema = NativeHost.scene && NativeHost.scene.schema;
   var requiredPacketVersion = 28;
   var filterEncoders = [];
@@ -35,6 +77,7 @@
 
   function textureSource(baseTexture) {
     if (!baseTexture) return null;
+    if (baseTexture.__pmjsPixi5RenderCanvas) return baseTexture.__pmjsPixi5RenderCanvas;
     if ('resource' in baseTexture) {
       return baseTexture.resource && baseTexture.resource.source || null;
     }
@@ -54,7 +97,42 @@
     return null;
   }
 
+  function releaseTilingTexture(texture) {
+    var canvas = texture.__pmjsPixi5TilingCanvas;
+    if (canvas && typeof canvas._releaseNativeCanvas === 'function') {
+      canvas._releaseNativeCanvas();
+    }
+    delete texture.__pmjsPixi5TilingCanvas;
+    delete texture.__pmjsPixi5TilingSignature;
+  }
+  if (PMJS.methods) {
+    PMJS.methods.wrap({
+      key: 'PIXI.Texture.destroy.pixi5-tiling', id: 'pixi5-tiling-texture-release',
+      getTarget: function() { return PIXI.Texture && PIXI.Texture.prototype; },
+      method: 'destroy',
+      wrap: function(original) {
+        return function() {
+          var result = original.apply(this, arguments);
+          releaseTilingTexture(this);
+          return result;
+        };
+      }
+    });
+  }
+
+  function simpleTilingTexture(texture) {
+    var base = texture.baseTexture;
+    var frame = texture._frame || texture.frame;
+    function powerOfTwo(value) {
+      return value > 0 && Number.isInteger(value) && (value & (value - 1)) === 0;
+    }
+    return frame.width === base.width && frame.height === base.height &&
+      powerOfTwo(base.width * (Number(base.resolution) || 1)) &&
+      powerOfTwo(base.height * (Number(base.resolution) || 1));
+  }
+
   function nativeTilingTexture(texture) {
+    if (!texture || texture.valid === false) return null;
     var base = texture && texture.baseTexture;
     var source = textureSource(base);
     var native = nativeSource(source);
@@ -67,6 +145,7 @@
     var baseHeight = Number(base.height) || frame.height;
     if (frame.x === 0 && frame.y === 0 && frame.width === baseWidth &&
         frame.height === baseHeight) {
+      releaseTilingTexture(texture);
       return { handle: native.handle, resolution: resolution };
     }
     var sourceRevision = source && source.__pmjsContentRevision;
@@ -92,10 +171,12 @@
       resolution: resolution };
   }
 
+  function RenderingGap(message) { this.message = message; }
+  RenderingGap.prototype = Object.create(Error.prototype);
   function reject(capability, node, detail) {
     var producer = node && node.constructor && node.constructor.name || 'DisplayObject';
     PMJS.compat.hit(capability, producer);
-    throw new Error('unsupported Pixi 5 native capability: ' +
+    throw new RenderingGap('unsupported Pixi 5 native capability: ' +
       capability + ': ' + producer + (detail ? ': ' + detail : ''));
   }
 
@@ -142,52 +223,112 @@
 
   function blendMode(node) {
     var mode = Number(node && node.blendMode) || 0;
-    if (mode < 0 || mode > 3) reject('render.blend-mode', node);
+    if (!Number.isInteger(mode) || mode < 0 || mode > 3) reject('render.blend-mode', node);
     return mode;
   }
 
   function activeFilters(node) {
-    var filters = node && node._filters;
+    var filters = node && node.filters;
     if (!Array.isArray(filters)) return false;
     return filters.some(function(filter) {
       return filter && filter.enabled !== false;
     });
   }
 
-  function writeNode(node, parent) {
+  var renderResolution = 1;
+  var renderOwner;
+  var viewport;
+  var filterTargets;
+  function needsFilterTarget(node) {
+    if (!node || !node.visible || !node.renderable || node.alpha <= 0) return false;
+    if (!drawableTransform(localTransform(node))) return false;
+    if (filterTargets.has(node)) return filterTargets.get(node);
+    var contract = findRenderContract(node) || {};
+    var children = contract.children ? contract.children(node, viewport).map(function(entry) {
+      return entry.node;
+    }) : node.children || [];
+    var result = !!contract.filterTarget || children.some(function(child) {
+      return needsFilterTarget(child);
+    });
+    filterTargets.set(node, result);
+    return result;
+  }
+  function clipRecord(parent, clip) {
+    var index = addRecord(parent, 0, 0, 0xffffff, 0, identity, 1);
+    metadata[index * metadataStride + 5] |= 1;
+    values.set([clip.x, clip.y, clip.x + clip.width, clip.y + clip.height]
+      .map(function(value) { return value * renderResolution; }),
+    index * valueStride + 17);
+    return index;
+  }
+
+  function writeNode(node, parent, clip) {
     if (!node || !node.visible || !node.renderable || node.alpha <= 0) return;
     var transform = localTransform(node);
     if (!drawableTransform(transform)) return;
+    var checkpoint = count;
+    try {
+      writePreparedNode(node, parent, clip, transform);
+    } catch (error) {
+      if (!(error instanceof RenderingGap)) throw error;
+      // Only a reported compatibility gap degrades drawing. Native failures and
+      // authored exceptions remain visible; discard any partial leaf/filter records.
+      count = checkpoint;
+      if (clip) parent = clipRecord(parent, clip);
+      var index = addRecord(parent, 0, 0, 0xffffff, 0, transform,
+        Number.isFinite(node.alpha) ? node.alpha : 1);
+      (node.children || []).forEach(function(child) { writeNode(child, index); });
+    }
+  }
+  function writePreparedNode(node, parent, clip, transform) {
+    var contract = renderContract(node);
+    if (clip) parent = clipRecord(parent, clip);
     if (node.mask) reject('render.mask', node);
     var encodedFilters = [];
+    var supportedFilters = false;
+    var filterTarget = activeFilters(node) && needsFilterTarget(node);
     if (activeFilters(node)) {
-      node._filters.forEach(function(filter) {
+      node.filters.forEach(function(filter) {
         if (!filter || filter.enabled === false) return;
-        var encoded = null;
-        for (var i = 0; i < filterEncoders.length && !encoded; i++) {
-          encoded = filterEncoders[i](filter);
+        try {
+          var encoded = null;
+          for (var i = 0; i < filterEncoders.length && !encoded; i++) {
+            encoded = filterEncoders[i](filter, node, viewport, renderResolution, renderOwner);
+          }
+          if (!encoded) reject('render.filter', node);
+          encoded = Object.assign({}, encoded, { blendMode: blendMode(filter) });
+          if (encoded.blendMode && !schema.filterCompositeBlend) {
+            reject('render.filter-blend', node);
+          }
+          supportedFilters = true;
+          if (!encoded.neutral || encoded.blendMode || filterTarget) encodedFilters.push(encoded);
+        } catch (error) {
+          if (!(error instanceof RenderingGap)) throw error;
         }
-        if (!encoded) reject('render.filter', node);
-        if (!encoded.neutral) encodedFilters.push(encoded);
       });
+    }
+    if (supportedFilters && node.filterArea) {
+      parent = clipRecord(parent, node.filterArea);
+    } else if (encodedFilters.length && filterTarget && typeof node.getBounds === 'function') {
+      parent = clipRecord(parent, node.getBounds(true));
     }
     encodedFilters.reverse().forEach(function(filter) {
       var begin = addRecord(parent, 6, 0, 0xffffff, filter.kind, identity, 1);
       var offset = begin * valueStride;
       values.set(filter.parameters, offset + 7);
       values[offset + 33] = 1;
+      values[offset + 34] = filter.blendMode;
     });
 
     var type = node.pluginName && String(node.pluginName).toLowerCase();
     var isSprite = node instanceof PIXI.Sprite;
-    var isScreenSprite = typeof ScreenSprite === 'function' &&
-      node instanceof ScreenSprite;
     var isTilingSprite = PIXI.TilingSprite && node instanceof PIXI.TilingSprite;
-    if (type && type !== 'batch' && type !== 'sprite' && !isTilingSprite) {
+    if (isTilingSprite ? node.pluginName !== 'tilingSprite' :
+        isSprite ? node.pluginName !== 'batch' :
+        type && type !== 'batch' && type !== 'sprite') {
       reject('render.renderer-plugin', node);
     }
-    if (PIXI.Graphics && node instanceof PIXI.Graphics && !isSprite &&
-        !isScreenSprite) {
+    if (PIXI.Graphics && node instanceof PIXI.Graphics && !isSprite && !contract.encode) {
       reject('render.graphics', node);
     }
 
@@ -202,11 +343,7 @@
     var destinationHeight = 0;
     var tilingTextureInfo = null;
 
-    if (isScreenSprite) {
-      kind = 3;
-      tint = ((node._red || 0) << 16) | ((node._green || 0) << 8) |
-        (node._blue || 0);
-    } else if (isTilingSprite) {
+    if (isTilingSprite) {
       texture = node.texture || node._texture;
       frame = texture && (texture._frame || texture.frame);
       var tilingRotation = ((Number(texture && texture.rotate) || 0) % 16 +
@@ -217,7 +354,25 @@
             frame && frame.width, frame && frame.height].join(',') +
           ' trim=' + !!texture.trim + ' rotate=' + tilingRotation);
       }
-      tilingTextureInfo = nativeTilingTexture(texture);
+      if ((node.clampMargin !== undefined && node.clampMargin !== 0.5) ||
+          (node.uvMatrix && node.uvMatrix.clampOffset !== 0)) {
+        reject('render.tiling-clamp', node);
+      }
+      var tileTransform = node.tileTransform;
+      if (!tileTransform || typeof tileTransform.updateLocalTransform !== 'function') {
+        reject('render.tiling-transform', node);
+      }
+      tileTransform.updateLocalTransform();
+      var tilingMatrix = tileTransform.localTransform;
+      var finiteSampling = tilingMatrix && ['a', 'b', 'c', 'd', 'tx', 'ty']
+        .every(function(key) { return Number.isFinite(tilingMatrix[key]); });
+      if (finiteSampling && (tilingMatrix.b !== 0 || tilingMatrix.c !== 0)) {
+        reject('render.tiling-transform', node, 'rotated or skewed sampling');
+      }
+      // MZ can leave the origin nonfinite between image readiness and the next
+      // scene update. Omit undefined sampling; retain children and authored state.
+      tilingTextureInfo = finiteSampling && tilingMatrix.a !== 0 &&
+        tilingMatrix.d !== 0 ? nativeTilingTexture(texture) : null;
       if (tilingTextureInfo && frame && frame.width > 0 && frame.height > 0 &&
           node.width > 0 && node.height > 0) {
         kind = 2;
@@ -249,13 +404,54 @@
       }
     }
 
+    var encodedNode = contract.encode && contract.encode(node, renderOwner);
+    var alpha = Number.isFinite(node.alpha) ? node.alpha : 1;
+    if (encodedNode) {
+      kind = encodedNode.kind;
+      resource = encodedNode.resource;
+      if (encodedNode.tint !== undefined) tint = encodedNode.tint;
+      if (encodedNode.alpha !== undefined) alpha = encodedNode.alpha;
+      if (encodedNode.sprite) {
+        texture = encodedNode.sprite.texture;
+        frame = texture.frame;
+        destinationWidth = texture.orig.width;
+        destinationHeight = texture.orig.height;
+      }
+    }
+
     var index = addRecord(parent, kind, resource, tint, blendMode(node),
-      transform, Number.isFinite(node.alpha) ? node.alpha : 1);
-    if (kind === 1) {
+      transform, alpha);
+    if (encodedNode && encodedNode.nearest) {
+      metadata[index * metadataStride + 5] |= 8;
+    }
+    if (kind === 9) {
+      if (!schema.effects) reject('render.effekseer', node);
+      var effectOffset = index * valueStride;
+      values.set(encodedNode.effect.viewport, effectOffset);
+      values.set(encodedNode.effect.projection, effectOffset + 7);
+      values.set(encodedNode.effect.camera, effectOffset + 23);
+      values.set(encodedNode.effect.resetViewport, effectOffset + 39);
+    } else if (kind === 1) {
+      var spriteIndex = index;
       var baseTexture = texture.baseTexture;
       var resolution = Math.max(0.000001, Number(baseTexture.resolution) || 1);
-      var valueOffset = index * valueStride;
-      var metadataOffset = index * metadataStride;
+      var vertices = encodedNode && encodedNode.sprite && encodedNode.sprite.vertices;
+      if (vertices || node.roundPixels || resolution !== 1 ||
+          destinationWidth !== frame.width || destinationHeight !== frame.height) {
+        // World vertices preserve rounded/logical geometry; children keep the authored transform.
+        metadata[index * metadataStride] = 0;
+        metadata[index * metadataStride + 2] = 0;
+        spriteIndex = addRecord(index, 1, resource, tint, blendMode(node), identity, 1);
+        if (!vertices) { node.calculateVertices(); vertices = node.vertexData; }
+        for (var corner = 0; corner < 4; corner++) {
+          var vertexOffset = spriteIndex * valueStride + (corner < 3 ? corner * 2 : 15);
+          values[vertexOffset] = vertices[corner * 2] * renderResolution;
+          values[vertexOffset + 1] = vertices[corner * 2 + 1] * renderResolution;
+        }
+        metadata[spriteIndex * metadataStride + 5] |= 4096;
+      }
+      var valueOffset = spriteIndex * valueStride;
+      var metadataOffset = spriteIndex * metadataStride;
       var rotation = ((Number(texture.rotate) || 0) % 16 + 16) % 16;
       if (rotation % 2) reject('render.texture-rotation', node);
       metadata[metadataOffset + 5] |= rotation / 2 << 5;
@@ -274,22 +470,22 @@
       var tilingValueOffset = index * valueStride;
       var tilingMetadataOffset = index * metadataStride;
       var tilingResolution = tilingTextureInfo.resolution;
-      var tileScale = node.tileScale || { x: 1, y: 1 };
-      var scaleX = Math.abs(Number(tileScale.x)) > 0.000001 ?
-        Number(tileScale.x) : 1;
-      var scaleY = Math.abs(Number(tileScale.y)) > 0.000001 ?
-        Number(tileScale.y) : 1;
-      var tilePosition = node.tilePosition || { x: 0, y: 0 };
+      if (!simpleTilingTexture(texture)) {
+        if (!schema.clampedTilingSampling) reject('render.tiling-clamp', node);
+        metadata[tilingMetadataOffset + 5] |= 32768;
+      }
+      var scaleX = tilingMatrix.a;
+      var scaleY = tilingMatrix.d;
       if (PIXI.SCALE_MODES &&
           texture.baseTexture.scaleMode === PIXI.SCALE_MODES.NEAREST) {
         metadata[tilingMetadataOffset + 5] |= 8;
       }
       values[tilingValueOffset + 7] = localX;
       values[tilingValueOffset + 8] = localY;
-      values[tilingValueOffset + 9] = -tilePosition.x / scaleX *
-        tilingResolution;
-      values[tilingValueOffset + 10] = -tilePosition.y / scaleY *
-        tilingResolution;
+      values[tilingValueOffset + 9] = (-tilingMatrix.tx +
+        (node.uvRespectAnchor ? localX : 0)) / scaleX * tilingResolution;
+      values[tilingValueOffset + 10] = (-tilingMatrix.ty +
+        (node.uvRespectAnchor ? localY : 0)) / scaleY * tilingResolution;
       values[tilingValueOffset + 11] = node.width / scaleX *
         tilingResolution;
       values[tilingValueOffset + 12] = node.height / scaleY *
@@ -298,29 +494,45 @@
       values[tilingValueOffset + 14] = destinationHeight;
     }
 
-    var children = node.children || [];
-    for (var childIndex = 0; childIndex < children.length; childIndex++) {
-      if (kind === 3 && children[childIndex] === node._graphics) continue;
-      writeNode(children[childIndex], index);
+    if (contract.children) {
+      contract.children(node, viewport).forEach(function(entry) {
+        writeNode(entry.node, index, entry.clip);
+      });
+    } else {
+      var children = node.children || [];
+      for (var childIndex = 0; childIndex < children.length; childIndex++) {
+        writeNode(children[childIndex], index);
+      }
     }
     encodedFilters.forEach(function() {
       addRecord(parent, 7, 0, 0xffffff, 0, identity, 1);
     });
   }
 
-  function render(stage, backgroundColor, resolution) {
+  function render(stage, backgroundColor, resolution, size, renderer) {
+    if (typeof stage.updateTransform === 'function') {
+      var previousParent = stage.parent;
+      stage.parent = stage._tempDisplayObjectParent;
+      try { stage.updateTransform(); } finally { stage.parent = previousParent; }
+    }
     count = 0;
+    filterTargets = new WeakMap();
     if (backgroundColor !== null) {
       addRecord(0xffffffff, 3, 0, backgroundColor, 0, identity, 1);
     }
     var rootParent = 0xffffffff;
     resolution = Math.max(0.000001, Number(resolution) || 1);
+    renderResolution = resolution;
+    renderOwner = renderer;
+    viewport = size;
     if (resolution !== 1) {
       rootParent = addRecord(0xffffffff, 0, 0, 0xffffff, 0,
         { a: resolution, b: 0, c: 0, d: resolution, tx: 0, ty: 0 }, 1);
     }
     writeNode(stage, rootParent);
-    NativeHost.scene.submit(packetVersion, metadata, values, count);
+    if (NativeHost.scene.submit(packetVersion, metadata, values, count) === false) {
+      throw new Error('native Pixi 5 scene submission rejected');
+    }
   }
 
   globalThis.pmjsPixi5RenderScene = render;

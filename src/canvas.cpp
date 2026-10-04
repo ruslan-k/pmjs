@@ -22,6 +22,7 @@ namespace pmjs {
 namespace {
 constexpr std::uint32_t indexMask = 0xffffU;
 constexpr std::uint16_t generationMask = 0x7fffU;
+constexpr std::size_t maxCanvasDependencyDepth = 16;
 
 
 }
@@ -535,9 +536,9 @@ struct CanvasStore::FontState {
     bool hasInk = false;
     for (const auto& glyph : layout.shaped.glyphs) {
       auto* strike = strikes[glyph.strikeId].get();
-      layout.metrics.fontAscent = std::max(layout.metrics.fontAscent,
+      layout.metrics.fontAscent = std::max<double>(layout.metrics.fontAscent,
         static_cast<int>(strike->face->size->metrics.ascender >> 6));
-      layout.metrics.fontDescent = std::max(layout.metrics.fontDescent,
+      layout.metrics.fontDescent = std::max<double>(layout.metrics.fontDescent,
         -static_cast<int>(strike->face->size->metrics.descender >> 6));
       const auto* metrics = getOrLoadMetrics(strike, glyph.glyphIndex);
       if (!metrics) return nullptr;
@@ -547,9 +548,9 @@ struct CanvasStore::FontState {
         minimumX = hasInk ? std::min(minimumX, left) : left;
         maximumX = hasInk ? std::max(maximumX, left + metrics->metricWidth) :
                            left + metrics->metricWidth;
-        layout.metrics.actualAscent = hasInk ? std::max(layout.metrics.actualAscent, top) : top;
+        layout.metrics.actualAscent = hasInk ? std::max<double>(layout.metrics.actualAscent, top) : top;
         layout.metrics.actualDescent = hasInk ?
-          std::max(layout.metrics.actualDescent, metrics->metricHeight - top) :
+          std::max<double>(layout.metrics.actualDescent, metrics->metricHeight - top) :
           metrics->metricHeight - top;
         hasInk = true;
       }
@@ -649,9 +650,24 @@ struct CanvasStore::FontState {
 };
 
 CanvasStore::CanvasStore(ImageStore& images)
-    : images_(images), fonts_(std::make_unique<FontState>()) {}
+    : images_(images), fonts_(std::make_unique<FontState>()) {
+  if (textBackend_.skia()) fonts_->telemetryEnabled = false;
+}
 
-CanvasStore::~CanvasStore() = default;
+CanvasStore::~CanvasStore() {
+  for (auto& surface : surfaces_) {
+    if (surface.image) images_.release(surface.image);
+  }
+}
+
+CanvasStore::Content::Content(CanvasStore& store) : owner(store) {
+  owner.contents_.insert(this);
+}
+
+CanvasStore::Content::~Content() {
+  owner.discardCommands(*this);
+  owner.contents_.erase(this);
+}
 
 void CanvasStore::releaseCommandDependencies(CanvasCommand& cmd) {
   std::visit([this](auto& c) {
@@ -665,15 +681,16 @@ void CanvasStore::releaseCommandDependencies(CanvasCommand& cmd) {
   }, cmd);
 }
 
-void CanvasStore::discardCommands(Surface& surface) {
+void CanvasStore::discardCommands(Content& surface) {
   for (auto& cmd : surface.commands) {
     releaseCommandDependencies(cmd);
   }
   surface.commands.clear();
   surface.queuedCommandBytes = 0;
+  surface.dependencyDepth = 0;
 }
 
-void CanvasStore::fillRectNow(Surface& surface, int x, int y, int width, int height,
+void CanvasStore::fillRectNow(Content& surface, int x, int y, int width, int height,
                               std::uint32_t rgba) {
   const int x0 = std::clamp(x, 0, surface.width);
   const int y0 = std::clamp(y, 0, surface.height);
@@ -725,12 +742,12 @@ void CanvasStore::fillRectAdditiveNow(Surface& surface, int x, int y,
   markDirty(surface, x0, y0, x1 - x0, y1 - y0);
 }
 
-void CanvasStore::clearNow(Surface& surface) {
+void CanvasStore::clearNow(Content& surface) {
   std::fill(surface.pixels.begin(), surface.pixels.end(), 0);
   markDirty(surface, 0, 0, surface.width, surface.height);
 }
 
-void CanvasStore::clearRectNow(Surface& surface, int x, int y, int width, int height) {
+void CanvasStore::clearRectNow(Content& surface, int x, int y, int width, int height) {
   const int x0 = std::clamp(x, 0, surface.width);
   const int y0 = std::clamp(y, 0, surface.height);
   const int x1 = static_cast<int>(std::clamp<std::int64_t>(
@@ -747,30 +764,17 @@ void CanvasStore::clearRectNow(Surface& surface, int x, int y, int width, int he
   markDirty(surface, x0, y0, x1 - x0, y1 - y0);
 }
 
-bool CanvasStore::drawImageNow(Surface& destinationSurface, std::uint32_t source,
-                               int sourceX, int sourceY,
-                               int sourceWidth, int sourceHeight,
-                               int destinationX, int destinationY,
-                               int destinationWidth, int destinationHeight,
-                               float alpha) {
+bool CanvasStore::drawImageNow(Content& destinationSurface, const DrawImageCmd& command) {
+  const auto& [source, canvas, sourceX, sourceY, sourceWidth, sourceHeight,
+               destinationX, destinationY, destinationWidth, destinationHeight, alpha] = command;
   struct PixelView {
     int width;
     int height;
     const std::uint8_t* rgba;
   } sourcePixels{};
-  std::vector<std::uint8_t> sourceSnapshot;
-  if (auto* sourceSurface = lookup(source)) {
-    if (sourceSurface->state == SurfaceState::Deferred) {
-      realizeSurface(*sourceSurface);
-    }
-    if (sourceSurface == &destinationSurface) {
-      sourceSnapshot = sourceSurface->pixels;
-      sourcePixels = {sourceSurface->width, sourceSurface->height,
-                      sourceSnapshot.data()};
-    } else {
-      sourcePixels = {sourceSurface->width, sourceSurface->height,
-                      sourceSurface->pixels.data()};
-    }
+  if (canvas) {
+    if (!realizeContent(*canvas)) return false;
+    sourcePixels = {canvas->width, canvas->height, canvas->pixels.data()};
   } else {
     const auto* decoded = images_.readPixels(source);
     if (!decoded) return false;
@@ -805,10 +809,25 @@ bool CanvasStore::drawImageNow(Surface& destinationSurface, std::uint32_t source
   return true;
 }
 
-bool CanvasStore::drawTextNow(Surface& surface, const std::vector<std::filesystem::path>& fontPaths,
-                              const std::string& text, int x, int y, int pixelSize,
-                              std::uint32_t rgba, int strokeWidth) {
-  auto layout = fonts_->layoutText(fontPaths, text, pixelSize);
+bool CanvasStore::drawTextNow(Content& surface, const std::vector<std::filesystem::path>& fontPaths,
+                              const std::string& text, float x, float y, float pixelSize,
+                              std::uint32_t rgba, float strokeWidth, const CanvasTextStyle& style) {
+  if (textBackend_.skia()) {
+    int bounds[4];
+    if (!textBackend_.draw(fontPaths, text, x, y, pixelSize, rgba, strokeWidth, style,
+        surface.pixels, surface.width, surface.height, bounds)) return false;
+    if (bounds[2] > bounds[0] && bounds[3] > bounds[1])
+      markDirty(surface, bounds[0], bounds[1], bounds[2] - bounds[0], bounds[3] - bounds[1]);
+    return true;
+  }
+  // The legacy web facade rounded font sizes/positions/widths before this
+  // integer backend. MV's shortcut also rounded its outline before the helper
+  // floored it. Preserve those effective contracts explicitly at this boundary.
+  const int legacySize = static_cast<int>(std::floor(pixelSize + 0.5f));
+  const int legacyStroke = static_cast<int>(std::floor(strokeWidth + 0.5f));
+  const int legacyX = static_cast<int>(std::clamp(std::floor(x + 0.5f), -1000000000.0f, 1000000000.0f));
+  const int legacyY = static_cast<int>(std::clamp(std::floor(y + 0.5f), -1000000000.0f, 1000000000.0f));
+  auto layout = fonts_->layoutText(fontPaths, text, legacySize);
   if (!layout) return false;
   double penX = 0;
   double penY = 0;
@@ -821,7 +840,7 @@ bool CanvasStore::drawTextNow(Surface& surface, const std::vector<std::filesyste
 
   for (const auto& glyph : layout->shaped.glyphs) {
     const auto item = fonts_->getOrLoadMask(fonts_->strikes[glyph.strikeId].get(),
-                                           glyph.glyphIndex, strokeWidth);
+                                           glyph.glyphIndex, legacyStroke);
     if (!item) {
       complete = false;
       break;
@@ -829,8 +848,8 @@ bool CanvasStore::drawTextNow(Surface& surface, const std::vector<std::filesyste
 
     const auto* mask = item->mask;
     if (mask && mask->width > 0 && mask->height > 0 && !mask->coverage.empty()) {
-      const int originX = x + static_cast<int>(std::lround(penX + glyph.xOffset)) + mask->bitmapLeft;
-      const int originY = y - static_cast<int>(std::lround(penY + glyph.yOffset)) - mask->bitmapTop;
+      const int originX = legacyX + static_cast<int>(std::lround(penX + glyph.xOffset)) + mask->bitmapLeft;
+      const int originY = legacyY - static_cast<int>(std::lround(penY + glyph.yOffset)) - mask->bitmapTop;
       dirtyLeft = std::min(dirtyLeft, originX);
       dirtyTop = std::min(dirtyTop, originY);
       dirtyRight = std::max(dirtyRight, originX + mask->width);
@@ -873,7 +892,7 @@ bool CanvasStore::drawTextNow(Surface& surface, const std::vector<std::filesyste
   return complete;
 }
 
-bool CanvasStore::blurNow(Surface& surface) {
+bool CanvasStore::blurNow(Content& surface) {
   const int width = surface.width;
   const int height = surface.height;
   if (width <= 0 || height <= 0) return true;
@@ -935,10 +954,9 @@ bool CanvasStore::blurNow(Surface& surface) {
   return true;
 }
 
-bool CanvasStore::realizeSurface(Surface& surface) {
-  if (surface.state == SurfaceState::Realized) return true;
-  if (surface.state == SurfaceState::Realizing) return false;
-  surface.state = SurfaceState::Realizing;
+bool CanvasStore::realizeContent(Content& surface) {
+  if (surface.state == ContentState::Realized) return true;
+  if (surface.state == ContentState::Realizing) return false;
 
   const std::size_t expected = static_cast<std::size_t>(surface.width) *
                                static_cast<std::size_t>(surface.height) * 4U;
@@ -968,7 +986,10 @@ bool CanvasStore::realizeSurface(Surface& surface) {
       } else if constexpr (std::is_same_v<T, BlurCmd>) {
         blurNow(surface);
       }
-    }, cmd);
+    }
+  } catch (...) {
+    surface.state = ContentState::Deferred;
+    throw;
   }
 
   const auto image = images_.createRgba(surface.width, surface.height,
@@ -993,30 +1014,28 @@ bool CanvasStore::realizeSurface(Surface& surface) {
   }
   surface.dirtyX0 = surface.dirtyY0 = 0;
   surface.dirtyX1 = surface.dirtyY1 = 0;
-
   peakCpuBytes_ = std::max(peakCpuBytes_, cpuBytes());
   return true;
 }
 
 bool CanvasStore::realize(CanvasHandle handle) {
-  auto* surface = lookup(handle);
-  return surface && realizeSurface(*surface);
+  auto* surface = lookupContent(handle);
+  return surface && realizeContent(*surface);
 }
 
 std::optional<ImageHandle> CanvasStore::prepareImage(CanvasHandle handle) {
   auto* surface = lookup(handle);
-  if (!surface) return std::nullopt;
-  if (surface->state == SurfaceState::Deferred) {
-    if (!realizeSurface(*surface)) return std::nullopt;
+  if (!surface || !realizeContent(*surface->content) || !uploadSurface(*surface)) {
+    return std::nullopt;
   }
   return surface->image;
 }
 
 std::optional<std::vector<std::uint8_t>> CanvasStore::encodePng(
     CanvasHandle handle) {
-  auto* surface = lookup(handle);
+  auto* surface = lookupContent(handle);
   if (!surface) return std::nullopt;
-  if (surface->state == SurfaceState::Deferred && !realizeSurface(*surface)) {
+  if (surface->state == ContentState::Deferred && !realizeContent(*surface)) {
     return std::nullopt;
   }
   png_image image{};
@@ -1062,6 +1081,40 @@ const CanvasStore::Surface* CanvasStore::lookup(CanvasHandle handle) const {
   return surface.live && surface.generation == generation ? &surface : nullptr;
 }
 
+CanvasStore::Content* CanvasStore::lookupContent(CanvasHandle handle) const {
+  const auto* surface = lookup(handle);
+  return surface ? surface->content.get() : nullptr;
+}
+
+CanvasStore::Content* CanvasStore::writableContent(CanvasHandle handle) {
+  auto* surface = lookup(handle);
+  if (!surface) return nullptr;
+  if (surface->content.use_count() != 1) {
+    const auto& old = *surface->content;
+    auto copy = std::make_shared<Content>(*this);
+    copy->width = old.width;
+    copy->height = old.height;
+    copy->state = old.state;
+    copy->pixels = old.pixels;
+    auto commands = old.commands;
+    for (const auto& command : commands) {
+      if (const auto* draw = std::get_if<DrawImageCmd>(&command); draw && draw->source) {
+        images_.retain(draw->source);
+      }
+    }
+    copy->commands = std::move(commands);
+    copy->queuedCommandBytes = old.queuedCommandBytes;
+    copy->dependencyDepth = old.dependencyDepth;
+    copy->dirtyX0 = old.dirtyX0;
+    copy->dirtyY0 = old.dirtyY0;
+    copy->dirtyX1 = old.dirtyX1;
+    copy->dirtyY1 = old.dirtyY1;
+    surface->content = std::move(copy);
+    peakCpuBytes_ = std::max(peakCpuBytes_, cpuBytes());
+  }
+  return surface->content.get();
+}
+
 std::optional<CanvasInfo> CanvasStore::create(int width, int height) {
   const auto extent = checkedImageExtent(width, height);
   if (!extent) return std::nullopt;
@@ -1075,6 +1128,10 @@ std::optional<CanvasInfo> CanvasStore::create(int width, int height) {
     surfaces_.emplace_back();
   }
   auto& surface = surfaces_[index];
+  auto content = std::make_shared<Content>(*this);
+  content->width = width;
+  content->height = height;
+  surface.content = std::move(content);
   surface.image = 0;
   surface.width = width;
   surface.height = height;
@@ -1123,17 +1180,17 @@ std::optional<CanvasInfo> CanvasStore::createRgba(
   ++liveCount_;
   peakLiveCount_ = std::max(peakLiveCount_, liveCount_);
   peakCpuBytes_ = std::max(peakCpuBytes_, cpuBytes());
-  return CanvasInfo{makeHandle(index, surface.generation), width, height};
+  return canvas;
 }
 
 bool CanvasStore::fillRect(CanvasHandle handle, int x, int y, int width, int height,
                            std::uint32_t rgba) {
-  auto* surfacePointer = lookup(handle);
+  auto* surfacePointer = writableContent(handle);
   if (!surfacePointer) return false;
   auto& surface = *surfacePointer;
-  if (surface.state == SurfaceState::Deferred) {
+  if (surface.state == ContentState::Deferred) {
     if (surface.commands.size() >= 256 || surface.queuedCommandBytes >= 64 * 1024) {
-      if (!realizeSurface(surface)) return false;
+      if (!realizeContent(surface)) return false;
     } else {
       surface.commands.emplace_back(FillRectCmd{x, y, width, height, rgba});
       surface.queuedCommandBytes += sizeof(FillRectCmd);
@@ -1164,7 +1221,7 @@ bool CanvasStore::fillRadialGradient(
     float centerX, float centerY, float innerRadius, float outerRadius,
     const std::vector<float>& offsets,
     const std::vector<std::uint32_t>& colors, bool additive) {
-  auto* surface = lookup(handle);
+  auto* surface = writableContent(handle);
   if (!surface || offsets.empty() || offsets.size() != colors.size() ||
       !std::isfinite(centerX) || !std::isfinite(centerY) ||
       !std::isfinite(innerRadius) || !std::isfinite(outerRadius) ||
@@ -1175,7 +1232,7 @@ bool CanvasStore::fillRadialGradient(
         offset < previousOffset) return false;
     previousOffset = offset;
   }
-  if (surface->state == SurfaceState::Deferred && !realizeSurface(*surface)) return false;
+  if (surface->state == ContentState::Deferred && !realizeContent(*surface)) return false;
   const int left = std::clamp(x, 0, surface->width);
   const int top = std::clamp(y, 0, surface->height);
   const int right = static_cast<int>(std::clamp<std::int64_t>(
@@ -1213,9 +1270,9 @@ bool CanvasStore::fillRadialGradient(
 }
 
 bool CanvasStore::clear(CanvasHandle handle) {
-  auto* surface = lookup(handle);
+  auto* surface = writableContent(handle);
   if (!surface) return false;
-  if (surface->state == SurfaceState::Deferred) {
+  if (surface->state == ContentState::Deferred) {
     discardCommands(*surface);
     return true;
   }
@@ -1224,15 +1281,15 @@ bool CanvasStore::clear(CanvasHandle handle) {
 }
 
 bool CanvasStore::clearRect(CanvasHandle handle, int x, int y, int width, int height) {
-  auto* surface = lookup(handle);
+  auto* surface = writableContent(handle);
   if (!surface) return false;
-  if (surface->state == SurfaceState::Deferred) {
+  if (surface->state == ContentState::Deferred) {
     if (x <= 0 && y <= 0 && width >= surface->width && height >= surface->height) {
       discardCommands(*surface);
       return true;
     }
     if (surface->commands.size() >= 256 || surface->queuedCommandBytes >= 64 * 1024) {
-      if (!realizeSurface(*surface)) return false;
+      if (!realizeContent(*surface)) return false;
     } else {
       surface->commands.emplace_back(ClearRectCmd{x, y, width, height});
       surface->queuedCommandBytes += sizeof(ClearRectCmd);
@@ -1249,44 +1306,39 @@ bool CanvasStore::drawImage(CanvasHandle destination, std::uint32_t source,
                             int destinationX, int destinationY,
                             int destinationWidth, int destinationHeight,
                             float alpha) {
-  auto* destinationSurface = lookup(destination);
-  if (!destinationSurface || sourceWidth <= 0 || sourceHeight <= 0 ||
-      destinationWidth <= 0 || destinationHeight <= 0 || alpha < 0.0F ||
-      alpha > 1.0F) return false;
-
-  // Fallback rule: Canvas -> Canvas drawImage forces realization of destination
-  // and executes immediately to guarantee draw-time snapshot semantics.
+  if (sourceWidth <= 0 || sourceHeight <= 0 || destinationWidth <= 0 ||
+      destinationHeight <= 0 || !std::isfinite(alpha) || alpha < 0 || alpha > 1) return false;
+  DrawImageCmd command{source, {}, sourceX, sourceY, sourceWidth, sourceHeight,
+                       destinationX, destinationY, destinationWidth, destinationHeight, alpha};
   if ((source & canvasHandleTag) != 0) {
-    if (destinationSurface->state == SurfaceState::Deferred) {
-      if (!realizeSurface(*destinationSurface)) return false;
-    }
-    return drawImageNow(*destinationSurface, source, sourceX, sourceY,
-                        sourceWidth, sourceHeight, destinationX, destinationY,
-                        destinationWidth, destinationHeight, alpha);
+    const auto* sourceSurface = lookup(source);
+    if (!sourceSurface) return false;
+    // Capture before detaching the destination, including a self draw.
+    command.canvas = sourceSurface->content;
+    command.source = 0;
+  } else if (!images_.lookup(source)) {
+    return false;
   }
-
-  // Source is an ImageHandle: safe to defer if destination is deferred.
-  if (destinationSurface->state == SurfaceState::Deferred) {
+  auto* destinationSurface = writableContent(destination);
+  if (!destinationSurface) return false;
+  if (destinationSurface->state == ContentState::Deferred) {
+    const auto depth = command.canvas ? command.canvas->dependencyDepth + 1 : 0;
     if (destinationSurface->commands.size() >= 256 ||
-        destinationSurface->queuedCommandBytes >= 64 * 1024) {
-      if (!realizeSurface(*destinationSurface)) return false;
+        destinationSurface->queuedCommandBytes + sizeof(DrawImageCmd) > 64 * 1024 ||
+        depth > maxCanvasDependencyDepth) {
+      if (!realizeContent(*destinationSurface)) return false;
     } else {
-      if (!images_.retain(source)) return false;
-      destinationSurface->commands.emplace_back(DrawImageCmd{
-        source, sourceX, sourceY, sourceWidth, sourceHeight,
-        destinationX, destinationY, destinationWidth, destinationHeight, alpha
-      });
+      destinationSurface->commands.emplace_back(command);
+      if (command.source) images_.retain(command.source);
       destinationSurface->queuedCommandBytes += sizeof(DrawImageCmd);
+      destinationSurface->dependencyDepth = std::max(destinationSurface->dependencyDepth, depth);
       return true;
     }
   }
-
-  return drawImageNow(*destinationSurface, source, sourceX, sourceY,
-                      sourceWidth, sourceHeight, destinationX, destinationY,
-                      destinationWidth, destinationHeight, alpha);
+  return drawImageNow(*destinationSurface, command);
 }
 
-void CanvasStore::markDirty(Surface& surface, int x, int y, int width,
+void CanvasStore::markDirty(Content& surface, int x, int y, int width,
                             int height) {
   const int x0 = std::clamp(x, 0, surface.width);
   const int y0 = std::clamp(y, 0, surface.height);
@@ -1312,7 +1364,7 @@ void CanvasStore::markDirty(Surface& surface, int x, int y, int width,
   surface.dirtyY1 = std::max(surface.dirtyY1, y1);
 }
 
-void CanvasStore::blendPixel(Surface& surface, int x, int y, std::uint32_t rgba,
+void CanvasStore::blendPixel(Content& surface, int x, int y, std::uint32_t rgba,
                              std::uint8_t coverage) {
   if (x < 0 || y < 0 || x >= surface.width || y >= surface.height) return;
   const std::uint32_t colorAlpha = rgba & 0xffU;
@@ -1336,7 +1388,7 @@ void CanvasStore::blendPixel(Surface& surface, int x, int y, std::uint32_t rgba,
   surface.pixels[offset + 3] = static_cast<std::uint8_t>(outputAlpha);
 }
 
-void CanvasStore::blendPixelAdditive(Surface& surface, int x, int y,
+void CanvasStore::blendPixelAdditive(Content& surface, int x, int y,
                                      std::uint32_t rgba) {
   if (x < 0 || y < 0 || x >= surface.width || y >= surface.height) return;
   const std::uint32_t sourceAlpha = rgba & 0xffU;
@@ -1360,53 +1412,63 @@ void CanvasStore::blendPixelAdditive(Surface& surface, int x, int y,
 
 bool CanvasStore::drawText(CanvasHandle handle,
                            const std::vector<std::filesystem::path>& fontPaths,
-                           const std::string& text, int x, int y, int pixelSize,
-                           std::uint32_t rgba, int strokeWidth) {
-  auto* surface = lookup(handle);
-  if (!surface || pixelSize <= 0 || pixelSize > 256 || fontPaths.empty() ||
+                           const std::string& text, float x, float y, float pixelSize,
+                           std::uint32_t rgba, float strokeWidth, const CanvasTextStyle& style) {
+  auto* surface = writableContent(handle);
+  if (!surface || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(pixelSize) ||
+      !std::isfinite(strokeWidth) || pixelSize <= 0 || pixelSize > 256 || fontPaths.empty() ||
       strokeWidth < 0 || strokeWidth > 32) return false;
-  if (surface->state == SurfaceState::Deferred) {
+  if (surface->state == ContentState::Deferred) {
     const std::size_t estimatedBytes = sizeof(DrawTextCmd) + text.capacity() +
       fontPaths.capacity() * sizeof(std::filesystem::path);
     if (surface->commands.size() >= 256 ||
         surface->queuedCommandBytes + estimatedBytes >= 64 * 1024) {
-      if (!realizeSurface(*surface)) return false;
+      if (!realizeContent(*surface)) return false;
     } else {
       surface->commands.emplace_back(DrawTextCmd{
-        fontPaths, text, x, y, pixelSize, rgba, strokeWidth
+        fontPaths, text, x, y, pixelSize, rgba, strokeWidth, style
       });
       surface->queuedCommandBytes += estimatedBytes;
       return true;
     }
   }
-  return drawTextNow(*surface, fontPaths, text, x, y, pixelSize, rgba, strokeWidth);
+  return drawTextNow(*surface, fontPaths, text, x, y, pixelSize, rgba, strokeWidth, style);
 }
 
 std::optional<double> CanvasStore::measureText(
     const std::vector<std::filesystem::path>& fontPaths, const std::string& text,
-    int pixelSize) const {
-  auto layout = fonts_->layoutText(fontPaths, text, pixelSize);
+    float pixelSize, const CanvasTextStyle& style) const {
+  if (textBackend_.skia()) {
+    auto metrics = const_cast<TextBackend&>(textBackend_).measure(fontPaths, text, pixelSize, style);
+    return metrics ? std::optional<double>(metrics->width) : std::nullopt;
+  }
+  if (!std::isfinite(pixelSize) || pixelSize <= 0 || pixelSize > 256) return std::nullopt;
+  auto layout = fonts_->layoutText(fontPaths, text, static_cast<int>(std::floor(pixelSize + 0.5f)));
   if (!layout) return std::nullopt;
   return layout->metrics.width;
 }
 
 std::optional<CanvasTextMetrics> CanvasStore::measureTextMetrics(
     const std::vector<std::filesystem::path>& fontPaths, const std::string& text,
-    int pixelSize) const {
-  auto layout = fonts_->layoutText(fontPaths, text, pixelSize);
+    float pixelSize, const CanvasTextStyle& style) const {
+  if (textBackend_.skia())
+    return const_cast<TextBackend&>(textBackend_).measure(fontPaths, text, pixelSize, style);
+  if (!std::isfinite(pixelSize) || pixelSize <= 0 || pixelSize > 256) return std::nullopt;
+  auto layout = fonts_->layoutText(fontPaths, text, static_cast<int>(std::floor(pixelSize + 0.5f)));
   if (!layout) return std::nullopt;
   return layout->metrics;
 }
 
 bool CanvasStore::canLoadFont(const std::filesystem::path& fontPath) {
+  if (textBackend_.skia()) return textBackend_.canLoad(fontPath);
   return fonts_->face(fontPath, 16) != nullptr;
 }
 
 std::optional<std::uint32_t> CanvasStore::pixel(CanvasHandle handle,
                                                 int x, int y) {
-  auto* surface = lookup(handle);
+  auto* surface = lookupContent(handle);
   if (!surface) return std::nullopt;
-  if (surface->state == SurfaceState::Deferred && !realizeSurface(*surface)) {
+  if (surface->state == ContentState::Deferred && !realizeContent(*surface)) {
     return std::nullopt;
   }
   if (x < 0 || y < 0 || x >= surface->width || y >= surface->height) {
@@ -1421,11 +1483,11 @@ std::optional<std::uint32_t> CanvasStore::pixel(CanvasHandle handle,
 }
 
 bool CanvasStore::blur(CanvasHandle handle) {
-  auto* surface = lookup(handle);
+  auto* surface = writableContent(handle);
   if (!surface) return false;
-  if (surface->state == SurfaceState::Deferred) {
+  if (surface->state == ContentState::Deferred) {
     if (surface->commands.size() >= 256 || surface->queuedCommandBytes >= 64 * 1024) {
-      if (!realizeSurface(*surface)) return false;
+      if (!realizeContent(*surface)) return false;
     } else {
       surface->commands.emplace_back(BlurCmd{});
       surface->queuedCommandBytes += sizeof(BlurCmd);
@@ -1438,12 +1500,12 @@ bool CanvasStore::blur(CanvasHandle handle) {
 std::optional<ImagePixels> CanvasStore::readPixels(CanvasHandle handle, int x,
                                                    int y, int width,
                                                    int height) {
-  auto* surface = lookup(handle);
+  auto* surface = lookupContent(handle);
   const auto extent = checkedImageExtent(width, height);
   if (!surface || !extent) {
     return std::nullopt;
   }
-  if (surface->state == SurfaceState::Deferred && !realizeSurface(*surface)) {
+  if (surface->state == ContentState::Deferred && !realizeContent(*surface)) {
     return std::nullopt;
   }
   ImagePixels result;
@@ -1476,12 +1538,12 @@ std::optional<ImagePixels> CanvasStore::readPixels(CanvasHandle handle, int x,
 bool CanvasStore::writePixels(CanvasHandle handle, int x, int y, int width,
                               int height,
                               const std::vector<std::uint8_t>& pixels) {
-  auto* surface = lookup(handle);
+  auto* surface = writableContent(handle);
   const std::size_t expected = width > 0 && height > 0
     ? static_cast<std::size_t>(width) * height * 4U : 0;
   if (!surface || expected == 0 || pixels.size() != expected) return false;
   // writePixels forces realization immediately to avoid queuing megabytes of pixels
-  if (surface->state == SurfaceState::Deferred && !realizeSurface(*surface)) {
+  if (surface->state == ContentState::Deferred && !realizeContent(*surface)) {
     return false;
   }
   for (int row = 0; row < height; ++row) {
@@ -1500,6 +1562,25 @@ bool CanvasStore::writePixels(CanvasHandle handle, int x, int y, int width,
                 surface->pixels.data() + destinationOffset);
   }
   markDirty(*surface, x, y, width, height);
+  return true;
+}
+
+bool CanvasStore::replacePixels(CanvasHandle handle,
+                                std::vector<std::uint8_t> pixels) {
+  auto* target = lookup(handle);
+  if (!target) return false;
+  const auto extent = checkedImageExtent(target->content->width,
+                                         target->content->height);
+  if (!extent || pixels.size() != extent->rgbaBytes) return false;
+
+  auto replacement = std::make_shared<Content>(*this);
+  replacement->width = target->content->width;
+  replacement->height = target->content->height;
+  replacement->state = ContentState::Realized;
+  replacement->pixels = std::move(pixels);
+  markDirty(*replacement, 0, 0, replacement->width, replacement->height);
+  target->content = std::move(replacement);
+  peakCpuBytes_ = std::max(peakCpuBytes_, cpuBytes());
   return true;
 }
 
@@ -1532,14 +1613,43 @@ bool CanvasStore::release(CanvasHandle handle) {
 }
 
 std::optional<CanvasInfo> CanvasStore::info(CanvasHandle handle) const {
-  const auto* surface = lookup(handle);
+  const auto* surface = lookupContent(handle);
   if (!surface) return std::nullopt;
   return CanvasInfo{handle, surface->width, surface->height};
 }
 
 std::optional<ImageHandle> CanvasStore::imageHandle(CanvasHandle handle) const {
   const auto* surface = lookup(handle);
-  return surface ? std::optional<ImageHandle>{surface->image} : std::nullopt;
+  return surface && surface->image ? std::optional<ImageHandle>{surface->image}
+                                   : std::nullopt;
+}
+
+bool CanvasStore::uploadSurface(Surface& target) {
+  auto& surface = *target.content;
+  if (target.image && (surface.dirtyX1 <= surface.dirtyX0 || surface.dirtyY1 <= surface.dirtyY0)) return true;
+  const int x = target.image ? surface.dirtyX0 : 0;
+  const int y = target.image ? surface.dirtyY0 : 0;
+  const int width = target.image ? surface.dirtyX1 - x : surface.width;
+  const int height = target.image ? surface.dirtyY1 - y : surface.height;
+  std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4);
+  for (int row = 0; row < height; ++row) for (int column = 0; column < width; ++column) {
+    const auto source = (static_cast<std::size_t>(y + row) * surface.width + x + column) * 4;
+    const auto destination = (static_cast<std::size_t>(row) * width + column) * 4;
+    const unsigned alpha = surface.pixels[source + 3];
+    for (int channel = 0; channel < 3; ++channel)
+      pixels[destination + channel] = (surface.pixels[source + channel] * alpha + 127) / 255;
+    pixels[destination + 3] = alpha;
+  }
+  if (target.image == 0) {
+    const auto image = images_.createRgba(surface.width, surface.height, pixels.data(), true);
+    if (!image) return false;
+    target.image = image->handle;
+  } else if (!images_.updateRgbaRegion(target.image, x, y, width, height, pixels.data(), width)) {
+    return false;
+  }
+  surface.dirtyX0 = surface.dirtyY0 = 0;
+  surface.dirtyX1 = surface.dirtyY1 = 0;
+  return true;
 }
 
 void CanvasStore::uploadDirty() {
@@ -1571,14 +1681,14 @@ std::size_t CanvasStore::cpuBytes() const {
 
 std::size_t CanvasStore::capacityBytes() const {
   std::size_t result = 0;
-  for (const auto& surface : surfaces_) result += surface.pixels.capacity();
+  for (const auto* content : contents_) result += content->pixels.capacity();
   return result;
 }
 
 std::size_t CanvasStore::deferredCanvasCount() const {
   std::size_t count = 0;
   for (const auto& surface : surfaces_) {
-    if (surface.live && surface.state == SurfaceState::Deferred) ++count;
+    if (surface.live && surface.content->state == ContentState::Deferred) ++count;
   }
   return count;
 }
@@ -1586,28 +1696,20 @@ std::size_t CanvasStore::deferredCanvasCount() const {
 std::size_t CanvasStore::realizedCanvasCount() const {
   std::size_t count = 0;
   for (const auto& surface : surfaces_) {
-    if (surface.live && surface.state == SurfaceState::Realized) ++count;
+    if (surface.live && surface.content->state == ContentState::Realized) ++count;
   }
   return count;
 }
 
 std::size_t CanvasStore::deferredCommandCount() const {
   std::size_t count = 0;
-  for (const auto& surface : surfaces_) {
-    if (surface.live && surface.state == SurfaceState::Deferred) {
-      count += surface.commands.size();
-    }
-  }
+  for (const auto* content : contents_) count += content->commands.size();
   return count;
 }
 
 std::size_t CanvasStore::deferredCommandBytes() const {
   std::size_t bytes = 0;
-  for (const auto& surface : surfaces_) {
-    if (surface.live && surface.state == SurfaceState::Deferred) {
-      bytes += surface.queuedCommandBytes;
-    }
-  }
+  for (const auto* content : contents_) bytes += content->queuedCommandBytes;
   return bytes;
 }
 
@@ -1616,6 +1718,7 @@ CanvasTextStats CanvasStore::glyphCacheStats() const {
 }
 
 void CanvasStore::setGlyphCacheLimits(std::size_t maxBytes, std::size_t maxEntries) {
+  if (textBackend_.skia()) { textBackend_.limits(maxBytes, maxEntries); return; }
   fonts_->setLimits(maxBytes, maxEntries);
 }
 

@@ -44,8 +44,12 @@ function gameReadPath(path) {
 function gameDirectoryEntries(path, entries) {
   var aliases = PMJS.config.virtualFiles &&
     PMJS.config.virtualFiles.directoryEntryAliases || {};
-  var directory = normalizePath(path).replace(/\/$/, '').split('/').pop().toLowerCase();
-  var extensions = aliases[directory];
+  var directories = normalizePath(path).replace(/\/$/, '').toLowerCase().split('/');
+  var extensions;
+  for (var index = directories.length - 1; index >= 0; index--) {
+    extensions = aliases[directories[index]];
+    if (extensions) break;
+  }
   if (!extensions) return entries;
   return entries.map(function(name) {
     var extension = pathModule.extname(name);
@@ -82,24 +86,26 @@ var pathModule = {
 
 function fsReadContents(path, options) {
   var writable = writablePath(path);
-  var result = writable !== null && NativeHost.storage
-    ? NativeHost.storage.readText(writable)
-    : NativeHost.fs.readText(gameReadPath(path));
+  var encoding = typeof options === 'string' ? options : options && options.encoding;
+  var host = writable !== null && NativeHost.storage ? NativeHost.storage : NativeHost.fs;
+  var resolved = writable !== null && NativeHost.storage ? writable : gameReadPath(path);
+  var result = host.readBytes(resolved);
   var missingFiles = PMJS.config.missingTextFiles || {};
   if (result === null && writable !== null &&
       Object.prototype.hasOwnProperty.call(missingFiles, writable)) {
-    result = missingFiles[writable];
+    result = Buffer.from(String(missingFiles[writable]), 'utf8');
   }
-  if (result === null) throw new Error('ENOENT: ' + path);
-  var encoding = typeof options === 'string' ? options : options && options.encoding;
-  if (encoding) return result;
-  if (globalThis.Buffer && typeof Buffer.from === 'function') return Buffer.from(result);
-  // Large text resources are commonly consumed only through toString().
-  return {
-    length: result.length,
-    toString: function() { return result; }
-  };
+  if (result === null) {
+    var error = new Error('ENOENT: ' + path);
+    error.code = 'ENOENT';
+    throw error;
+  }
+  var buffer = ArrayBuffer.isView(result)
+    ? Buffer.from(result.buffer, result.byteOffset, result.byteLength)
+    : Buffer.from(result);
+  return encoding ? buffer.toString(encoding) : Buffer.from(buffer);
 }
+
 function FsReadStream(path, options) {
   this.path = path; this.options = options || {}; this.readable = true;
   this.destroyed = false; this._listeners = Object.create(null);
@@ -169,10 +175,19 @@ var fsModule = {
     });
   },
   createReadStream: function(path, options) { return new FsReadStream(path, options); },
-  writeFileSync: function(path, contents) {
+  writeFileSync: function(path, contents, options) {
     var writable = writablePath(path);
-    if (writable === null || !NativeHost.storage) throw new Error('EACCES: ' + path);
-    NativeHost.storage.writeText(writable, contents);
+    var host = writable !== null ? NativeHost.storage : NativeHost.fs;
+    if (!host) throw new Error('EACCES: ' + path);
+    var encoding = typeof options === 'string' ? options : options && options.encoding;
+    var bytes = ArrayBuffer.isView(contents)
+      ? Buffer.from(contents.buffer, contents.byteOffset, contents.byteLength)
+      : Buffer.from(String(contents), encoding || 'utf8');
+    var resolved = writable !== null ? writable : gameReadPath(path);
+    if (typeof host.writeBytes === 'function') host.writeBytes(resolved, bytes);
+    else if (writable !== null && typeof contents === 'string' && (!encoding || encoding === 'utf8')) {
+      host.writeText(resolved, contents);
+    } else throw new Error('filesystem byte writes are unavailable');
   },
   writeFile: function(path, contents, options, callback) {
     if (typeof options === 'function') { callback = options; options = null; }
@@ -180,10 +195,23 @@ var fsModule = {
     try { this.writeFileSync(path, contents, options); } catch (caught) { error = caught; }
     PMJS.tasks.enqueue(function() { if (callback) callback(error); });
   },
-  mkdirSync: function(path) {
+  appendFileSync: function(path, contents, options) {
+    var previous;
+    try { previous = fsReadContents(path); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      previous = Buffer.alloc(0);
+    }
+    var encoding = typeof options === 'string' ? options : options && options.encoding;
+    var bytes = ArrayBuffer.isView(contents)
+      ? Buffer.from(contents.buffer, contents.byteOffset, contents.byteLength)
+      : Buffer.from(String(contents), encoding || 'utf8');
+    fsModule.writeFileSync(path, Buffer.concat([previous, bytes]));
+  },
+  mkdirSync: function(path, options) {
     var writable = writablePath(path);
-    if (writable === null || !NativeHost.storage) throw new Error('EACCES: ' + path);
-    if (writable !== '') NativeHost.storage.makeDirectory(writable);
+    var host = writable !== null ? NativeHost.storage : NativeHost.fs;
+    if (!host) throw new Error('EACCES: ' + path);
+    if (writable !== '') host.makeDirectory(writable !== null ? writable : gamePath(path), options);
   },
   mkdir: function(path, options, callback) {
     if (typeof options === 'function') { callback = options; options = null; }
@@ -193,8 +221,9 @@ var fsModule = {
   },
   unlinkSync: function(path) {
     var writable = writablePath(path);
-    if (writable === null || !NativeHost.storage) throw new Error('EACCES: ' + path);
-    NativeHost.storage.remove(writable);
+    var host = writable !== null ? NativeHost.storage : NativeHost.fs;
+    if (!host) throw new Error('EACCES: ' + path);
+    host.remove(writable !== null ? writable : gameReadPath(path));
   },
   unlink: function(path, callback) {
     var error = null;
@@ -204,10 +233,14 @@ var fsModule = {
   renameSync: function(from, to) {
     var source = writablePath(from);
     var destination = writablePath(to);
-    if (source === null || destination === null || !NativeHost.storage) {
-      throw new Error('EACCES: ' + from);
+    if ((source === null) !== (destination === null)) {
+      var error = new Error('EXDEV: ' + from);
+      error.code = 'EXDEV';
+      throw error;
     }
-    NativeHost.storage.rename(source, destination);
+    var host = source !== null ? NativeHost.storage : NativeHost.fs;
+    host.rename(source !== null ? source : gameReadPath(from),
+      destination !== null ? destination : gameReadPath(to));
   },
   rename: function(from, to, callback) {
     var error = null;
@@ -224,14 +257,27 @@ var fsModule = {
   },
   statSync: function(path) {
     var writable = writablePath(path);
+    var exists, directory;
     if (writable !== null && NativeHost.storage) {
-      if (writable !== '' && !NativeHost.storage.exists(writable)) throw new Error('ENOENT: ' + path);
-      return { isDirectory: function() {
-        return writable === '' || NativeHost.storage.isDirectory(writable);
-      } };
+      exists = writable === '' || NativeHost.storage.exists(writable);
+      directory = exists && (writable === '' || NativeHost.storage.isDirectory(writable));
+    } else {
+      var resolved = gameReadPath(path);
+      exists = NativeHost.fs.exists(resolved);
+      directory = exists && NativeHost.fs.isDirectory(resolved);
     }
-    var resolved = gamePath(path);
-    if (!NativeHost.fs.exists(resolved)) throw new Error('ENOENT: ' + path);
-    return { isDirectory: function() { return NativeHost.fs.isDirectory(resolved); } };
+    if (!exists) {
+      var error = new Error('ENOENT: ' + path);
+      error.code = 'ENOENT';
+      throw error;
+    }
+    return { isDirectory: function() { return directory; } };
+  },
+  stat: function(path, options, callback) {
+    if (typeof options === 'function') { callback = options; options = null; }
+    if (typeof callback !== 'function') throw new TypeError('stat requires a callback');
+    var result, error = null;
+    try { result = fsModule.statSync(path, options); } catch (caught) { error = caught; }
+    PMJS.tasks.enqueue(function() { callback(error, result); });
   }
 };

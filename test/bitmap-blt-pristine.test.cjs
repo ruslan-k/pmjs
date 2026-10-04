@@ -134,6 +134,11 @@ function setupEnvironment({ config = {}, env = {} } = {}) {
     this._setDirty();
   };
 
+  MockBitmap.prototype.blur = function() {
+    this._context.fillRect(0, 0, this.width, this.height);
+    this._setDirty();
+  };
+
   MockBitmap.prototype.fillAll = function(color) {
     this.fillRect(0, 0, this.width, this.height, color);
   };
@@ -326,7 +331,7 @@ test('hue-modified source fallback: delegates to stock blt when source has hue o
   assert.equal(dst2.__canvas.drawCalls[0].img, src2.__canvas, 'must draw from source canvas');
 });
 
-test('optimization disabled: delegates to stock blt when disabled via PMJS_DISABLE_OPT or port config', () => {
+test('optimization disabled: delegates to stock blt when disabled via PMJS_DISABLE_OPT or configuration', () => {
   // Test via PMJS_DISABLE_OPT
   {
     const { Bitmap, PMJS, getStockBltCalls } = setupEnvironment({
@@ -354,7 +359,7 @@ test('optimization disabled: delegates to stock blt when disabled via PMJS_DISAB
       config: { disableOptimizations: ['bitmap.pristine-image-blt'] }
     });
     assert.equal(PMJS.optimizations.isEnabled('bitmap.pristine-image-blt'), false);
-    assert.equal(PMJS.optimizations.reason('bitmap.pristine-image-blt'), 'disabled by port');
+    assert.equal(PMJS.optimizations.reason('bitmap.pristine-image-blt'), 'disabled by configuration');
 
     const dst = new Bitmap(100, 100);
     const src = new Bitmap(100, 100);
@@ -363,7 +368,7 @@ test('optimization disabled: delegates to stock blt when disabled via PMJS_DISAB
     assert.equal(src.__canvas, null);
     dst.blt(src, 0, 0, 50, 50, 0, 0, 50, 50);
 
-    assert.equal(getStockBltCalls(), 1, 'stock blt must be called when optimization disabled by port');
+    assert.equal(getStockBltCalls(), 1, 'stock blt must be called when optimization disabled by configuration');
     assert.ok(src.__canvas, 'source __canvas materialized by stock blt');
     assert.equal(dst.__canvas.drawCalls.length, 1);
     assert.equal(dst.__canvas.drawCalls[0].img, src.__canvas);

@@ -13,6 +13,7 @@ namespace pmjs {
 
 struct PreparedAudioAsset : DecodedAudio {
   double sourceDuration = 0;
+  int sourceChannels = 0;
 };
 
 struct VoiceMixState {
@@ -21,15 +22,17 @@ struct VoiceMixState {
   double phase = 0;
   std::uint64_t positionFrame = 0;
   float volume = 1.0F, pitch = 1.0F, pan = 0.0F;
+  float leftGain = 1.0F, rightGain = 1.0F;
   float gain = 1.0F, targetGain = 1.0F, gainStep = 0.0F;
   bool stopAfterFade = false, playing = false, loop = false, eof = false;
+  bool suspended = false;
   std::uint64_t loopStart = 0, loopEnd = 0;
   double duration = 0;
 };
 
 inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
                          float master) {
-  if (!voice.playing) return;
+  if (!voice.playing || voice.suspended) return;
   for (int frame = 0; frame < frames; ++frame) {
     std::uint64_t nextSampleFrame = voice.positionFrame + 1;
     if (voice.asset) {
@@ -68,9 +71,9 @@ inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
     const float left = sample(0, false) * (1 - fraction) + sample(0, true) * fraction;
     const float right = sample(1, false) * (1 - fraction) + sample(1, true) * fraction;
     const float leftGain =
-        voice.volume * voice.gain * (voice.pan > 0 ? 1 - voice.pan : 1);
+        voice.volume * voice.gain * voice.leftGain * (voice.pan > 0 ? 1 - voice.pan : 1);
     const float rightGain =
-        voice.volume * voice.gain * (voice.pan < 0 ? 1 + voice.pan : 1);
+        voice.volume * voice.gain * voice.rightGain * (voice.pan < 0 ? 1 + voice.pan : 1);
     output[frame * 2] += left * leftGain * master;
     output[frame * 2 + 1] += right * rightGain * master;
     voice.phase += voice.pitch;

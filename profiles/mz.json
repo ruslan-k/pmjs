@@ -28,9 +28,14 @@
     "js/pmjs-web/requests.js",
     "js/pmjs-pixi5/setup.js",
     "js/pmjs-pixi5/scene.js",
+    "js/pmjs-pixi5/filters.js",
+    "js/pmjs-pixi5/zoom-blur.js",
     "js/pmjs-pixi5/renderer.js",
     "js/pmjs-mz/engine.js",
     "js/pmjs-mz/rendering.js",
+    "js/pmjs-mz/display.js",
+    "js/pmjs-mz/effects.js",
+    "js/pmjs-mz/animations.js",
     "js/pmjs-rpgmaker/input.js",
     "js/pmjs-rpgmaker/platform.js",
     "js/pmjs-mz/platform.js",
@@ -40,6 +45,7 @@
     "js/pmjs-mz/plugin-loader.js",
     "js/pmjs-rpgmaker/main-loop.js",
     "js/pmjs-mz/main-loop.js",
+    "js/pmjs-mz/boot.js",
     "js/pmjs-mz/bootstrap.js"
   ]
 }

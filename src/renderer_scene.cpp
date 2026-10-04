@@ -1,6 +1,7 @@
 #include "renderer.hpp"
 #include "scene_packet.hpp"
 
+#include <GLES3/gl3.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -73,6 +74,8 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         blendValue > static_cast<std::uint32_t>(BlendMode::screen)) return false;
     const auto blendMode = static_cast<BlendMode>(blendValue);
     if (parentIndex != noParent && parentIndex >= index) return false;
+    if ((flags & NodeFlags::clampedTilingSampling) &&
+        kind != static_cast<std::uint32_t>(NodeKind::tilingSprite)) return false;
     if (flags & ~scene_packet::kAllowedNodeFlags) {
       return false;
     }
@@ -80,12 +83,19 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       (flags & NodeFlags::textureRotationMask) >> NodeFlags::textureRotationShift);
     if (textureRotation != 0 &&
         kind != static_cast<std::uint32_t>(NodeKind::sprite)) return false;
+    if ((flags & (NodeFlags::premultipliedSpriteTexture | NodeFlags::packedSpriteColor | NodeFlags::spriteWorldVertices | NodeFlags::standaloneBitmapRegion)) &&
+        kind != static_cast<std::uint32_t>(NodeKind::sprite)) return false;
     if ((flags & NodeFlags::roundPixels) &&
         kind != static_cast<std::uint32_t>(NodeKind::sprite)) return false;
-    if ((flags & NodeFlags::hasMeshPostTintOverlay) &&
+    if ((flags & (NodeFlags::hasMeshPostTintOverlay | NodeFlags::hasMvBitmapBlend)) &&
         kind != static_cast<std::uint32_t>(NodeKind::mesh)) return false;
 
-    const std::array<float, 6> local = {
+    if ((flags & NodeFlags::standaloneBitmapRegion) && !(flags & NodeFlags::premultipliedSpriteTexture)) return false;
+    if (parentIndex != noParent && (metadata[parentIndex * metadataStride + 5] & NodeFlags::spriteWorldVertices)) return false;
+    const bool spriteVertices = flags & NodeFlags::spriteWorldVertices;
+    const bool effectNode = kind == static_cast<std::uint32_t>(NodeKind::effect);
+    const std::array<float, 6> local = effectNode ?
+      std::array<float, 6>{1, 0, 0, 1, 0, 0} : std::array<float, 6>{
       values[valueOffset], values[valueOffset + 1],
       values[valueOffset + 2], values[valueOffset + 3],
       values[valueOffset + 4], values[valueOffset + 5]
@@ -102,6 +112,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       parent.world[0] * local[4] + parent.world[2] * local[5] + parent.world[4],
       parent.world[1] * local[4] + parent.world[3] * local[5] + parent.world[5],
     };
+    if (spriteVertices) state.world = parent.world;
     state.alpha = parent.alpha * values[valueOffset + 6];
     state.clip = parent.clip;
     state.clipped = parent.clipped;
@@ -142,7 +153,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       command.clipped = state.clipped;
       if (kind == static_cast<std::uint32_t>(NodeKind::filterBegin)) {
         if (filterDepth >= maxFilterDepth ||
-            blendValue > static_cast<std::uint32_t>(FilterKind::mzColor)) {
+            blendValue > static_cast<std::uint32_t>(FilterKind::custom)) {
           return false;
         }
         command.action = RenderCommand::Action::filterBegin;
@@ -152,19 +163,50 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         std::copy_n(values + valueOffset + 22, 11,
                     command.filterParameters.begin() + 10);
         command.filterResolution = values[valueOffset + 33];
+        const float compositeBlend = values[valueOffset + filterCompositeBlendOffset];
+        if (compositeBlend < 0 || compositeBlend > 3 ||
+            std::floor(compositeBlend) != compositeBlend) return false;
+        command.blendMode = static_cast<BlendMode>(compositeBlend);
         if (command.filterResolution == 0.0F) command.filterResolution = 1.0F;
         if (!std::isfinite(command.filterResolution) ||
             command.filterResolution <= 0.0F ||
             command.filterResolution > 16.0F) return false;
-        if (command.filterKind == FilterKind::blur) {
+        if (command.filterKind == FilterKind::custom) {
+          const auto plan = filterPlans_.find(resource);
+          if (plan != filterPlans_.end()) {
+            command.customFilterPlan = plan->second.lock();
+            if (!command.customFilterPlan) return false;
+          } else if (resource == 0 || resource > filterPrograms_.size() ||
+              command.filterParameters[0] < 0 ||
+              command.filterParameters[0] > 65536 ||
+              command.filterResolution != 1) return false;
+          command.filterProgram = command.customFilterPlan ? 0 : resource;
+          if (!command.customFilterPlan) {
+            const auto& program = filterProgram(resource);
+            std::size_t components = 0;
+            if (program.pixiVertex) return false;
+            for (const auto& uniform : program.uniforms) {
+              if (uniform.type != GL_FLOAT && uniform.type != GL_FLOAT_VEC2 &&
+                  uniform.type != GL_FLOAT_VEC3 && uniform.type != GL_FLOAT_VEC4 &&
+                  uniform.type != GL_FLOAT_MAT2 && uniform.type != GL_FLOAT_MAT3 &&
+                  uniform.type != GL_FLOAT_MAT4) return false;
+              components += uniform.components * uniform.count;
+            }
+            if (components > 20) return false;
+          }
+        } else if (command.filterKind == FilterKind::blur) {
           if (resource != 0 || command.filterParameters[0] < 0 ||
               command.filterParameters[1] < 1 ||
-              command.filterParameters[1] > 15) return false;
+              command.filterParameters[1] > 15 ||
+              (command.filterParameters[2] != 0 &&
+               command.filterParameters[2] != 5)) return false;
         } else if (command.filterKind == FilterKind::blurX ||
                    command.filterKind == FilterKind::blurY) {
           if (resource != 0 || command.filterParameters[0] < 0 ||
               command.filterParameters[1] < 1 ||
-              command.filterParameters[1] > 15) return false;
+              command.filterParameters[1] > 15 ||
+              (command.filterParameters[2] != 0 &&
+               command.filterParameters[2] != 5)) return false;
         } else if (command.filterKind == FilterKind::mzColor) {
           if (resource != 0) return false;
         } else if (command.filterKind == FilterKind::fxaa) {
@@ -275,6 +317,27 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     }
     if (kind == static_cast<std::uint32_t>(NodeKind::container) ||
         state.alpha <= 0) continue;
+    if (effectNode) {
+      if (flags != 0 || state.maskImage || !effects_ || !effects_->validHandle(resource)) return false;
+      RenderCommand command{};
+      command.primitive = RenderCommand::Primitive::effect;
+      command.effect.handle = resource;
+      std::copy_n(values + valueOffset, 4, command.effect.viewport.begin());
+      std::copy_n(values + valueOffset + 7, 16, command.effect.projection.begin());
+      std::copy_n(values + valueOffset + 23, 16, command.effect.camera.begin());
+      std::copy_n(values + valueOffset + 39, 2, command.effect.resetViewport.begin());
+      for (const float value : command.effect.viewport) {
+        if (std::abs(value) > 65536) return false;
+      }
+      if (command.effect.viewport[2] <= 0 || command.effect.viewport[3] <= 0) return false;
+      for (const float value : command.effect.resetViewport) {
+        if (value <= 0 || value > 65536) return false;
+      }
+      command.clip = state.clip;
+      command.clipped = state.clipped;
+      frame_.commands.push_back(command);
+      continue;
+    }
     if ((flags & NodeFlags::hasBlurFilter) &&
       kind != static_cast<std::uint32_t>(NodeKind::sprite)) return false;
     if (state.maskImage && kind != static_cast<std::uint32_t>(NodeKind::sprite) &&
@@ -286,9 +349,10 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       const float red = static_cast<float>((tint >> 16U) & 0xffU) / 255.0F;
       const float green = static_cast<float>((tint >> 8U) & 0xffU) / 255.0F;
       const float blue = static_cast<float>(tint & 0xffU) / 255.0F;
+      // Match the fractional-alpha ScreenSprite draw in Chromium 65/Pixi 4.
       queueQuad(0, 0, static_cast<float>(queueWidth_),
                 static_cast<float>(queueHeight_),
-                {red, green, blue, state.alpha});
+                {red, green, blue, std::floor(state.alpha * 255.0F) / 255.0F});
       frame_.commands.back().primitive = RenderCommand::Primitive::screenFill;
       frame_.commands.back().clip = state.clip;
       frame_.commands.back().clipped = state.clipped;
@@ -325,8 +389,12 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
           ? RenderCommand::Primitive::tileLayer
           : RenderCommand::Primitive::mesh;
       if (flags & NodeFlags::hasSpriteColor) return false;
-      if (flags & NodeFlags::hasMeshPostTintOverlay) {
-        frame_.commands.back().appliesMeshPostTintOverlay = true;
+      if (flags & (NodeFlags::hasMeshPostTintOverlay | NodeFlags::hasMvBitmapBlend)) {
+        const auto* material = std::get_if<MvBitmapMaterial>(&tileLayers_.at(resource).material);
+        const bool mvBlend = flags & NodeFlags::hasMvBitmapBlend;
+        if (mvBlend != (material != nullptr) ||
+            ((flags & NodeFlags::hasMeshPostTintOverlay) && mvBlend)) return false;
+        frame_.commands.back().appliesMeshPostTintOverlay = !mvBlend;
         std::copy_n(values + valueOffset + 37, 4,
                     frame_.commands.back().blendColor.begin());
         if (frame_.commands.back().blendColor[3] < 0 ||
@@ -347,10 +415,15 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       return std::array<float, 2>{placed[0] * x + placed[2] * y + placed[4],
                                   placed[1] * x + placed[3] * y + placed[5]};
     };
-    const auto p0 = corner(0, 0);
-    const auto p1 = corner(destination[0], 0);
-    const auto p2 = corner(destination[0], destination[1]);
-    const auto p3 = corner(0, destination[1]);
+    std::array<std::array<float, 2>, 4> worldVertices;
+    for (std::size_t vertex = 0; vertex < 4; ++vertex) {
+      const std::size_t offset = valueOffset + (vertex < 3 ? vertex * 2 : 15);
+      worldVertices[vertex] = {values[offset], values[offset + 1]};
+    }
+    const auto p0 = spriteVertices ? worldVertices[0] : corner(0, 0);
+    const auto p1 = spriteVertices ? worldVertices[1] : corner(destination[0], 0);
+    const auto p2 = spriteVertices ? worldVertices[2] : corner(destination[0], destination[1]);
+    const auto p3 = spriteVertices ? worldVertices[3] : corner(0, destination[1]);
     const float minimumX = std::min({p0[0], p1[0], p2[0], p3[0]});
     const float maximumX = std::max({p0[0], p1[0], p2[0], p3[0]});
     const float minimumY = std::min({p0[1], p1[1], p2[1], p3[1]});
@@ -377,12 +450,23 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     frame_.commands.back().blur =
       flags & NodeFlags::hasBlurFilter ? values[valueOffset + 21] : 0.0F;
     frame_.commands.back().nearest = flags & NodeFlags::nearestSampling;
+    frame_.commands.back().clampedTilingSampling = flags & NodeFlags::clampedTilingSampling;
     frame_.commands.back().roundPixels = flags & NodeFlags::roundPixels;
     frame_.commands.back().textureRotation = textureRotation;
     frame_.commands.back().primitive =
       kind == static_cast<std::uint32_t>(NodeKind::tilingSprite)
         ? RenderCommand::Primitive::tilingSprite
         : RenderCommand::Primitive::sprite;
+    frame_.commands.back().spriteWorldVertices = spriteVertices;
+    frame_.commands.back().spriteVertices = worldVertices;
+    frame_.commands.back().standaloneBitmapRegion = flags & NodeFlags::standaloneBitmapRegion;
+    frame_.commands.back().packedSpriteColor = flags & NodeFlags::packedSpriteColor;
+    if (frame_.commands.back().packedSpriteColor) {
+      frame_.commands.back().color = { float((tint >> 16) & 255) / 255,
+        float((tint >> 8) & 255) / 255, float(tint & 255) / 255, float(tint >> 24) / 255 };
+    }
+    frame_.commands.back().premultipliedSpriteTexture = (flags & NodeFlags::premultipliedSpriteTexture) || images_.lookup(resource)->premultiplied;
+    frame_.commands.back().pixiSpritePacking = kind == static_cast<std::uint32_t>(NodeKind::sprite);
     frame_.commands.back().appliesSpriteColor = flags & NodeFlags::hasSpriteColor;
     if (frame_.commands.back().appliesSpriteColor) {
       if (kind != static_cast<std::uint32_t>(NodeKind::sprite)) return false;

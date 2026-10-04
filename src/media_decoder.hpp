@@ -61,6 +61,7 @@ class AudioDecoderSession {
   AudioDecoderSession(const AudioDecoderSession&) = delete;
   AudioDecoderSession& operator=(const AudioDecoderSession&) = delete;
   double duration() const;
+  int sourceChannels() const;
   std::uint64_t loopStartFrame() const;
   std::uint64_t loopEndFrame() const;
   bool seek(double timestamp, std::string* error = nullptr);
@@ -74,7 +75,7 @@ class AudioDecoderSession {
 
 class VideoDecoderSession {
  public:
-  explicit VideoDecoderSession(const std::filesystem::path& path);
+  explicit VideoDecoderSession(const std::filesystem::path& path, bool telemetry = false);
   ~VideoDecoderSession();
   VideoDecoderSession(const VideoDecoderSession&) = delete;
   VideoDecoderSession& operator=(const VideoDecoderSession&) = delete;

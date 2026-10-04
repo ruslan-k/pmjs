@@ -30,14 +30,23 @@ nativeTransformParent.transform.worldTransform.identity();
 var nativeScreenOverlays = [];
 var nativeTileRects = 0;
 var nativeTileRebuilds = 0;
-var nativeTransformMs = 0;
-var nativeQueueMs = 0;
-var nativeStageSamples = 0;
 var nativeBlankTileCanvas = null;
 var nativeRetainedMeshes = new WeakMap();
+var nativeMeshMaterials = new WeakMap();
+var nativeStageRenderOptions = new WeakMap();
 PMJS.pixi4 = PMJS.pixi4 || {};
 Object.assign(PMJS.pixi4, {
+  setStageRenderOptions: function(stage, options) {
+    if (options && options.worldState !== 'pixi' && options.worldState !== 'native') throw new TypeError('worldState must be pixi or native');
+    var previous = nativeStageRenderOptions.get(stage);
+    if (options) nativeStageRenderOptions.set(stage, Object.assign({}, options));
+    else nativeStageRenderOptions.delete(stage);
+    return previous;
+  },
+  getStageRenderOptions: function(stage) { return nativeStageRenderOptions.get(stage); },
+  supportsGpuSpriteTextures: !!(NativeHost.scene && NativeHost.scene.schema && NativeHost.scene.schema.gpuSpriteTextures),
   releaseSceneResources: function(root) { return pmjsReleaseSceneResources(root); },
+  // Producers must call invalidateMeshGeometry after changing retained vertices or UVs.
   retainMeshGeometry: function(mesh) {
     if (!nativeRetainedMeshes.has(mesh)) {
       nativeRetainedMeshes.set(mesh, { handle: 0, signature: null });
@@ -47,10 +56,48 @@ Object.assign(PMJS.pixi4, {
     var retained = nativeRetainedMeshes.get(mesh);
     if (retained) retained.handle = 0;
   },
+  createGpuStandaloneBitmapRegion: function(texture, rectangle) {
+    if (!texture.baseTexture.__pmjsGpuGenerated || !texture.baseTexture.__pmjsPremultiplied) {
+      throw new TypeError('GPU bitmap regions require a premultiplied GPU texture');
+    }
+    // A logical Bitmap view keeps its sampling precision independent of atlas size.
+    var region = new PIXI.Texture(texture.baseTexture, rectangle);
+    region.__pmjsStandaloneBitmapRegion = true;
+    return region;
+  },
+  setMeshNativeMaterial: function(mesh, owner, descriptor) {
+    if (owner !== 'mpp-triangle-bitmap' && owner !== 'mv-bitmap') {
+      throw new TypeError('Unknown mesh material owner');
+    }
+    var current = nativeMeshMaterials.get(mesh);
+    if (descriptor === null) {
+      if (current && current.owner !== owner) throw new TypeError('Mesh material is owned by ' + current.owner);
+      if (current) {
+        nativeMeshMaterials.delete(mesh);
+        PMJS.pixi4.invalidateMeshGeometry(mesh);
+      }
+      return;
+    }
+    if (!descriptor || typeof descriptor !== 'object') throw new TypeError('Mesh material descriptor required');
+    if (current && current.owner !== owner) throw new TypeError('Mesh material is owned by ' + current.owner);
+    if (mesh._pmjsMeshPostTintOverlay && owner === 'mv-bitmap') {
+      throw new TypeError('MV bitmap material conflicts with generic post-tint overlay');
+    }
+    nativeMeshMaterials.set(mesh, { owner: owner, descriptor: descriptor });
+    PMJS.pixi4.invalidateMeshGeometry(mesh);
+  },
+  meshNativeMaterialOwner: function(mesh) {
+    var material = nativeMeshMaterials.get(mesh);
+    return material ? material.owner : null;
+  },
   setMeshPostTintOverlay: function(mesh, color) {
+    if (color && PMJS.pixi4.meshNativeMaterialOwner(mesh) === 'mv-bitmap') {
+      throw new TypeError('MV bitmap material requires the MV blend operation');
+    }
     mesh._pmjsMeshPostTintOverlay = color;
   }
 });
+
 var nativeGeometryFinalizer = typeof FinalizationRegistry === 'function'
   ? new FinalizationRegistry(function(resource) {
       try {
@@ -367,7 +414,6 @@ var nativeSceneFilterDepth = 0;
 function nativeRenderHitCount() {
   return PMJS.compat.count('render.');
 }
-var nativeSceneBackgroundColor = null;
 var nativeSceneFilterAccessCache = new WeakMap();
 var nativeScenePreviousMetadata = new Uint32Array(0);
 var nativeScenePreviousValues = new Uint32Array(0);
@@ -499,20 +545,11 @@ function traceNativeScenePacket() {
     changedMetadataRecords: changedMetadataRecords,
     changedValueRecords: changedValueRecords,
     firstChangedRecords: firstChangedRecords,
-    // Plain-segment accounting (cumulative since boot). The statistics are
-    // emitted only while tracing; the runs/sprites/candidates counters
-    // themselves remain always-on. candidates counts every probed binding
-    // including runs abandoned below the segment threshold, so
-    // candidates - sprites measures successfully-created-but-discarded
-    // bindings -- not total probe cost (see the gated counters below, which
-    // additionally count rejected eligibility probes and abandoned runs).
+    // Cumulative over traced submissions. Candidates include bindings discarded
+    // below the segment threshold; rejected eligibility probes are separate.
     segmentRuns: nativeSceneSegmentStats.runs,
     segmentSprites: nativeSceneSegmentStats.sprites,
     segmentCandidates: nativeSceneSegmentStats.candidates,
-    // Gated counters: cumulative since boot but advancing only on
-    // submissions made while tracing was active. Together they separate
-    // valid-but-discarded speculative work (abandonedSprites) from
-    // eligibility checks that fail (rejectedProbes).
     segmentBindingProbes: nativeSceneSegmentStats.bindingProbes,
     segmentRejectedProbes: nativeSceneSegmentStats.rejectedProbes,
     segmentAbandonedRuns: nativeSceneSegmentStats.abandonedRuns,
@@ -595,6 +632,7 @@ function closeNativeSceneFilters(count, parentIndex, clip) {
 var nativeIdentityTransform = { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
 var nativeSceneRootTransform = nativeIdentityTransform;
 var nativeSceneRootUsesWorldTransform = false;
+var nativeSceneUsePixiWorldState = false;
 var nativeSceneFilterResolution = 1;
 var nativeSceneRoundPixels = false;
 
@@ -931,10 +969,25 @@ function ensureNativeGpuMesh(mesh) {
         uvTransform.b * uvX + uvTransform.d * uvY + uvTransform.ty;
     }
   }
-  var nativeMesh = NativeHost.render.createMesh(nativeSource.handle,
-    Array.prototype.slice.call(vertices), nativeUvs,
-    Array.prototype.slice.call(indices),
-    drawMode);
+  var geometry = { image: nativeSource.handle, positions: Array.prototype.slice.call(vertices),
+    uvs: nativeUvs, indices: Array.prototype.slice.call(indices), drawMode: drawMode };
+  var material = nativeMeshMaterials.get(mesh);
+  var nativeMesh;
+  if (!material) {
+    nativeMesh = NativeHost.render.createMesh(geometry.image, geometry.positions,
+      geometry.uvs, geometry.indices, geometry.drawMode);
+  } else if (material.owner === 'mpp-triangle-bitmap') {
+    nativeMesh = NativeHost.plugins.mpp.createBitmapMesh(geometry.image, geometry.positions,
+      geometry.uvs, geometry.indices, geometry.drawMode, material.descriptor);
+  } else if (material.owner === 'mv-bitmap') {
+    nativeMesh = NativeHost.mv.createBitmapMesh(geometry.image, geometry.positions,
+      geometry.uvs, geometry.indices, geometry.drawMode, {
+        texelBounds: material.descriptor.texelBounds,
+        alphaMode: mesh.texture.baseTexture.__pmjsPremultiplied ? 'premultiplied' : 'straight'
+      });
+  } else {
+    throw new TypeError('Unknown retained mesh material');
+  }
   pmjsAdoptNativeGeometry(mesh, 'mesh', nativeMesh);
   if (retained) {
     retained.handle = mesh.__pmjsNativeMesh;

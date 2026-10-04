@@ -98,7 +98,6 @@
     pmjsMvLoadPortScript();
   }
 
-  globalThis.pmjsMvInstallPluginManagerHooks = pmjsMvInstallPluginManagerHooks;
   globalThis.pmjsMvLoadPluginManifest = pmjsMvLoadPluginManifest;
   globalThis.pmjsMvInitializePlugins = pmjsMvInitializePlugins;
   globalThis.pmjsMvLoadPortScript = pmjsMvLoadPortScript;

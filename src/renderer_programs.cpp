@@ -52,15 +52,31 @@ GLuint linkProgram(const char* vertexSource, const char* fragmentSource) {
   const GLuint program = glCreateProgram();
   glAttachShader(program, vertex);
   glAttachShader(program, fragment);
+  glBindAttribLocation(program, 0, "position");
+  glBindAttribLocation(program, 1, "uv");
+  glBindAttribLocation(program, 0, "aVertexPosition");
+  glBindAttribLocation(program, 1, "aTextureCoord");
   glLinkProgram(program);
   glDeleteShader(vertex);
   glDeleteShader(fragment);
 
   GLint linked = GL_FALSE;
   glGetProgramiv(program, GL_LINK_STATUS, &linked);
-  if (linked == GL_TRUE) return program;
+  if (linked == GL_TRUE) {
+    const GLint projection = glGetUniformLocation(program, "targetProjection");
+    if (projection >= 0) {
+      GLint previous = 0;
+      glGetIntegerv(GL_CURRENT_PROGRAM, &previous);
+      glUseProgram(program);
+      glUniform4f(projection, 1, 1, 0, 0);
+      glUseProgram(previous);
+    }
+    return program;
+  }
+  std::array<char, 2048> log{};
+  glGetProgramInfoLog(program, static_cast<GLsizei>(log.size()), nullptr, log.data());
   glDeleteProgram(program);
-  throw std::runtime_error("shader program link failed");
+  throw std::runtime_error(std::string("shader program link failed: ") + log.data());
 }
 
 constexpr std::uint32_t primitiveSurfaceTag = 0x40000000U;
@@ -73,6 +89,8 @@ Renderer::Renderer(int width, int height, ImageStore& images)
     : width_(width), height_(height), presentationWidth_(width),
       presentationHeight_(height), queueWidth_(width), queueHeight_(height),
       images_(images) {
+  const char* diagnostics = std::getenv("PMJS_GRAPHICS_DIAGNOSTICS");
+  diagnostics_ = diagnostics && std::string(diagnostics) == "1";
   const char* filterBounds = std::getenv("PMJS_FILTER_BOUNDS");
   filterBoundsEnabled_ = !(filterBounds && std::string(filterBounds) == "0");
   presentation_.scaleMode = presentScaleModeFromEnvironment();
@@ -89,6 +107,8 @@ Renderer::Renderer(int width, int height, ImageStore& images)
   createPixiPrograms(pixiFragmentPrecision_);
   generatedTextureProgram_ = linkProgram(vertexSource,
                                           generatedTextureFragmentSource);
+  generatedTexturePremultipliedUniform_ = glGetUniformLocation(
+    generatedTextureProgram_, "preservePremultiplied");
   presentationProgram_ = linkProgram(presentationVertexSource,
                                      presentationFragmentSource);
   presentationSceneUniform_ =
@@ -113,9 +133,21 @@ Renderer::Renderer(int width, int height, ImageStore& images)
     glGetUniformLocation(presentationProgram_, "videoOpacity");
   presentationUpperCanvasOpacityUniform_ =
     glGetUniformLocation(presentationProgram_, "upperCanvasOpacity");
+  presentationVideoPremultipliedUniform_ =
+    glGetUniformLocation(presentationProgram_, "videoPremultiplied");
+  presentationUpperCanvasPremultipliedUniform_ =
+    glGetUniformLocation(presentationProgram_, "upperCanvasPremultiplied");
   spriteEffectProgram_ = linkProgram(vertexSource, spriteEffectFragmentSource);
+  spriteEffectTargetYDownUniform_ = glGetUniformLocation(spriteEffectProgram_, "targetYDown");
+  spriteEffectVerticesUniform_ = glGetUniformLocation(spriteEffectProgram_, "spriteWorldVertices");
+  spriteEffectProjectionUniform_ = glGetUniformLocation(spriteEffectProgram_, "spriteProjection");
+  spriteEffectPackingUniform_ = glGetUniformLocation(spriteEffectProgram_, "pixiSpritePacking");
+  spriteEffectPremultipliedUniform_ = glGetUniformLocation(spriteEffectProgram_, "texturePremultiplied");
+  spriteEffectFrameUniform_ = glGetUniformLocation(spriteEffectProgram_, "spriteFrame");
+  spriteEffectTilingClampUniform_ = glGetUniformLocation(spriteEffectProgram_, "clampedTilingSampling");
+  spriteEffectNearestUniform_ = glGetUniformLocation(spriteEffectProgram_, "nearestSampling");
   spriteEffectTextureSizeUniform_ =
-    glGetUniformLocation(spriteEffectProgram_, "pmjsTextureSize");
+    glGetUniformLocation(spriteEffectProgram_, "imageDimensions");
   spriteEffectBlurUniform_ =
     glGetUniformLocation(spriteEffectProgram_, "blurRadius");
   spriteEffectMaskEnabledUniform_ =
@@ -140,6 +172,10 @@ Renderer::Renderer(int width, int height, ImageStore& images)
     glGetUniformLocation(spriteEffectProgram_, "colorMatrix");
   spriteEffectMatrixAlphaUniform_ =
     glGetUniformLocation(spriteEffectProgram_, "colorMatrixAlpha");
+  clearTriangleProgram_ = linkProgram(vertexSource, withTriangleClipCoverage(clearTriangleFragmentSource).c_str());
+  clearTrianglePointsUniform_ = glGetUniformLocation(clearTriangleProgram_, "points");
+  clearTriangleNormalsUniform_ = glGetUniformLocation(clearTriangleProgram_, "inward");
+  clearTriangleRectangleUniform_ = glGetUniformLocation(clearTriangleProgram_, "clearRectangle");
   primitiveSurfaceProgram_ = linkProgram(vertexSource,
                                           primitiveSurfaceFragmentSource);
   primitiveSurfaceSizeUniform_ =
@@ -194,16 +230,14 @@ Renderer::Renderer(int width, int height, ImageStore& images)
     throw std::runtime_error("letterbox framebuffer is incomplete");
   }
 
-  // The scene target is always needed. The other eight full-size RGBA
-  // targets are created on demand by the paths that actually need them.
-  ensureTarget(sceneTexture_, sceneFramebuffer_);
+  ensureTarget(sceneTarget_, width_, height_);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 void Renderer::queryFilterProgramUniforms() {
-  textureSizeUniform_ = glGetUniformLocation(program_, "pmjsTextureSize");
+  textureSizeUniform_ = glGetUniformLocation(program_, "imageDimensions");
   blurUniform_ = glGetUniformLocation(program_, "blurRadius");
   blurDirectionUniform_ = glGetUniformLocation(program_, "blurDirection");
   displacementEnabledUniform_ =
@@ -243,12 +277,20 @@ void Renderer::queryFilterProgramUniforms() {
 
 Renderer::TileProgramUniforms Renderer::queryTileProgramUniforms(std::uint32_t program) {
   TileProgramUniforms uniforms;
+  uniforms.targetYDown = glGetUniformLocation(program, "targetYDown");
   uniforms.world = glGetUniformLocation(program, "world");
   uniforms.screen = glGetUniformLocation(program, "screenSize");
   uniforms.animation = glGetUniformLocation(program, "animationOffset");
-  uniforms.textureSize = glGetUniformLocation(program, "pmjsTextureSize");
+  uniforms.textureSize = glGetUniformLocation(program, "imageDimensions");
   uniforms.color = glGetUniformLocation(program, "color");
   uniforms.overlayColor = glGetUniformLocation(program, "meshPostTintOverlayColor");
+  uniforms.trianglePaintEnabled = glGetUniformLocation(program, "trianglePaintEnabled");
+  uniforms.trianglePaint = glGetUniformLocation(program, "trianglePaint");
+  uniforms.mvBlendEnabled = glGetUniformLocation(program, "mvBlendEnabled");
+  uniforms.mvBounds = glGetUniformLocation(program, "mvBounds");
+  uniforms.nearestSampling = glGetUniformLocation(program, "nearestSampling");
+  uniforms.mvPremultipliedInput = glGetUniformLocation(program, "mvPremultipliedInput");
+  uniforms.texturePremultiplied = glGetUniformLocation(program, "texturePremultiplied");
   uniforms.maskEnabled = glGetUniformLocation(program, "maskEnabled");
   uniforms.maskImage = glGetUniformLocation(program, "maskImage");
   uniforms.maskTransform = glGetUniformLocation(program, "maskTransform");
@@ -259,6 +301,7 @@ Renderer::TileProgramUniforms Renderer::queryTileProgramUniforms(std::uint32_t p
 }
 
 void Renderer::createPixiPrograms(const std::string& precision) {
+  targetProjectionLocations_.clear();
   using namespace renderer_shaders;
   const auto linkPixiProgram = [&precision](const char* vertex, const char* fragment) {
     const auto source = pixiFragmentSourceWithPrecision(fragment, precision);
@@ -268,30 +311,46 @@ void Renderer::createPixiPrograms(const std::string& precision) {
   GLuint simple = 0;
   GLuint tile = 0;
   GLuint meshOverlay = 0;
+  GLuint canvasTriangleBitmap = 0;
   try {
     filter = linkPixiProgram(vertexSource, fragmentSource);
     simple = linkPixiProgram(vertexSource, simpleFragmentSource);
     tile = linkPixiProgram(tileVertexSource, tileFragmentSource);
     const auto overlaySource = meshPostTintOverlayFragmentSourceWithPrecision("mediump");
     meshOverlay = linkPixiProgram(tileVertexSource, overlaySource.c_str());
+    const auto bitmapSource = meshPostTintOverlayFragmentSourceWithPrecision("mediump", true);
+    canvasTriangleBitmap = linkPixiProgram(tileVertexSource, bitmapSource.c_str());
   } catch (...) {
     if (filter) glDeleteProgram(filter);
     if (simple) glDeleteProgram(simple);
     if (tile) glDeleteProgram(tile);
     if (meshOverlay) glDeleteProgram(meshOverlay);
+    if (canvasTriangleBitmap) glDeleteProgram(canvasTriangleBitmap);
     throw;
   }
   if (program_) glDeleteProgram(program_);
   if (simpleProgram_) glDeleteProgram(simpleProgram_);
   if (tileProgram_) glDeleteProgram(tileProgram_);
   if (meshPostTintOverlayProgram_) glDeleteProgram(meshPostTintOverlayProgram_);
+  if (canvasTriangleBitmapProgram_) glDeleteProgram(canvasTriangleBitmapProgram_);
   program_ = filter;
   simpleProgram_ = simple;
+  filterTargetYDownUniform_ = glGetUniformLocation(program_, "targetYDown");
+  filterImageYDownUniform_ = glGetUniformLocation(program_, "imageYDown");
+  simpleTargetYDownUniform_ = glGetUniformLocation(simpleProgram_, "targetYDown");
+  simpleSpriteVerticesUniform_ = glGetUniformLocation(simpleProgram_, "spriteWorldVertices");
+  simpleSpriteProjectionUniform_ = glGetUniformLocation(simpleProgram_, "spriteProjection");
+  simpleSpritePackingUniform_ = glGetUniformLocation(simpleProgram_, "pixiSpritePacking");
+  simpleSpritePremultipliedUniform_ = glGetUniformLocation(simpleProgram_, "texturePremultiplied");
+  simpleTilingClampUniform_ = glGetUniformLocation(simpleProgram_, "clampedTilingSampling");
+  simpleTextureSizeUniform_ = glGetUniformLocation(simpleProgram_, "imageDimensions");
   tileProgram_ = tile;
   meshPostTintOverlayProgram_ = meshOverlay;
+  canvasTriangleBitmapProgram_ = canvasTriangleBitmap;
   queryFilterProgramUniforms();
   tileUniforms_ = queryTileProgramUniforms(tileProgram_);
   meshPostTintOverlayUniforms_ = queryTileProgramUniforms(meshPostTintOverlayProgram_);
+  canvasTriangleBitmapUniforms_ = queryTileProgramUniforms(canvasTriangleBitmapProgram_);
 }
 
 void Renderer::configurePixiFragmentPrecision(const std::string& precision) {
@@ -311,7 +370,131 @@ void Renderer::configurePixiFragmentPrecision(const std::string& precision) {
   pixiPrecisionConfigured_ = true;
 }
 
+const Renderer::FilterProgram& Renderer::filterProgram(std::uint32_t handle) const {
+  if (handle == 0 || handle > filterPrograms_.size()) {
+    throw std::invalid_argument("invalid filter program handle");
+  }
+  return filterPrograms_[handle - 1];
+}
+
+std::uint32_t Renderer::createFilterProgram(const std::string& fragmentSource, const std::string& vertexSource) {
+  if (fragmentSource.empty() || fragmentSource.size() > 65536 ||
+      fragmentSource.find('\0') != std::string::npos) {
+    throw std::invalid_argument("invalid filter fragment source");
+  }
+  std::string source = fragmentSource;
+  if (source.find("precision ") == std::string::npos) {
+    source = "precision " + pixiFragmentPrecision_ + " float;\n" + source;
+  }
+  source = "precision highp sampler2D;\n" + source;
+  for (std::size_t index = 0; index < filterPrograms_.size(); ++index) {
+    if (filterPrograms_[index].source == vertexSource + "\n" + source) return index + 1;
+  }
+  if (filterPrograms_.size() >= 128) {
+    throw std::runtime_error("custom filter program budget exhausted");
+  }
+  constexpr const char* vertex = R"(
+    attribute vec2 position;
+    attribute vec2 uv;
+    uniform bool pmjsTargetYDown;
+    uniform vec2 pmjsScreenSize;
+    uniform vec4 pmjsFilterFrame;
+    uniform vec2 pmjsFilterTextureSize;
+    varying vec2 vTextureCoord;
+    void main() {
+      gl_Position = vec4(position.x, pmjsTargetYDown ? -position.y : position.y, 0.0, 1.0);
+      vec2 screen = vec2(uv.x, 1.0 - uv.y) * pmjsScreenSize;
+      vTextureCoord = (screen - pmjsFilterFrame.xy) / pmjsFilterTextureSize;
+    }
+  )";
+  if (vertexSource.size() > 65536 || vertexSource.find('\0') != std::string::npos)
+    throw std::invalid_argument("invalid filter vertex source");
+  const GLuint program = linkProgram(vertexSource.empty() ? vertex : vertexSource.c_str(), source.c_str());
+  try {
+    FilterProgram result{program, vertexSource + "\n" + source, !vertexSource.empty(), {}};
+    GLint uniformCount = 0;
+    GLint uniformNameSize = 0;
+    glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniformCount);
+    glGetProgramiv(program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &uniformNameSize);
+    int total = 0;
+    for (GLint index = 0; index < uniformCount; ++index) {
+      std::vector<char> name(std::max(1, uniformNameSize));
+      GLint count = 0;
+      GLenum type = 0;
+      GLsizei length = 0;
+      glGetActiveUniform(program, index, name.size(), &length, &count, &type, name.data());
+      const std::string key(name.data(), length);
+      if (key == "pmjsScreenSize" || key == "pmjsFilterFrame" ||
+          key == "pmjsFilterTextureSize" || key == "pmjsTargetYDown") continue;
+      if (key == "projectionMatrix") {
+        if (type != GL_FLOAT_MAT3 || count != 1) throw std::invalid_argument("filter projection must be mat3");
+        continue;
+      }
+      if (key == "filterArea" || key == "filterClamp") {
+        if (type != GL_FLOAT_VEC4 || count != 1) {
+          throw std::invalid_argument("custom filter built-in must be vec4: " + key);
+        }
+        continue;
+      }
+      if (key == "uSampler") {
+        if (type != GL_SAMPLER_2D || count != 1) {
+          throw std::invalid_argument("custom filter uSampler must be sampler2D");
+        }
+        continue;
+      }
+      int components = 0;
+      switch (type) {
+        case GL_FLOAT: case GL_INT: case GL_BOOL: case GL_SAMPLER_2D: components = 1; break;
+        case GL_FLOAT_VEC2: case GL_INT_VEC2: case GL_BOOL_VEC2: components = 2; break;
+        case GL_FLOAT_VEC3: case GL_INT_VEC3: case GL_BOOL_VEC3: components = 3; break;
+        case GL_FLOAT_VEC4: case GL_INT_VEC4: case GL_BOOL_VEC4: components = 4; break;
+        case GL_FLOAT_MAT2: components = 4; break;
+        case GL_FLOAT_MAT3: components = 9; break;
+        case GL_FLOAT_MAT4: components = 16; break;
+        default: throw std::invalid_argument("unsupported custom filter uniform: " + key);
+      }
+      if (count < 1 || count > (4096 - total) / components) {
+        throw std::invalid_argument("custom filter uniform capacity exceeded");
+      }
+      total += components * count;
+      result.uniforms.push_back({key, type, glGetUniformLocation(program, key.c_str()),
+        components, count});
+    }
+    filterPrograms_.push_back(std::move(result));
+    return filterPrograms_.size();
+  } catch (...) {
+    glDeleteProgram(program);
+    throw;
+  }
+}
+
+std::uint32_t Renderer::registerFilterPlan(const std::shared_ptr<CustomFilterPlan>& plan) {
+  std::erase_if(filterPlans_, [](const auto& entry) { return entry.second.expired(); });
+  if (filterPlans_.size() >= 4096 || nextFilterPlan_ == 0xffffffffU)
+    throw std::runtime_error("custom filter plan budget exhausted");
+for (float resolution : plan->resolutions) {
+    if (plan->frame[2] * resolution > maxTextureSize_ || plan->frame[3] * resolution > maxTextureSize_)
+      throw std::invalid_argument("custom filter target exceeds texture size");
+  }
+  plan->images = &images_;
+  plan->lifetime = filterPlanLifetime_;
+  for (const auto& pass : plan->passes) for (const auto& sampler : pass.samplers) {
+    if (!sampler.image) continue;
+    if (!images_.beginUse(sampler.image)) throw std::invalid_argument("cannot retain filter sampler");
+    plan->retainedImages.push_back(sampler.image);
+  }
+  const auto handle = nextFilterPlan_++;
+  filterPlans_[handle] = plan;
+  return handle;
+}
+
 Renderer::~Renderer() {
+  frame_.clear();
+  filterPlanLifetime_.reset();
+  glDeleteVertexArrays(1, &customFilterVertexArray_);
+  glDeleteBuffers(1, &customFilterVertexBuffer_);
+  for (auto& target : customPassTargets_) destroyTarget(target);
+  for (const auto& filter : filterPrograms_) glDeleteProgram(filter.program);
   if (presentationVideo_) images_.release(presentationVideo_);
   if (presentationUpperCanvas_) images_.release(presentationUpperCanvas_);
   discardCommandsFrom(0);
@@ -321,20 +504,14 @@ Renderer::~Renderer() {
     if (surface.live) releasePrimitiveSurface(
       makePrimitiveSurfaceHandle(index, surface.generation));
   }
-  if (sceneFramebuffer_) glDeleteFramebuffers(1, &sceneFramebuffer_);
-  if (sceneTexture_) glDeleteTextures(1, &sceneTexture_);
-  if (offscreenFramebuffer_) glDeleteFramebuffers(1, &offscreenFramebuffer_);
-  if (offscreenTexture_) glDeleteTextures(1, &offscreenTexture_);
-  if (filterFramebuffer_) glDeleteFramebuffers(1, &filterFramebuffer_);
-  if (filterTexture_) glDeleteTextures(1, &filterTexture_);
-  if (toneOverlayFramebuffer_) glDeleteFramebuffers(1, &toneOverlayFramebuffer_);
-  if (toneOverlayTexture_) glDeleteTextures(1, &toneOverlayTexture_);
-  if (bloomFramebuffer_) glDeleteFramebuffers(1, &bloomFramebuffer_);
-  if (bloomTexture_) glDeleteTextures(1, &bloomTexture_);
-  glDeleteFramebuffers(static_cast<GLsizei>(groupFramebuffers_.size()),
-                       groupFramebuffers_.data());
-  glDeleteTextures(static_cast<GLsizei>(groupTextures_.size()),
-                   groupTextures_.data());
+  destroyTarget(sceneTarget_);
+  destroyTarget(offscreenTarget_);
+  destroyTarget(effectTarget_);
+  destroyTarget(filterTarget_);
+  destroyTarget(toneOverlayTarget_);
+  destroyTarget(bloomTarget_);
+  for (auto& target : groupTargets_) destroyTarget(target);
+  for (auto& target : customFilterTargets_) destroyTarget(target);
   if (whiteTexture_) glDeleteTextures(1, &whiteTexture_);
   if (blackFramebuffer_) glDeleteFramebuffers(1, &blackFramebuffer_);
   if (blackTexture_) glDeleteTextures(1, &blackTexture_);
@@ -347,6 +524,8 @@ Renderer::~Renderer() {
   if (spriteEffectProgram_) glDeleteProgram(spriteEffectProgram_);
   if (tileProgram_) glDeleteProgram(tileProgram_);
   if (meshPostTintOverlayProgram_) glDeleteProgram(meshPostTintOverlayProgram_);
+  if (canvasTriangleBitmapProgram_) glDeleteProgram(canvasTriangleBitmapProgram_);
+  if (clearTriangleProgram_) glDeleteProgram(clearTriangleProgram_);
   if (primitiveSurfaceProgram_) glDeleteProgram(primitiveSurfaceProgram_);
 }
 
@@ -393,7 +572,7 @@ std::optional<Renderer::PrimitiveSurfaceInfo> Renderer::createPrimitiveSurface(
   glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                          image->texture, 0);
-  ++stats_.framebufferChecks;
+  if (diagnostics_) ++stats_.framebufferChecks;
   if (!framebuffer ||
       glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
     if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
@@ -508,7 +687,7 @@ bool Renderer::renderPrimitiveSurface(
     };
     glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices.data(), GL_STREAM_DRAW);
-    ++stats_.bufferUploads;
+    if (diagnostics_) ++stats_.bufferUploads;
     glUniform1i(primitiveSurfaceKindUniform_,
       primitive.kind ==
         PrimitiveSurfacePrimitive::Kind::concentricRadialGradient ? 1 : 0);
@@ -528,7 +707,7 @@ bool Renderer::renderPrimitiveSurface(
     }
     glEnable(GL_BLEND);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    ++stats_.drawCalls;
+    if (diagnostics_) ++stats_.drawCalls;
   }
   glBindFramebuffer(GL_FRAMEBUFFER, previousFramebuffer);
   glViewport(previousViewport[0], previousViewport[1], previousViewport[2],
@@ -542,6 +721,133 @@ bool Renderer::renderPrimitiveSurface(
   if (scissorWasEnabled) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
   glClearColor(previousClearColor[0], previousClearColor[1],
                previousClearColor[2], previousClearColor[3]);
+  return true;
+}
+
+bool Renderer::clearImageTriangles(ImageHandle handle, const std::vector<float>& triangles,
+    const std::vector<float>& rectangles, const std::vector<float>& suppliedNormals) {
+  const auto image = images_.lookup(handle);
+  if (!image || !images_.isRenderTarget(handle) || triangles.size() % 6 != 0 ||
+      triangles.size() > 4096U * 6U) return false;
+  for (const float value : triangles) if (!std::isfinite(value)) return false;
+  if (!rectangles.empty() && rectangles.size() != triangles.size() / 6 * 4) return false;
+  for (std::size_t index = 0; index < rectangles.size(); ++index) {
+    if (!std::isfinite(rectangles[index]) || (index % 4 >= 2 && rectangles[index] < 0)) return false;
+  }
+  for (std::size_t index = 0; index < rectangles.size(); index += 4) {
+    if (!std::isfinite(rectangles[index] + rectangles[index + 2]) ||
+        !std::isfinite(rectangles[index + 1] + rectangles[index + 3])) return false;
+  }
+  if (!suppliedNormals.empty() && suppliedNormals.size() != triangles.size()) return false;
+  for (float normal : suppliedNormals) if (!std::isfinite(normal)) return false;
+  // Validate the whole batch before modifying any target pixels.
+  for (std::size_t offset = 0; offset < triangles.size(); offset += 6) {
+    const auto* p = triangles.data() + offset;
+    const float area = (p[2] - p[0]) * (p[5] - p[1]) - (p[4] - p[0]) * (p[3] - p[1]);
+    if (!std::isfinite(area)) return false;
+    for (std::size_t edge = 0; edge < 3; ++edge) {
+      const auto next = (edge + 1) % 3;
+      const float dx = p[next * 2] - p[edge * 2];
+      const float dy = p[next * 2 + 1] - p[edge * 2 + 1];
+      if (!std::isfinite(dx * dx + dy * dy)) return false;
+    }
+  }
+  if (triangles.empty()) return true;
+
+  struct SavedState {
+    GLint framebuffer, viewport[4], program, vao, buffer;
+    GLint blendRgbSource, blendRgbDestination, blendAlphaSource, blendAlphaDestination;
+    GLint equationRgb, equationAlpha;
+    GLboolean blend, scissor, depth, stencil, cull, colorMask[4];
+    GLuint target = 0;
+    SavedState() {
+      glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
+      glGetIntegerv(GL_VIEWPORT, viewport);
+      glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+      glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+      glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &buffer);
+      glGetIntegerv(GL_BLEND_SRC_RGB, &blendRgbSource);
+      glGetIntegerv(GL_BLEND_DST_RGB, &blendRgbDestination);
+      glGetIntegerv(GL_BLEND_SRC_ALPHA, &blendAlphaSource);
+      glGetIntegerv(GL_BLEND_DST_ALPHA, &blendAlphaDestination);
+      glGetIntegerv(GL_BLEND_EQUATION_RGB, &equationRgb);
+      glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &equationAlpha);
+      glGetBooleanv(GL_COLOR_WRITEMASK, colorMask);
+      blend = glIsEnabled(GL_BLEND); scissor = glIsEnabled(GL_SCISSOR_TEST);
+      depth = glIsEnabled(GL_DEPTH_TEST); stencil = glIsEnabled(GL_STENCIL_TEST);
+      cull = glIsEnabled(GL_CULL_FACE);
+    }
+    ~SavedState() {
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+      if (target) glDeleteFramebuffers(1, &target);
+      glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+      glUseProgram(program); glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER, buffer);
+      glBlendFuncSeparate(blendRgbSource, blendRgbDestination, blendAlphaSource, blendAlphaDestination);
+      glBlendEquationSeparate(equationRgb, equationAlpha);
+      glColorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
+      for (const auto& [capability, enabled] : std::array<std::pair<GLenum, GLboolean>, 5>{{
+          {GL_BLEND, blend}, {GL_SCISSOR_TEST, scissor}, {GL_DEPTH_TEST, depth},
+          {GL_STENCIL_TEST, stencil}, {GL_CULL_FACE, cull}}}) {
+        if (enabled) glEnable(capability); else glDisable(capability);
+      }
+    }
+  } saved;
+  glGenFramebuffers(1, &saved.target);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, saved.target);
+  glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, image->texture, 0);
+  if (diagnostics_) ++stats_.framebufferChecks;
+  if (!saved.target || glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return false;
+  glViewport(0, 0, image->width, image->height);
+  glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST); glDisable(GL_STENCIL_TEST); glDisable(GL_CULL_FACE);
+  glEnable(GL_BLEND); glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
+  glBlendFuncSeparate(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+  glUseProgram(clearTriangleProgram_); glBindVertexArray(vertexArray_);
+  glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer_);
+  for (std::size_t offset = 0; offset < triangles.size(); offset += 6) {
+    const auto* points = triangles.data() + offset;
+    const float area = (points[2] - points[0]) * (points[5] - points[1]) -
+        (points[4] - points[0]) * (points[3] - points[1]);
+    if (area == 0) continue;
+    const float x0 = std::max(0.0F, std::floor(std::min({points[0], points[2], points[4]})));
+    const float y0 = std::max(0.0F, std::floor(std::min({points[1], points[3], points[5]})));
+    const float x1 = std::min(static_cast<float>(image->width), std::ceil(std::max({points[0], points[2], points[4]})));
+    const float y1 = std::min(static_cast<float>(image->height), std::ceil(std::max({points[1], points[3], points[5]})));
+    if (x1 <= x0 || y1 <= y0) continue;
+    const float left = x0 / image->width * 2 - 1, right = x1 / image->width * 2 - 1;
+    // Generated images store logical top-left row zero at texture row zero.
+    const float top = y0 / image->height * 2 - 1, bottom = y1 / image->height * 2 - 1;
+    const std::array<float, 72> vertices = {
+      left, top, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1,
+      right, top, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1,
+      right, bottom, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1,
+      left, top, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1,
+      right, bottom, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1,
+      left, bottom, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1};
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices.data(), GL_STREAM_DRAW);
+    std::array<float, 6> normals;
+    for (std::size_t edge = 0; suppliedNormals.empty() && edge < 3; ++edge) {
+      const auto next = (edge + 1) % 3;
+      const double dx = double(points[next * 2]) - points[edge * 2];
+      const double dy = double(points[next * 2 + 1]) - points[edge * 2 + 1];
+      const double length = std::hypot(dx, dy);
+      const double winding = area >= 0 ? 1 : -1;
+      normals[edge * 2] = static_cast<float>(-dy * winding / length);
+      normals[edge * 2 + 1] = static_cast<float>(dx * winding / length);
+    }
+    glUniform2fv(clearTrianglePointsUniform_, 3, points);
+    glUniform2fv(clearTriangleNormalsUniform_, 3, suppliedNormals.empty() ? normals.data() : suppliedNormals.data() + offset);
+    if (rectangles.empty()) glUniform4f(clearTriangleRectangleUniform_, 0, 0, image->width, image->height);
+    else {
+      const auto* rect = rectangles.data() + offset / 6 * 4;
+      glUniform4f(clearTriangleRectangleUniform_, rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]);
+    }
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    if (diagnostics_) {
+      ++stats_.bufferUploads;
+      ++stats_.drawCalls;
+    }
+  }
   return true;
 }
 

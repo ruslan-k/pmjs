@@ -45,10 +45,13 @@ export function detectPixiVersion(gameDir) {
     let source = '';
     try {
       const handle = fs.openSync(file, 'r');
-      const buffer = Buffer.alloc(65536);
-      const bytes = fs.readSync(handle, buffer, 0, buffer.length, 0);
-      fs.closeSync(handle);
-      source = buffer.subarray(0, bytes).toString('utf8');
+      try {
+        const buffer = Buffer.alloc(65536);
+        const bytes = fs.readSync(handle, buffer, 0, buffer.length, 0);
+        source = buffer.subarray(0, bytes).toString('utf8');
+      } finally {
+        fs.closeSync(handle);
+      }
     } catch {
       continue;
     }
@@ -105,7 +108,23 @@ export function readPluginManifest(gameDir) {
   }
   const source = fs.readFileSync(file, 'utf8');
   try {
-    const entries = JSON.parse(pluginArrayText(source));
+    // Generated JavaScript literals can have trailing commas. Normalize only
+    // those outside strings; never execute the manifest to inspect it.
+    const array = pluginArrayText(source);
+    let quoted = false;
+    let escaped = false;
+    let json = '';
+    for (let index = 0; index < array.length; index += 1) {
+      const character = array[index];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') quoted = false;
+      } else if (character === '"') quoted = true;
+      else if (character === ',' && /^\s*[\]}]/.test(array.slice(index + 1))) continue;
+      json += character;
+    }
+    const entries = JSON.parse(json);
     if (!Array.isArray(entries)) throw new Error('$plugins is not an array');
     const plugins = entries
       .filter(entry => entry && typeof entry.name === 'string')

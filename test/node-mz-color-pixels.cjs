@@ -1,5 +1,7 @@
 'use strict';
 
+process.env.PMJS_GRAPHICS_DIAGNOSTICS = '1';
+
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
@@ -98,4 +100,15 @@ for (const fixture of fixtures) {
     native.canvas.release(image.handle);
   }
 }
-console.log('MZ ColorFilter native pixel fixtures passed');
+const validationImage = canvas([100, 120, 140, 255]);
+try {
+  for (const mode of [-1, 0.5, 4, NaN, Infinity]) {
+    const begin = filterBegin(neutral);
+    begin.values[34] = mode;
+    assert.throws(() => render([begin, sprite(validationImage), record(7)]),
+      /invalid native scene packet/);
+  }
+} finally {
+  native.canvas.release(validationImage.handle);
+}
+console.log('MZ ColorFilter native pixel and composite validation fixtures passed');

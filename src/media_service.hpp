@@ -54,7 +54,9 @@ class MediaService {
   std::size_t sampleMemoryBytes() const;
   bool play(std::uint32_t handle, bool loop, double offset);
   bool stop(std::uint32_t handle);
+  bool setSuspended(std::uint32_t handle, bool suspended);
   bool setParameters(std::uint32_t handle, float volume, float pitch, float pan);
+  bool setStereoGains(std::uint32_t handle, float left, float right);
   bool fade(std::uint32_t handle, float from, float to, double duration,
             bool stopWhenFinished);
   void setMasterVolume(float volume);
@@ -62,6 +64,7 @@ class MediaService {
   bool isPlaying(std::uint32_t handle) const;
   double position(std::uint32_t handle) const;
   double duration(std::uint32_t handle) const;
+  int sourceChannels(std::uint32_t handle) const;
   std::size_t bufferedFrames(std::uint32_t handle) const;
   bool release(std::uint32_t handle);
   bool audioAvailable() const;

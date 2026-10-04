@@ -17,8 +17,11 @@ function pmjsIsAudioObjectUrl(url) {
 }
 
 var trackedAudioBuffers = [];
+// Handles do not retain guest buffers; finalization removes their registrations.
+var contextAudioHandles = new Set();
 var nativeAudioFinalizer = typeof FinalizationRegistry === 'function'
   ? new FinalizationRegistry(function(handle) {
+      contextAudioHandles.delete(handle);
       try { NativeHost.media.releaseAudio(handle); } catch (_) {}
     }) : null;
 
@@ -43,6 +46,7 @@ function NativeAudioVoice(intent) {
   this.error = false;
   this.loadGeneration = 0;
   this.onInstalled = null;
+  this.onLoadError = null;
 }
 
 NativeAudioVoice.prototype.install = function(loaded, generation) {
@@ -52,11 +56,17 @@ NativeAudioVoice.prototype.install = function(loaded, generation) {
   }
   if (this.handle) {
     if (nativeAudioFinalizer) nativeAudioFinalizer.unregister(this);
+    contextAudioHandles.delete(this.handle);
     NativeHost.media.releaseAudio(this.handle);
   }
   this.handle = loaded.handle;
+  contextAudioHandles.add(this.handle);
+  if (NativeAudioVoice.clock.state === 'suspended') {
+    NativeHost.media.setAudioSuspended(this.handle, true);
+  }
   this.duration = loaded.duration;
   this.loading = false;
+  this.error = false;
   if (nativeAudioFinalizer) nativeAudioFinalizer.register(this, this.handle, this);
   if (this.autoPlay) {
     this.applyParameters();
@@ -76,6 +86,7 @@ NativeAudioVoice.prototype.failLoad = function(source, error, generation) {
   this.error = true;
   console.error('[pmjs-media] audio load failed source=' + source +
     ' error=' + (error && error.message || error));
+  if (typeof this.onLoadError === 'function') this.onLoadError(error);
 };
 
 NativeAudioVoice.prototype.loadOptions = function(identity) {
@@ -171,6 +182,7 @@ NativeAudioVoice.prototype.release = function() {
   if (this.handle) {
     var handle = this.handle;
     this.handle = 0;
+    contextAudioHandles.delete(handle);
     if (nativeAudioFinalizer) {
       try { nativeAudioFinalizer.unregister(this); } catch (_) {}
     }
@@ -227,13 +239,34 @@ NativeAudioVoice.prototype.pollNative = function() {
 };
 
 var nativeAudioContextStartTime = Date.now();
+var suspendedAt = null;
 NativeAudioVoice.clock = {
   state: 'running',
   get currentTime() {
-    return (Date.now() - nativeAudioContextStartTime) / 1000;
+    return ((suspendedAt === null ? Date.now() : suspendedAt) -
+      nativeAudioContextStartTime) / 1000;
   },
-  resume: function() { return Promise.resolve(); },
-  suspend: function() { return Promise.resolve(); },
+  resume: function() {
+    if (suspendedAt !== null) {
+      contextAudioHandles.forEach(function(handle) {
+        NativeHost.media.setAudioSuspended(handle, false);
+      });
+      nativeAudioContextStartTime += Date.now() - suspendedAt;
+      suspendedAt = null;
+      this.state = 'running';
+    }
+    return Promise.resolve();
+  },
+  suspend: function() {
+    if (suspendedAt === null) {
+      contextAudioHandles.forEach(function(handle) {
+        NativeHost.media.setAudioSuspended(handle, true);
+      });
+      suspendedAt = Date.now();
+      this.state = 'suspended';
+    }
+    return Promise.resolve();
+  },
   destination: {}
 };
 NativeAudioVoice.now = function() {

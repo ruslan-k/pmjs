@@ -2,14 +2,9 @@ function installNativeStorageManager() {
   if (!NativeHost.storage || !globalThis.StorageManager) return;
   if (StorageManager._pmjsLoadPatched && StorageManager._pmjsExistsPatched) return;
   StorageManager.isLocalMode = function() { return true; };
+  // Filename selection remains guest-owned; stock and plugins resolve it through
+  // the relocated directory.
   StorageManager.localFileDirectoryPath = function() { return '/save/'; };
-  if (typeof StorageManager.localFilePath === 'function') {
-    StorageManager.localFilePath = function(savefileId) {
-      if (savefileId < 0) return '/save/config.rpgsave';
-      if (savefileId === 0) return '/save/global.rpgsave';
-      return '/save/file' + savefileId + '.rpgsave';
-    };
-  }
   if (typeof StorageManager.webStorageKey !== 'function') {
     StorageManager.webStorageKey = function(savefileId) {
       return 'RPG File' + savefileId;
@@ -60,6 +55,7 @@ function installNativeStorageManager() {
 
   function normalizeStoragePath(filePath) {
     if (!filePath) return '';
+    filePath = String(filePath).replace(/\\/g, '/');
     return filePath.indexOf('/save/') === 0 ? filePath.slice(6) : filePath;
   }
 
@@ -91,7 +87,8 @@ function installNativeStorageManager() {
     } catch (error) {
       if (!pmjsCachedStorageExists(storagePath + '.bak')) throw error;
     }
-    if (pmjsCachedStorageExists(storagePath + '.bak')) {
+    if (pmjsCachedStorageExists(storagePath + '.bak') &&
+        !pmjsCachedStorageExists(storagePath + '.deleted')) {
       return pmjsReadDecompressed(storagePath + '.bak');
     }
     return null;
@@ -112,8 +109,32 @@ function installNativeStorageManager() {
   function pmjsLocalSaveExists(savefileId) {
     var storagePath = normalizeStoragePath(this.localFilePath(savefileId));
     return pmjsCachedStorageExists(storagePath) ||
-      pmjsCachedStorageExists(storagePath + '.bak');
+      (pmjsCachedStorageExists(storagePath + '.bak') &&
+        !pmjsCachedStorageExists(storagePath + '.deleted'));
   }
+
+  // Keep rollback backups, but distinguish deliberate deletion from interrupted
+  // writes across restarts. A successful save or restore revives the slot.
+  if (typeof StorageManager.removeLocalFile === 'function') {
+    var removeLocalFile = StorageManager.removeLocalFile;
+    StorageManager.removeLocalFile = function(savefileId) {
+      var storagePath = normalizeStoragePath(this.localFilePath(savefileId));
+      NativeHost.storage.writeText(storagePath + '.deleted', '');
+      return removeLocalFile.apply(this, arguments);
+    };
+  }
+  ['saveToLocalFile', 'restoreBackup'].forEach(function(method) {
+    if (typeof StorageManager[method] !== 'function') return;
+    var original = StorageManager[method];
+    StorageManager[method] = function(savefileId) {
+      var result = original.apply(this, arguments);
+      var storagePath = normalizeStoragePath(this.localFilePath(savefileId));
+      if (NativeHost.storage.exists(storagePath)) {
+        NativeHost.storage.remove(storagePath + '.deleted');
+      }
+      return result;
+    };
+  });
 
   if (typeof StorageManager.loadFromLocalFile === 'function' &&
       !StorageManager._pmjsLoadPatched) {
