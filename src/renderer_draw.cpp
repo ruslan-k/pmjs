@@ -201,8 +201,8 @@ void Renderer::computeFilterContentBounds() {
       bool effective = false;
       const bool regionsValid = !level.unbounded &&
           filterBoundsPadding(begun.filterKind, filterParams(begun)) == 0;
-      if (begun.customFilterPlan) {
-        const auto& frame = begun.customFilterPlan->frame;
+      if (customPlan(begun)) {
+        const auto& frame = customPlan(begun)->frame;
         ex0 = frame[0]; ey0 = frame[1];
         ex1 = frame[0] + frame[2]; ey1 = frame[1] + frame[3];
         effective = true;
@@ -882,10 +882,10 @@ void Renderer::renderScene() {
   for (const auto& operation : operations) {
     if (operation.action == RenderCommand::Action::filterBegin) {
       targetYDown = true;
-      rasterResolution = operation.command->customFilterPlan ?
-        operation.command->customFilterPlan->resolutions[0] : 1.0F;
+      rasterResolution = customPlan(*operation.command) ?
+        customPlan(*operation.command)->resolutions[0] : 1.0F;
       rasterResolutions[filterDepth] = rasterResolution;
-      rasterFrame = operation.command->customFilterPlan ? operation.command->customFilterPlan->frame :
+      rasterFrame = customPlan(*operation.command) ? customPlan(*operation.command)->frame :
         std::array<float, 4>{0, 0, static_cast<float>(width_), static_cast<float>(height_)};
       rasterFrames[filterDepth] = rasterFrame;
       if (activeProgram) projectTarget(activeProgram);
@@ -898,12 +898,12 @@ void Renderer::renderScene() {
           groupTargets_[filterDepth].height == targetHeight) {
         if (diagnostics_) ++stats_.filterTargetReuses;
       }
-      ensureTarget(groupTargets_[filterDepth], operation.command->customFilterPlan ? pot(targetWidth) : targetWidth,
-        operation.command->customFilterPlan ? pot(targetHeight) : targetHeight);
+      ensureTarget(groupTargets_[filterDepth], customPlan(*operation.command) ? pot(targetWidth) : targetWidth,
+        customPlan(*operation.command) ? pot(targetHeight) : targetHeight);
       std::array<int, 4> boundedRect{};
-      const bool bounded = !operation.command->customFilterPlan && filterBoundsRect(operation.command, &boundedRect);
+      const bool bounded = !customPlan(*operation.command) && filterBoundsRect(operation.command, &boundedRect);
       filterRegionCounts[filterDepth] = 0;
-      const bool multiRegion = !operation.command->customFilterPlan && filterBoundsRegions(
+      const bool multiRegion = !customPlan(*operation.command) && filterBoundsRegions(
           operation.command, &filterRegions[filterDepth],
           &filterRegionCounts[filterDepth]);
       if (bounded) {
@@ -1301,15 +1301,15 @@ void Renderer::renderScene() {
       }
 
       if (filter.filterKind == scene_packet::FilterKind::custom) {
-        if (filter.customFilterPlan) {
-          drawCustomFilterPlan(*filter.customFilterPlan, groupTargets_[filterDepth].framebuffer,
+        if (customPlan(filter)) {
+          drawCustomFilterPlan(*customPlan(filter), groupTargets_[filterDepth].framebuffer,
             filterDepth == 0 ? rootFramebuffer : groupTargets_[filterDepth - 1].framebuffer,
             filter, sourceResolution, rasterResolution, targetYDown, rasterFrame);
           glUseProgram(program_);
           projectTarget(program_);
           activeProgram = program_;
-          activeBlend = filter.customFilterPlan->passes.empty() ? BlendMode::normal :
-            filter.customFilterPlan->passes.back().blend;
+          activeBlend = customPlan(filter)->passes.empty() ? BlendMode::normal :
+            customPlan(filter)->passes.back().blend;
           scissorActive = false;
           continue;
         }
