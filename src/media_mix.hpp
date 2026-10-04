@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
+#include <initializer_list>
 #include <memory>
 #include "media_decoder.hpp"
 
@@ -16,9 +16,97 @@ struct PreparedAudioAsset : DecodedAudio {
   int sourceChannels = 0;
 };
 
+// Streaming audio is consumed from the front on the real-time callback and
+// appended by the decoder worker. std::deque makes those two-sample pops cheap
+// asymptotically, but still pays segmented-storage and iterator overhead tens of
+// thousands of times per second. Keep one contiguous allocation and advance a
+// logical head instead.
+class StreamSampleBuffer {
+ public:
+  StreamSampleBuffer() = default;
+  StreamSampleBuffer(std::initializer_list<float> values) { assign(values.begin(), values.end()); }
+
+  std::size_t size() const { return size_; }
+  std::size_t capacity() const { return storage_.size(); }
+  bool empty() const { return size_ == 0; }
+
+  float& operator[](std::size_t index) {
+    return storage_[(head_ + index) % storage_.size()];
+  }
+  const float& operator[](std::size_t index) const {
+    return storage_[(head_ + index) % storage_.size()];
+  }
+
+  void reserve(std::size_t requested) {
+    if (requested <= storage_.size()) return;
+    std::vector<float> replacement(requested);
+    for (std::size_t index = 0; index < size_; ++index) {
+      replacement[index] = (*this)[index];
+    }
+    storage_.swap(replacement);
+    head_ = 0;
+  }
+
+  void clear() {
+    head_ = 0;
+    size_ = 0;
+  }
+
+  void push_back(float value) {
+    ensureCapacity(size_ + 1);
+    storage_[(head_ + size_) % storage_.size()] = value;
+    ++size_;
+  }
+
+  void append(const float* values, std::size_t count) {
+    if (count == 0) return;
+    ensureCapacity(size_ + count);
+    const std::size_t capacity = storage_.size();
+    const std::size_t tail = (head_ + size_) % capacity;
+    const std::size_t first = std::min(count, capacity - tail);
+    std::copy_n(values, first, storage_.data() + tail);
+    if (first < count) {
+      std::copy_n(values + first, count - first, storage_.data());
+    }
+    size_ += count;
+  }
+
+  template <typename Iterator>
+  void assign(Iterator first, Iterator last) {
+    clear();
+    for (; first != last; ++first) push_back(*first);
+  }
+
+  StreamSampleBuffer& operator=(std::initializer_list<float> values) {
+    assign(values.begin(), values.end());
+    return *this;
+  }
+
+  void pop_front(std::size_t count = 1) {
+    count = std::min(count, size_);
+    if (count == size_) {
+      clear();
+      return;
+    }
+    head_ = (head_ + count) % storage_.size();
+    size_ -= count;
+  }
+
+ private:
+  void ensureCapacity(std::size_t required) {
+    if (required <= storage_.size()) return;
+    const std::size_t doubled = storage_.empty() ? 16 : storage_.size() * 2;
+    reserve(std::max(required, doubled));
+  }
+
+  std::vector<float> storage_;
+  std::size_t head_ = 0;
+  std::size_t size_ = 0;
+};
+
 struct VoiceMixState {
   std::shared_ptr<const PreparedAudioAsset> asset;
-  std::deque<float> samples;  // interleaved stereo frames
+  StreamSampleBuffer samples;  // interleaved stereo frames
   double phase = 0;
   std::uint64_t positionFrame = 0;
   float volume = 1.0F, pitch = 1.0F, pan = 0.0F;
@@ -81,8 +169,7 @@ inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
         ? (voice.loop || voice.positionFrame < voice.asset->samples.size() / 2)
         : voice.samples.size() >= 2)) {
       if (!voice.asset) {
-        voice.samples.pop_front();
-        voice.samples.pop_front();
+        voice.samples.pop_front(2);
       }
       voice.phase -= 1;
       ++voice.positionFrame;
