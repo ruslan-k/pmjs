@@ -256,6 +256,7 @@ void Renderer::beginFrame() {
   sceneHasEffect_ = false;
   sceneHasCustomFilter_ = false;
   discardCommandsFrom(0);
+  frame_.effects.clear();
   images_.update();
   queueWidth_ = width_;
   queueHeight_ = height_;
