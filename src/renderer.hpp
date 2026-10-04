@@ -100,14 +100,21 @@ struct RenderCommand {
   std::array<float, 21> filterParameters{};
   float filterResolution = 1.0F;
   Primitive primitive = Primitive::sprite;
-  EffectDraw effect{};
+  // Effect payloads are large (two 4x4 matrices plus viewport state) and rare.
+  // Keep only a 1-based side-table index in the hot command vector so normal
+  // sprite commands do not drag ~156 bytes of unused effect state through cache.
+  std::uint32_t effectIndex = 0;
   bool clampedTilingSampling = false;
 };
 
 struct FramePacket {
   std::vector<RenderCommand> commands;
+  std::vector<EffectDraw> effects;
 
-  void clear() { commands.clear(); }
+  void clear() {
+    commands.clear();
+    effects.clear();
+  }
 };
 
 // `integer` falls back to `fit` when shrinking (floor of sub-1 is zero).
