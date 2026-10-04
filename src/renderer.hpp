@@ -82,7 +82,9 @@ struct RenderCommand {
   bool clipped = false;
   float blur = 0;
   ImageHandle maskImage = 0;
-  std::array<float, 6> maskTransform{};
+  // Masks are uncommon. Keep their inverse transform in frame-side storage so
+  // ordinary sprite commands do not carry 24 cold bytes.
+  std::uint32_t maskTransformIndex = 0;
   // Tone matrices are rare and large; keep a 1-based index into the
   // frame side table instead of 80 cold bytes in every sprite command.
   std::uint32_t colorMatrixIndex = 0;
@@ -95,7 +97,8 @@ struct RenderCommand {
   bool packedSpriteColor = false;
   bool spriteWorldVertices = false;
   bool standaloneBitmapRegion = false;
-  std::array<std::array<float, 2>, 4> spriteVertices{};
+  // Explicit world vertices are rare; retain the 32-byte quad in a side table.
+  std::uint32_t spriteVerticesIndex = 0;
   bool appliesMeshPostTintOverlay = false;
   std::uint8_t textureRotation = 0;
   bool nearest = false;
@@ -125,6 +128,8 @@ struct FramePacket {
   std::vector<std::array<float, 21>> filterParameters;
   std::vector<std::shared_ptr<const CustomFilterPlan>> customFilterPlans;
   std::vector<ColorEffectPayload> colorEffects;
+  std::vector<std::array<float, 6>> maskTransforms;
+  std::vector<std::array<std::array<float, 2>, 4>> spriteVertices;
 
   void clear() {
     commands.clear();
@@ -133,6 +138,8 @@ struct FramePacket {
     filterParameters.clear();
     customFilterPlans.clear();
     colorEffects.clear();
+    maskTransforms.clear();
+    spriteVertices.clear();
   }
 };
 
@@ -396,6 +403,22 @@ class Renderer {
       return nullptr;
     }
     return &frame_.colorEffects[command.colorEffectIndex - 1];
+  }
+  const std::array<float, 6>* maskTransform(
+      const RenderCommand& command) const {
+    if (command.maskTransformIndex == 0 ||
+        command.maskTransformIndex > frame_.maskTransforms.size()) {
+      return nullptr;
+    }
+    return &frame_.maskTransforms[command.maskTransformIndex - 1];
+  }
+  const std::array<std::array<float, 2>, 4>* spriteVertices(
+      const RenderCommand& command) const {
+    if (command.spriteVerticesIndex == 0 ||
+        command.spriteVerticesIndex > frame_.spriteVertices.size()) {
+      return nullptr;
+    }
+    return &frame_.spriteVertices[command.spriteVerticesIndex - 1];
   }
   static int filterBoundsPadding(scene_packet::FilterKind kind,
                                  const std::array<float, 21>& parameters);
