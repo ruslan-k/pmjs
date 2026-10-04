@@ -31,6 +31,8 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   const std::size_t originalCommandCount = frame_.commands.size();
   const std::size_t originalEffectCount = frame_.effects.size();
   const std::size_t originalColorMatrixCount = frame_.colorMatrices.size();
+  const std::size_t originalFilterParameterCount =
+    frame_.filterParameters.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
   const bool originalSceneHasEffect = sceneHasEffect_;
   const bool originalSceneHasCustomFilter = sceneHasCustomFilter_;
@@ -162,10 +164,11 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         }
         command.action = RenderCommand::Action::filterBegin;
         command.filterKind = static_cast<FilterKind>(blendValue);
+        std::array<float, 21> filterParameters{};
         std::copy_n(values + valueOffset + 7, 10,
-                    command.filterParameters.begin());
+                    filterParameters.begin());
         std::copy_n(values + valueOffset + 22, 11,
-                    command.filterParameters.begin() + 10);
+                    filterParameters.begin() + 10);
         command.filterResolution = values[valueOffset + 33];
         const float compositeBlend = values[valueOffset + filterCompositeBlendOffset];
         if (compositeBlend < 0 || compositeBlend > 3 ||
@@ -182,8 +185,8 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
             command.customFilterPlan = plan->second.lock();
             if (!command.customFilterPlan) return false;
           } else if (resource == 0 || resource > filterPrograms_.size() ||
-              command.filterParameters[0] < 0 ||
-              command.filterParameters[0] > 65536 ||
+              filterParameters[0] < 0 ||
+              filterParameters[0] > 65536 ||
               command.filterResolution != 1) return false;
           command.filterProgram = command.customFilterPlan ? 0 : resource;
           if (!command.customFilterPlan) {
@@ -200,112 +203,115 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
             if (components > 20) return false;
           }
         } else if (command.filterKind == FilterKind::blur) {
-          if (resource != 0 || command.filterParameters[0] < 0 ||
-              command.filterParameters[1] < 1 ||
-              command.filterParameters[1] > 15 ||
-              (command.filterParameters[2] != 0 &&
-               command.filterParameters[2] != 5)) return false;
+          if (resource != 0 || filterParameters[0] < 0 ||
+              filterParameters[1] < 1 ||
+              filterParameters[1] > 15 ||
+              (filterParameters[2] != 0 &&
+               filterParameters[2] != 5)) return false;
         } else if (command.filterKind == FilterKind::blurX ||
                    command.filterKind == FilterKind::blurY) {
-          if (resource != 0 || command.filterParameters[0] < 0 ||
-              command.filterParameters[1] < 1 ||
-              command.filterParameters[1] > 15 ||
-              (command.filterParameters[2] != 0 &&
-               command.filterParameters[2] != 5)) return false;
+          if (resource != 0 || filterParameters[0] < 0 ||
+              filterParameters[1] < 1 ||
+              filterParameters[1] > 15 ||
+              (filterParameters[2] != 0 &&
+               filterParameters[2] != 5)) return false;
         } else if (command.filterKind == FilterKind::mzColor) {
           if (resource != 0) return false;
         } else if (command.filterKind == FilterKind::fxaa) {
           if (resource != 0) return false;
         } else if (command.filterKind == FilterKind::displacement) {
-          if (!images_.lookup(resource) || command.filterParameters[2] <= 0 ||
-              command.filterParameters[3] <= 0) return false;
+          if (!images_.lookup(resource) || filterParameters[2] <= 0 ||
+              filterParameters[3] <= 0) return false;
           if (!images_.beginUse(resource)) return false;
           command.image = resource;
         } else if (command.filterKind == FilterKind::alphaMask) {
-          if (!images_.lookup(resource) || command.filterParameters[8] <= 0 ||
-              command.filterParameters[9] <= 0 ||
-              command.filterParameters[10] < 0 ||
-              command.filterParameters[10] > 1 ||
-              (command.filterParameters[11] != 0 &&
-               command.filterParameters[11] != 1) ||
-              command.filterParameters[12] < 0 ||
-              command.filterParameters[12] > 14 ||
-              std::fmod(command.filterParameters[12], 2.0F) != 0 ||
-              command.filterParameters[13] <= 0 ||
-              command.filterParameters[14] <= 0) return false;
+          if (!images_.lookup(resource) || filterParameters[8] <= 0 ||
+              filterParameters[9] <= 0 ||
+              filterParameters[10] < 0 ||
+              filterParameters[10] > 1 ||
+              (filterParameters[11] != 0 &&
+               filterParameters[11] != 1) ||
+              filterParameters[12] < 0 ||
+              filterParameters[12] > 14 ||
+              std::fmod(filterParameters[12], 2.0F) != 0 ||
+              filterParameters[13] <= 0 ||
+              filterParameters[14] <= 0) return false;
           if (!images_.beginUse(resource)) return false;
           command.image = resource;
         } else if (command.filterKind == FilterKind::noiseGlitch) {
-          if (resource != 0 || command.filterParameters[0] < 0 ||
-              command.filterParameters[2] < 0) return false;
+          if (resource != 0 || filterParameters[0] < 0 ||
+              filterParameters[2] < 0) return false;
         } else if (command.filterKind == FilterKind::zoomBlur) {
-          if (resource != 0 || command.filterParameters[3] < 0) return false;
+          if (resource != 0 || filterParameters[3] < 0) return false;
         } else if (command.filterKind == FilterKind::shockwave) {
-          if (resource != 0 || command.filterParameters[3] < 0) return false;
+          if (resource != 0 || filterParameters[3] < 0) return false;
         } else if (command.filterKind == FilterKind::advancedBloom) {
-          if (resource != 0 || command.filterParameters[3] < 1 ||
-              command.filterParameters[3] > 12 ||
-              command.filterParameters[4] <= 0 ||
-              command.filterParameters[5] <= 0) return false;
+          if (resource != 0 || filterParameters[3] < 1 ||
+              filterParameters[3] > 12 ||
+              filterParameters[4] <= 0 ||
+              filterParameters[5] <= 0) return false;
         } else if (command.filterKind == FilterKind::crt) {
-          if (resource != 0 || command.filterParameters[1] < 0 ||
-              command.filterParameters[4] < 0 ||
-              command.filterParameters[5] < 0 ||
-              command.filterParameters[6] < 0 ||
-              command.filterParameters[8] < 0) return false;
+          if (resource != 0 || filterParameters[1] < 0 ||
+              filterParameters[4] < 0 ||
+              filterParameters[5] < 0 ||
+              filterParameters[6] < 0 ||
+              filterParameters[8] < 0) return false;
         } else if (command.filterKind == FilterKind::adjustment) {
-          if (resource != 0 || command.filterParameters[0] <= 0) return false;
+          if (resource != 0 || filterParameters[0] <= 0) return false;
         } else if (command.filterKind == FilterKind::pixelate) {
-          if (resource != 0 || command.filterParameters[0] < 1 ||
-              command.filterParameters[1] < 1) return false;
+          if (resource != 0 || filterParameters[0] < 1 ||
+              filterParameters[1] < 1) return false;
         } else if (command.filterKind == FilterKind::rgbSplit) {
           if (resource != 0) return false;
         } else if (command.filterKind == FilterKind::bulgePinch) {
-          if (resource != 0 || command.filterParameters[2] < 0) return false;
+          if (resource != 0 || filterParameters[2] < 0) return false;
         } else if (command.filterKind == FilterKind::twist) {
-          if (resource != 0 || command.filterParameters[2] < 0) return false;
+          if (resource != 0 || filterParameters[2] < 0) return false;
         } else if (command.filterKind == FilterKind::ascii) {
-          if (resource != 0 || command.filterParameters[0] < 1) return false;
+          if (resource != 0 || filterParameters[0] < 1) return false;
         } else if (command.filterKind == FilterKind::dot ||
                    command.filterKind == FilterKind::emboss ||
                    command.filterKind == FilterKind::crossHatch) {
           if (resource != 0) return false;
         } else if (command.filterKind == FilterKind::radialBlur) {
-          if (resource != 0 || command.filterParameters[3] < 1 ||
-              command.filterParameters[3] > 64) return false;
+          if (resource != 0 || filterParameters[3] < 1 ||
+              filterParameters[3] > 64) return false;
         } else if (command.filterKind == FilterKind::reflection) {
           if (resource != 0) return false;
         } else if (command.filterKind == FilterKind::motionBlur) {
-          if (resource != 0 || command.filterParameters[2] < 1 ||
-              command.filterParameters[2] > 64) return false;
+          if (resource != 0 || filterParameters[2] < 1 ||
+              filterParameters[2] > 64) return false;
         } else if (command.filterKind == FilterKind::alpha) {
-          if (resource != 0 || command.filterParameters[0] < 0) return false;
+          if (resource != 0 || filterParameters[0] < 0) return false;
         } else if (command.filterKind == FilterKind::oldFilm) {
-          if (resource != 0 || command.filterParameters[0] < 0 ||
-              command.filterParameters[1] < 0 ||
-              command.filterParameters[2] < 0 ||
-              command.filterParameters[4] < 0 ||
-              command.filterParameters[5] < 0 ||
-              command.filterParameters[6] < 0 ||
-              command.filterParameters[8] < 0) return false;
+          if (resource != 0 || filterParameters[0] < 0 ||
+              filterParameters[1] < 0 ||
+              filterParameters[2] < 0 ||
+              filterParameters[4] < 0 ||
+              filterParameters[5] < 0 ||
+              filterParameters[6] < 0 ||
+              filterParameters[8] < 0) return false;
         } else if (command.filterKind == FilterKind::glow) {
-          if (resource != 0 || command.filterParameters[0] < 0 ||
-              command.filterParameters[0] > 32 ||
-              command.filterParameters[6] <= 0) return false;
+          if (resource != 0 || filterParameters[0] < 0 ||
+              filterParameters[0] > 32 ||
+              filterParameters[6] <= 0) return false;
         } else if (command.filterKind == FilterKind::godray) {
           if (resource != 0) return false;
         } else if (command.filterKind == FilterKind::kawaseBlur) {
-          if (resource != 0 || command.filterParameters[0] < 1 ||
-              command.filterParameters[0] > 15 ||
-              command.filterParameters[1] <= 0 ||
-              command.filterParameters[2] <= 0) return false;
+          if (resource != 0 || filterParameters[0] < 1 ||
+              filterParameters[0] > 15 ||
+              filterParameters[1] <= 0 ||
+              filterParameters[2] <= 0) return false;
         } else if (command.filterKind == FilterKind::colorMatrix) {
-          if (resource != 0 || command.filterParameters[20] < 0 ||
-              command.filterParameters[20] > 1) return false;
+          if (resource != 0 || filterParameters[20] < 0 ||
+              filterParameters[20] > 1) return false;
         } else if (command.filterKind == FilterKind::pictureBlend) {
-          if (resource != 0 || (command.filterParameters[0] != 0 &&
-              command.filterParameters[0] != 1)) return false;
+          if (resource != 0 || (filterParameters[0] != 0 &&
+              filterParameters[0] != 1)) return false;
         }
+        frame_.filterParameters.push_back(filterParameters);
+        command.filterParametersIndex =
+          static_cast<std::uint32_t>(frame_.filterParameters.size());
         ++filterDepth;
       } else {
         if (filterDepth == 0 || blendValue != 0 || resource != 0) return false;
@@ -315,6 +321,9 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       try {
         frame_.commands.push_back(command);
       } catch (...) {
+        if (command.filterParametersIndex != 0) {
+          frame_.filterParameters.pop_back();
+        }
         if (command.image) images_.endUse(command.image);
         throw;
       }
@@ -524,6 +533,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     discardCommandsFrom(originalCommandCount);
     frame_.effects.resize(originalEffectCount);
     frame_.colorMatrices.resize(originalColorMatrixCount);
+    frame_.filterParameters.resize(originalFilterParameterCount);
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
     sceneHasEffect_ = originalSceneHasEffect;
     sceneHasCustomFilter_ = originalSceneHasCustomFilter;
@@ -532,6 +542,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   discardCommandsFrom(originalCommandCount);
   frame_.effects.resize(originalEffectCount);
   frame_.colorMatrices.resize(originalColorMatrixCount);
+  frame_.filterParameters.resize(originalFilterParameterCount);
   sceneSubmittedThisFrame_ = originalSceneSubmitted;
   sceneHasEffect_ = originalSceneHasEffect;
   sceneHasCustomFilter_ = originalSceneHasCustomFilter;
