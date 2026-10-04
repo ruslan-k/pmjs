@@ -23,7 +23,17 @@ namespace {
 constexpr std::uint32_t indexMask = 0xffffU;
 constexpr std::uint16_t generationMask = 0x7fffU;
 constexpr std::size_t maxCanvasDependencyDepth = 16;
+constexpr std::size_t maxRetainedScratchFloor = 1024U * 1024U;
 
+void prepareScratch(std::vector<std::uint8_t>& scratch, std::size_t required) {
+  // Reuse normal frame-to-frame workspaces, but do not let a one-off giant
+  // canvas pin a correspondingly giant allocation for the rest of the game.
+  if (scratch.capacity() > maxRetainedScratchFloor &&
+      required <= scratch.capacity() / 4U) {
+    std::vector<std::uint8_t>().swap(scratch);
+  }
+  scratch.resize(required);
+}
 
 }
 
@@ -903,7 +913,8 @@ bool CanvasStore::blurNow(Content& surface) {
 
   // Preserve upstream Content/version ownership while keeping the low-memory
   // separable blur: only one row/column needs scratch storage.
-  blurScratch_.resize(static_cast<std::size_t>(std::max(width, height)) * 4U);
+  prepareScratch(blurScratch_,
+    static_cast<std::size_t>(std::max(width, height)) * 4U);
   auto& scratch = blurScratch_;
   constexpr int weights[5] = {1, 4, 6, 4, 1};
 
@@ -1566,7 +1577,7 @@ bool CanvasStore::uploadSurface(Surface& target) {
   const int width = target.image ? surface.dirtyX1 - x : surface.width;
   const int height = target.image ? surface.dirtyY1 - y : surface.height;
   const std::size_t pixelBytes = static_cast<std::size_t>(width) * height * 4U;
-  uploadScratch_.resize(pixelBytes);
+  prepareScratch(uploadScratch_, pixelBytes);
   auto* pixels = uploadScratch_.data();
   for (int row = 0; row < height; ++row) {
     for (int column = 0; column < width; ++column) {
