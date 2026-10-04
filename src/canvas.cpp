@@ -214,6 +214,11 @@ struct CanvasStore::FontState {
 
   FontState() {
     FT_Init_FreeType(&library);
+    if (const char* profile = std::getenv("PMJS_RESOURCE_PROFILE");
+        profile && std::string(profile) == "low") {
+      maxGlyphBytes = 4U * 1024U * 1024U;
+      maxGlyphEntries = 2048;
+    }
     if (const char* env = std::getenv("PMJS_FONT_TELEMETRY")) {
       telemetryEnabled = (std::string(env) == "1");
     } else if (const char* env2 = std::getenv("PMJS_GLYPH_TELEMETRY")) {
