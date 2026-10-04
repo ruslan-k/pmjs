@@ -198,7 +198,7 @@ void Renderer::computeFilterContentBounds() {
       float ey1 = 0.0F;
       bool effective = false;
       const bool regionsValid = !level.unbounded &&
-          filterBoundsPadding(begun.filterKind, begun.filterParameters) == 0;
+          filterBoundsPadding(begun.filterKind, filterParams(begun)) == 0;
       if (begun.customFilterPlan) {
         const auto& frame = begun.customFilterPlan->frame;
         ex0 = frame[0]; ey0 = frame[1];
@@ -206,7 +206,7 @@ void Renderer::computeFilterContentBounds() {
         effective = true;
       } else if (begun.filterKind == scene_packet::FilterKind::custom && level.hasContent &&
           !level.unbounded) {
-        const float padding = begun.filterParameters[0];
+        const float padding = filterParams(begun)[0];
         ex0 = level.minX - padding;
         ey0 = level.minY - padding;
         ex1 = level.maxX + padding;
@@ -216,7 +216,7 @@ void Renderer::computeFilterContentBounds() {
         effective = true;
       } else if (!level.unbounded &&
                  filterBoundsPadding(begun.filterKind,
-                                     begun.filterParameters) == 0) {
+                                     filterParams(begun)) == 0) {
         ex0 = level.minX;
         ey0 = level.minY;
         ex1 = level.maxX;
@@ -335,7 +335,7 @@ bool Renderer::filterBoundsRegions(
   if (regions == nullptr || regionCount == nullptr || filterBegin == nullptr ||
       filterBegin->filterKind != scene_packet::FilterKind::colorMatrix ||
       filterBoundsPadding(filterBegin->filterKind,
-                          filterBegin->filterParameters) != 0) {
+                          filterParams(*filterBegin)) != 0) {
     return false;
   }
   std::array<int, 4> aabb{};
@@ -376,7 +376,7 @@ bool Renderer::filterBoundsRect(const RenderCommand* filterBegin,
     return false;
   }
   const int pad = filterBoundsPadding(filterBegin->filterKind,
-                                        filterBegin->filterParameters);
+                                        filterParams(*filterBegin));
   if (pad < 0) return false;
   int left = filterBounds_[index].rect[0] - pad;
   int top = filterBounds_[index].rect[1] - pad;
@@ -477,7 +477,7 @@ void Renderer::renderScene() {
         filter.blendMode != BlendMode::normal ||
         filterDepthBefore[begin] != 0 ||
         filter.filterKind != scene_packet::FilterKind::colorMatrix ||
-        !preservesAlpha(filter.filterParameters)) continue;
+        !preservesAlpha(filterParams(filter))) continue;
     std::size_t depth = 1;
     std::size_t end = begin;
     static thread_local std::vector<std::size_t> drawIndices;
@@ -513,7 +513,7 @@ void Renderer::renderScene() {
     }
     if (!eligible || end == begin || drawIndices.empty() ||
         (drawIndices.size() > 1 &&
-         !distributesOverSourceOver(filter.filterParameters))) {
+         !distributesOverSourceOver(filterParams(filter)))) {
       continue;
     }
     inlineFilterBoundary[begin] = true;
@@ -993,12 +993,12 @@ void Renderer::renderScene() {
       std::uint32_t compositeTexture = groupTargets_[filterDepth].texture;
       if (filter.filterKind == scene_packet::FilterKind::blur) {
         ensureTarget(filterTarget_, width_, height_);
-        glUniform1fv(pixiFilterParametersUniform_, 3, filter.filterParameters.data());
-        glUniform1f(blurUniform_, filter.filterParameters[0]);
+        glUniform1fv(pixiFilterParametersUniform_, 3, filterParams(filter).data());
+        glUniform1f(blurUniform_, filterParams(filter)[0]);
         glUniform2f(blurDirectionUniform_, 1, 0);
         glDisable(GL_BLEND);
         std::uint32_t sourceTexture = groupTargets_[filterDepth].texture;
-        const int passCount = static_cast<int>(filter.filterParameters[1]);
+        const int passCount = static_cast<int>(filterParams(filter)[1]);
         for (int pass = 0; pass < passCount; ++pass) {
           const bool targetFilter = sourceTexture == groupTargets_[filterDepth].texture;
           glBindFramebuffer(GL_FRAMEBUFFER,
@@ -1035,17 +1035,17 @@ void Renderer::renderScene() {
         compositeTexture = sourceTexture;
       } else if (filter.filterKind == scene_packet::FilterKind::blurX ||
                  filter.filterKind == scene_packet::FilterKind::blurY) {
-        glUniform1fv(pixiFilterParametersUniform_, 3, filter.filterParameters.data());
-        if (filter.filterParameters[1] > 1) {
+        glUniform1fv(pixiFilterParametersUniform_, 3, filterParams(filter).data());
+        if (filterParams(filter)[1] > 1) {
           ensureTarget(filterTarget_, width_, height_);
         }
-        glUniform1f(blurUniform_, filter.filterParameters[0]);
+        glUniform1f(blurUniform_, filterParams(filter)[0]);
         glUniform2f(blurDirectionUniform_,
                     filter.filterKind == scene_packet::FilterKind::blurX ? 1 : 0,
                     filter.filterKind == scene_packet::FilterKind::blurY ? 1 : 0);
         glDisable(GL_BLEND);
         std::uint32_t sourceTexture = groupTargets_[filterDepth].texture;
-        const int passCount = static_cast<int>(filter.filterParameters[1]);
+        const int passCount = static_cast<int>(filterParams(filter)[1]);
         for (int pass = 1; pass < passCount; ++pass) {
           const bool targetFilter = sourceTexture == groupTargets_[filterDepth].texture;
           glBindFramebuffer(GL_FRAMEBUFFER,
@@ -1078,9 +1078,9 @@ void Renderer::renderScene() {
         textureRepeatState_[displacement->texture] = true;
         glUniform1i(displacementImageUniform_, 2);
         glUniform4fv(displacementBoundsUniform_, 1,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform2fv(displacementScaleUniform_, 1,
-                     filter.filterParameters.data() + 4);
+                     filterParams(filter).data() + 4);
         glUniform1i(displacementEnabledUniform_, 1);
         glActiveTexture(GL_TEXTURE0);
       } else if (filter.filterKind == scene_packet::FilterKind::alphaMask) {
@@ -1092,31 +1092,31 @@ void Renderer::renderScene() {
         glBindTexture(GL_TEXTURE_2D, mask->texture);
         glUniform1i(maskImageUniform_, 1);
         glUniform1fv(maskTransformUniform_, 6,
-                     maskMatrix(filter.filterParameters.data()).data());
+                     maskMatrix(filterParams(filter).data()).data());
         glUniform4fv(maskFrameUniform_, 1,
-                     filter.filterParameters.data() + 6);
+                     filterParams(filter).data() + 6);
         glUniform2f(maskTextureSizeUniform_, static_cast<float>(mask->width),
                     static_cast<float>(mask->height));
         glUniform1f(maskScreenHeightUniform_, rasterFrame[3] * rasterResolution);
-        glUniform1f(maskAlphaUniform_, filter.filterParameters[10]);
-        glUniform1i(maskUsesRedUniform_, filter.filterParameters[11] != 0);
+        glUniform1f(maskAlphaUniform_, filterParams(filter)[10]);
+        glUniform1i(maskUsesRedUniform_, filterParams(filter)[11] != 0);
         glUniform1i(maskRotationUniform_,
-                    static_cast<int>(filter.filterParameters[12]) / 2);
-        glUniform2f(maskLocalSizeUniform_, filter.filterParameters[13],
-                    filter.filterParameters[14]);
+                    static_cast<int>(filterParams(filter)[12]) / 2);
+        glUniform2f(maskLocalSizeUniform_, filterParams(filter)[13],
+                    filterParams(filter)[14]);
         glUniform1i(maskEnabledUniform_, 1);
         glActiveTexture(GL_TEXTURE0);
       } else if (filter.filterKind == scene_packet::FilterKind::noiseGlitch) {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform4fv(noiseGlitchParametersUniform_, 1,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform1i(noiseGlitchEnabledUniform_, 1);
       } else if (filter.filterKind == scene_packet::FilterKind::zoomBlur ||
                  filter.filterKind == scene_packet::FilterKind::shockwave) {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
-        glUniform1fv(pixiFilterParametersUniform_, 10, filter.filterParameters.data());
+        glUniform1fv(pixiFilterParametersUniform_, 10, filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_,
                     filter.filterKind == scene_packet::FilterKind::zoomBlur ? 1 : 2);
       } else if (filter.filterKind == scene_packet::FilterKind::advancedBloom) {
@@ -1126,7 +1126,7 @@ void Renderer::renderScene() {
         glUniform2f(blurDirectionUniform_, 0, 0);
         glDisable(GL_BLEND);
         const std::array<float, 10> extractParameters = {
-          filter.filterParameters[2], 0, 0, 0, 0, 0, 0, 0, 0, 0};
+          filterParams(filter)[2], 0, 0, 0, 0, 0, 0, 0, 0, 0};
         glUniform1fv(pixiFilterParametersUniform_, 10,
                      extractParameters.data());
         glUniform1i(pixiFilterKindUniform_, 3);
@@ -1140,7 +1140,7 @@ void Renderer::renderScene() {
         }
 
         std::uint32_t bloomSource = bloomTarget_.texture;
-        const int passCount = static_cast<int>(filter.filterParameters[3]);
+        const int passCount = static_cast<int>(filterParams(filter)[3]);
         for (int pass = 0; pass < passCount; ++pass) {
           const bool targetFilter = bloomSource == bloomTarget_.texture;
           glBindFramebuffer(GL_FRAMEBUFFER,
@@ -1148,8 +1148,8 @@ void Renderer::renderScene() {
                                            bloomTarget_.framebuffer);
           glBindTexture(GL_TEXTURE_2D, bloomSource);
           const std::array<float, 10> passParameters = {
-            filter.filterParameters[6 + pass], filter.filterParameters[4],
-            filter.filterParameters[5], 0, 0, 0, 0, 0, 0, 0};
+            filterParams(filter)[6 + pass], filterParams(filter)[4],
+            filterParams(filter)[5], 0, 0, 0, 0, 0, 0, 0};
           glUniform1fv(pixiFilterParametersUniform_, 10,
                        passParameters.data());
           glUniform1i(pixiFilterKindUniform_, 21);
@@ -1170,7 +1170,7 @@ void Renderer::renderScene() {
         sourceYDown = true;
         glUniform1i(filterImageYDownUniform_, sourceYDown);
         const std::array<float, 10> compositeParameters = {
-          filter.filterParameters[0], filter.filterParameters[1],
+          filterParams(filter)[0], filterParams(filter)[1],
           0, 0, 0, 0, 0, 0, 0, 0};
         glUniform1fv(pixiFilterParametersUniform_, 10,
                      compositeParameters.data());
@@ -1178,7 +1178,7 @@ void Renderer::renderScene() {
       } else if (filter.filterKind == scene_packet::FilterKind::crt) {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
-        glUniform1fv(pixiFilterParametersUniform_, 10, filter.filterParameters.data());
+        glUniform1fv(pixiFilterParametersUniform_, 10, filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_, 4);
       } else if (filter.filterKind == scene_packet::FilterKind::adjustment ||
                  filter.filterKind == scene_packet::FilterKind::pixelate ||
@@ -1187,7 +1187,7 @@ void Renderer::renderScene() {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform1fv(pixiFilterParametersUniform_, 10,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_,
           5 + static_cast<int>(filter.filterKind) -
             static_cast<int>(scene_packet::FilterKind::adjustment));
@@ -1199,7 +1199,7 @@ void Renderer::renderScene() {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform1fv(pixiFilterParametersUniform_, 10,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_,
           9 + static_cast<int>(filter.filterKind) -
             static_cast<int>(scene_packet::FilterKind::twist));
@@ -1209,7 +1209,7 @@ void Renderer::renderScene() {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform1fv(pixiFilterParametersUniform_, 10,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_,
           14 + static_cast<int>(filter.filterKind) -
             static_cast<int>(scene_packet::FilterKind::radialBlur));
@@ -1217,25 +1217,25 @@ void Renderer::renderScene() {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform1fv(pixiFilterParametersUniform_, 10,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_, 17);
       } else if (filter.filterKind == scene_packet::FilterKind::oldFilm) {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform1fv(pixiFilterParametersUniform_, 10,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_, 18);
       } else if (filter.filterKind == scene_packet::FilterKind::glow) {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform1fv(pixiFilterParametersUniform_, 10,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_, 19);
       } else if (filter.filterKind == scene_packet::FilterKind::godray) {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform1fv(pixiFilterParametersUniform_, 10,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_, 20);
       } else if (filter.filterKind == scene_packet::FilterKind::kawaseBlur) {
         ensureTarget(filterTarget_, width_, height_);
@@ -1243,7 +1243,7 @@ void Renderer::renderScene() {
         glUniform2f(blurDirectionUniform_, 0, 0);
         glDisable(GL_BLEND);
         std::uint32_t sourceTexture = groupTargets_[filterDepth].texture;
-        const int passCount = static_cast<int>(filter.filterParameters[0]);
+        const int passCount = static_cast<int>(filterParams(filter)[0]);
         for (int pass = 0; pass < passCount; ++pass) {
           const bool targetFilter = sourceTexture == groupTargets_[filterDepth].texture;
           glBindFramebuffer(GL_FRAMEBUFFER,
@@ -1251,8 +1251,8 @@ void Renderer::renderScene() {
                                            groupTargets_[filterDepth].framebuffer);
           glBindTexture(GL_TEXTURE_2D, sourceTexture);
           const std::array<float, 10> passParameters = {
-            filter.filterParameters[3 + pass], filter.filterParameters[1],
-            filter.filterParameters[2], 0, 0, 0, 0, 0, 0, 0};
+            filterParams(filter)[3 + pass], filterParams(filter)[1],
+            filterParams(filter)[2], 0, 0, 0, 0, 0, 0, 0};
           glUniform1fv(pixiFilterParametersUniform_, 10,
                        passParameters.data());
           glUniform1i(pixiFilterKindUniform_, 21);
@@ -1271,14 +1271,14 @@ void Renderer::renderScene() {
       } else if (filter.filterKind == scene_packet::FilterKind::colorMatrix) {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
-        glUniform1fv(colorMatrixUniform_, 20, filter.filterParameters.data());
-        glUniform1f(colorMatrixAlphaUniform_, filter.filterParameters[20]);
+        glUniform1fv(colorMatrixUniform_, 20, filterParams(filter).data());
+        glUniform1f(colorMatrixAlphaUniform_, filterParams(filter)[20]);
         glUniform1i(colorMatrixEnabledUniform_, 1);
       } else if (filter.filterKind == scene_packet::FilterKind::mzColor) {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform1fv(pixiFilterParametersUniform_, 10,
-                     filter.filterParameters.data());
+                     filterParams(filter).data());
         glUniform1i(pixiFilterKindUniform_, 26);
       } else if (filter.filterKind == scene_packet::FilterKind::fxaa) {
         glUniform1f(blurUniform_, 0);
@@ -1288,7 +1288,7 @@ void Renderer::renderScene() {
         glUniform1f(blurUniform_, 0);
         glUniform2f(blurDirectionUniform_, 0, 0);
         glUniform1i(pixiFilterKindUniform_,
-          filter.filterParameters[0] == 0 ? 23 : 24);
+          filterParams(filter)[0] == 0 ? 23 : 24);
       }
 
       if (filter.filterKind == scene_packet::FilterKind::custom) {
@@ -1350,7 +1350,7 @@ void Renderer::renderScene() {
           float(frameWidth - 1) / input.width, float(frameHeight - 1) / input.height);
         int offset = 1;
         for (const auto& uniform : custom.uniforms) {
-          const float* data = filter.filterParameters.data() + offset;
+          const float* data = filterParams(filter).data() + offset;
           switch (uniform.type) {
             case GL_FLOAT: glUniform1fv(uniform.location, uniform.count, data); break;
             case GL_FLOAT_VEC2: glUniform2fv(uniform.location, uniform.count, data); break;
@@ -1718,9 +1718,9 @@ void Renderer::renderScene() {
                   operation.inlineMatrix ? 1 : 0);
       if (operation.inlineMatrix) {
         glUniform1fv(spriteEffectMatrixUniform_, 20,
-                     operation.inlineMatrix->filterParameters.data());
+                     filterParams(*operation.inlineMatrix).data());
         glUniform1f(spriteEffectMatrixAlphaUniform_,
-                    operation.inlineMatrix->filterParameters[20]);
+                    filterParams(*operation.inlineMatrix)[20]);
       }
     }
     if (!simpleSprite && operation.maskImage) {
