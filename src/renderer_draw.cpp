@@ -306,9 +306,14 @@ void Renderer::computeFilterContentBounds() {
     const float dw = command.destination[0];
     const float dh = command.destination[1];
     if (!(dw > 0.0F) || !(dh > 0.0F)) continue;
+    const auto* commandSpriteVertices = spriteVertices(command);
+    if (command.spriteWorldVertices && commandSpriteVertices == nullptr) {
+      top.unbounded = true;
+      continue;
+    }
     const auto& t = command.transform;
     const auto point = [&](std::size_t corner, float x, float y) {
-      return command.spriteWorldVertices ? command.spriteVertices[corner] :
+      return command.spriteWorldVertices ? (*commandSpriteVertices)[corner] :
         std::array<float, 2>{t[0] * x + t[2] * y + t[4], t[1] * x + t[3] * y + t[5]};
     };
     const auto [x0, y0] = point(0, 0, 0);
@@ -703,11 +708,15 @@ void Renderer::renderScene() {
     const float textureHeight = info ? static_cast<float>(info->height) : 1.0F;
     const std::uint32_t texture = info ? info->texture : whiteTexture_;
     const bool texturePremultiplied = command.premultipliedSpriteTexture || (info && info->premultiplied);
+    const auto* commandSpriteVertices = spriteVertices(command);
+    if (command.spriteWorldVertices && commandSpriteVertices == nullptr) continue;
+    const auto* commandMaskTransform = maskTransform(command);
+    if (command.maskImage && commandMaskTransform == nullptr) continue;
     const auto& t = command.transform;
     const auto point = [&](float x, float y, std::size_t corner) {
       float px = t[0] * x + t[2] * y + t[4];
       float py = t[1] * x + t[3] * y + t[5];
-      if (command.spriteWorldVertices) { px = command.spriteVertices[corner][0]; py = command.spriteVertices[corner][1]; }
+      if (command.spriteWorldVertices) { px = (*commandSpriteVertices)[corner][0]; py = (*commandSpriteVertices)[corner][1]; }
       if (command.roundPixels) {
         px = std::floor(px);
         py = std::floor(py);
@@ -775,10 +784,10 @@ void Renderer::renderScene() {
       color[3] = std::floor(alpha * 255.0F) / 255.0F;
     }
     const bool worldVertices = command.spriteWorldVertices && viewportMapping == std::array<float, 4>{1, 1, 0, 0};
-    const auto vertex0 = worldVertices ? command.spriteVertices[0] : p0;
-    const auto vertex1 = worldVertices ? command.spriteVertices[1] : p1;
-    const auto vertex2 = worldVertices ? command.spriteVertices[2] : p2;
-    const auto vertex3 = worldVertices ? command.spriteVertices[3] : p3;
+    const auto vertex0 = worldVertices ? (*commandSpriteVertices)[0] : p0;
+    const auto vertex1 = worldVertices ? (*commandSpriteVertices)[1] : p1;
+    const auto vertex2 = worldVertices ? (*commandSpriteVertices)[2] : p2;
+    const auto vertex3 = worldVertices ? (*commandSpriteVertices)[3] : p3;
     const std::array<float, 48> vertices = {
       vertex0[0], vertex0[1], uv0[0], uv0[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
       vertex1[0], vertex1[1], uv1[0], uv1[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
@@ -801,7 +810,8 @@ void Renderer::renderScene() {
         operations.back().clampedTilingSampling != command.clampedTilingSampling ||
         operations.back().blur != command.blur ||
         operations.back().maskImage != command.maskImage ||
-        operations.back().maskTransform != command.maskTransform ||
+        (command.maskImage &&
+         operations.back().maskTransform != *commandMaskTransform) ||
         operations.back().appliesSpriteColor != command.appliesSpriteColor ||
         operations.back().pixiSpritePacking != command.pixiSpritePacking ||
         operations.back().spriteWorldVertices != worldVertices ||
@@ -818,7 +828,8 @@ void Renderer::renderScene() {
         command.nearest,
         quadFirstIndex, 6, nullptr,
         operationClip, operationClipped, textureWidth, textureHeight,
-        command.blur, command.maskImage, command.maskTransform});
+        command.blur, command.maskImage,
+        commandMaskTransform ? *commandMaskTransform : std::array<float, 6>{}});
       operations.back().appliesSpriteColor = command.appliesSpriteColor;
       operations.back().pixiSpritePacking = command.pixiSpritePacking;
       operations.back().spriteWorldVertices = worldVertices;
@@ -1667,14 +1678,15 @@ void Renderer::renderScene() {
         }
       }
       if (command.maskImage) {
+        const auto* commandMaskTransform = maskTransform(command);
         const auto mask = images_.lookup(command.maskImage);
-        if (!mask) continue;
+        if (!mask || commandMaskTransform == nullptr) continue;
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, mask->texture);
         glUniform1i(uniforms.maskImage, 1);
         glUniform1i(uniforms.maskEnabled, 1);
         glUniform1fv(uniforms.maskTransform, 6,
-                     maskMatrix(command.maskTransform.data()).data());
+                     maskMatrix(commandMaskTransform->data()).data());
         glUniform4f(uniforms.maskFrame, 0, 0,
                     static_cast<float>(mask->width),
                     static_cast<float>(mask->height));
