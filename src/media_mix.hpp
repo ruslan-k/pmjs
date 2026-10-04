@@ -94,6 +94,19 @@ class StreamSampleBuffer {
     size_ -= count;
   }
 
+  // Read the current and next interleaved stereo frames with one wrap test.
+  // mixVoiceInto() calls this once per output frame instead of mapping four
+  // logical indices through the ring separately.
+  void frontStereoPair(float& left, float& right,
+                       float& nextLeft, float& nextRight) const {
+    left = storage_[head_];
+    right = storage_[head_ + 1U < storage_.size() ? head_ + 1U : 0U];
+    std::size_t next = head_ + 2U;
+    if (next >= storage_.size()) next -= storage_.size();
+    nextLeft = storage_[next];
+    nextRight = storage_[next + 1U < storage_.size() ? next + 1U : 0U];
+  }
+
  private:
   std::size_t physicalIndex(std::size_t logicalIndex) const {
     std::size_t index = head_ + logicalIndex;
@@ -129,6 +142,10 @@ struct VoiceMixState {
 inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
                          float master) {
   if (!voice.playing || voice.suspended) return;
+  const float leftPanGain =
+    voice.leftGain * (voice.pan > 0 ? 1 - voice.pan : 1);
+  const float rightPanGain =
+    voice.rightGain * (voice.pan < 0 ? 1 + voice.pan : 1);
   for (int frame = 0; frame < frames; ++frame) {
     std::uint64_t nextSampleFrame = voice.positionFrame + 1;
     if (voice.asset) {
@@ -159,17 +176,24 @@ inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
       }
     }
     const float fraction = static_cast<float>(voice.phase);
-    const auto sample = [&](int channel, bool next) {
-      if (voice.asset) return voice.asset->samples[
-        (next ? nextSampleFrame : voice.positionFrame) * 2 + channel];
-      return voice.samples[(next ? 2 : 0) + channel];
-    };
-    const float left = sample(0, false) * (1 - fraction) + sample(0, true) * fraction;
-    const float right = sample(1, false) * (1 - fraction) + sample(1, true) * fraction;
-    const float leftGain =
-        voice.volume * voice.gain * voice.leftGain * (voice.pan > 0 ? 1 - voice.pan : 1);
-    const float rightGain =
-        voice.volume * voice.gain * voice.rightGain * (voice.pan < 0 ? 1 + voice.pan : 1);
+    float currentLeft, currentRight, nextLeft, nextRight;
+    if (voice.asset) {
+      const auto currentOffset = voice.positionFrame * 2;
+      const auto nextOffset = nextSampleFrame * 2;
+      currentLeft = voice.asset->samples[currentOffset];
+      currentRight = voice.asset->samples[currentOffset + 1];
+      nextLeft = voice.asset->samples[nextOffset];
+      nextRight = voice.asset->samples[nextOffset + 1];
+    } else {
+      voice.samples.frontStereoPair(
+        currentLeft, currentRight, nextLeft, nextRight);
+    }
+    const float left =
+      currentLeft * (1 - fraction) + nextLeft * fraction;
+    const float right =
+      currentRight * (1 - fraction) + nextRight * fraction;
+    const float leftGain = voice.volume * voice.gain * leftPanGain;
+    const float rightGain = voice.volume * voice.gain * rightPanGain;
     output[frame * 2] += left * leftGain * master;
     output[frame * 2 + 1] += right * rightGain * master;
     voice.phase += voice.pitch;
