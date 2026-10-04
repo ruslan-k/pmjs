@@ -255,10 +255,37 @@ void Renderer::beginFrame() {
   sceneSubmittedThisFrame_ = false;
   sceneHasEffect_ = false;
   sceneHasCustomFilter_ = false;
+
+  const std::size_t previousCommandCount = frame_.commands.size();
+  const std::size_t previousEffectCount = frame_.effects.size();
+  const std::size_t previousColorMatrixCount = frame_.colorMatrices.size();
+  const std::size_t previousFilterParameterCount = frame_.filterParameters.size();
+
   discardCommandsFrom(0);
-  frame_.effects.clear();
-  frame_.colorMatrices.clear();
-  frame_.filterParameters.clear();
+  if (frame_.commands.capacity() > 2048 &&
+      previousCommandCount * 4 < frame_.commands.capacity()) {
+    std::vector<RenderCommand>().swap(frame_.commands);
+  }
+
+  if (frame_.effects.capacity() > 64 &&
+      previousEffectCount * 4 < frame_.effects.capacity()) {
+    std::vector<EffectDraw>().swap(frame_.effects);
+  } else {
+    frame_.effects.clear();
+  }
+  if (frame_.colorMatrices.capacity() > 64 &&
+      previousColorMatrixCount * 4 < frame_.colorMatrices.capacity()) {
+    std::vector<std::array<float, 20>>().swap(frame_.colorMatrices);
+  } else {
+    frame_.colorMatrices.clear();
+  }
+  if (frame_.filterParameters.capacity() > 64 &&
+      previousFilterParameterCount * 4 < frame_.filterParameters.capacity()) {
+    std::vector<std::array<float, 21>>().swap(frame_.filterParameters);
+  } else {
+    frame_.filterParameters.clear();
+  }
+
   images_.update();
   queueWidth_ = width_;
   queueHeight_ = height_;
