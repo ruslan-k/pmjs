@@ -68,6 +68,24 @@ The output directory contains:
 
 The profiler follows child processes, so it can wrap the existing PortMaster shell launcher rather than requiring the final Node process to be invoked directly.
 
+For ~1 GB handhelds, PMJS also has an opt-in resource profile. It lowers only cache residency; rendering and game semantics are unchanged. Explicit cache variables still override the profile.
+
+```sh
+export PMJS_RESOURCE_PROFILE=low
+# Defaults under the low profile:
+#   image warm cache: 2 MiB
+#   glyph cache:      4 MiB / 2048 entries
+#   prepared audio:   4 MiB cache, 1 MiB per asset, 128 KiB sync-decode ceiling
+#
+# Optional per-game overrides:
+export PMJS_IMAGE_WARM_CACHE_BYTES=2097152
+export PMJS_GLYPH_CACHE_MAX_BYTES=4194304
+export PMJS_GLYPH_CACHE_MAX_ENTRIES=2048
+export PMJS_AUDIO_CACHE_BYTES=4194304
+export PMJS_AUDIO_MAX_ASSET_BYTES=1048576
+export PMJS_AUDIO_MAX_SYNC_BYTES=131072
+```
+
 For RPG Maker MV ports, several runtime A/B switches are available for device-specific bottlenecks:
 
 ```sh
