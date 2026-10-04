@@ -410,6 +410,7 @@ var nativeSceneValues = new Float32Array(
   nativeSceneCapacity * nativeSceneValueStride);
 var nativeSceneCount = 0;
 var nativeSceneBulkClear = false;
+var nativeSceneBulkClearedRecords = 0;
 var nativeSceneFilterDepth = 0;
 function nativeRenderHitCount() {
   return PMJS.compat.count('render.');
@@ -441,9 +442,11 @@ function growNativeScene() {
 function resetNativeSceneRecords() {
   nativeSceneBulkClear = PMJS.optimizations.isEnabled('scene.record-bulk-clear');
 
+  nativeSceneBulkClearedRecords = 0;
   if (nativeSceneBulkClear && nativeSceneCount !== 0) {
     nativeSceneValues.fill(0, 0,
       nativeSceneCount * nativeSceneValueStride);
+    nativeSceneBulkClearedRecords = nativeSceneCount;
   }
   nativeSceneCount = 0;
 }
@@ -587,9 +590,13 @@ function nativeSceneRecord(parentIndex, kind, resource, tint, blendMode,
   nativeSceneValues[valueOffset + 4] = local.tx;
   nativeSceneValues[valueOffset + 5] = local.ty;
   nativeSceneValues[valueOffset + 6] = alpha;
-  if (!nativeSceneBulkClear) for (var offset = 7;
-      offset < nativeSceneValueStride; offset++) {
-    nativeSceneValues[valueOffset + offset] = 0;
+  // Bulk clear covers records that existed in the previous frame. If the
+  // scene grows again after a smaller frame, slots beyond that prefix may
+  // contain values from an older large scene and must be cleared explicitly.
+  if (!nativeSceneBulkClear || index >= nativeSceneBulkClearedRecords) {
+    for (var offset = 7; offset < nativeSceneValueStride; offset++) {
+      nativeSceneValues[valueOffset + offset] = 0;
+    }
   }
   if (clip) {
     nativeSceneValues[valueOffset + 17] = clip.left;
