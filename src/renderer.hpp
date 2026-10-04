@@ -58,6 +58,11 @@ struct CustomFilterPlan {
   ~CustomFilterPlan() { if (!lifetime.expired()) for (auto image : retainedImages) images->endUse(image); }
 };
 
+struct ColorEffectPayload {
+  std::array<float, 4> colorTone{};
+  std::array<float, 4> blendColor{};
+};
+
 struct RenderCommand {
   enum class Action : std::uint8_t { draw, filterBegin, filterEnd };
   enum class Primitive : std::uint8_t {
@@ -81,8 +86,9 @@ struct RenderCommand {
   // Tone matrices are rare and large; keep a 1-based index into the
   // frame side table instead of 80 cold bytes in every sprite command.
   std::uint32_t colorMatrixIndex = 0;
-  std::array<float, 4> colorTone{};
-  std::array<float, 4> blendColor{};
+  // Sprite tone/blend and mesh overlay colors are uncommon. Keep their 32-byte
+  // payload in frame-side storage and retain only a 1-based index here.
+  std::uint32_t colorEffectIndex = 0;
   bool appliesSpriteColor = false;
   bool pixiSpritePacking = false;
   bool premultipliedSpriteTexture = false;
@@ -118,6 +124,7 @@ struct FramePacket {
   std::vector<std::array<float, 20>> colorMatrices;
   std::vector<std::array<float, 21>> filterParameters;
   std::vector<std::shared_ptr<const CustomFilterPlan>> customFilterPlans;
+  std::vector<ColorEffectPayload> colorEffects;
 
   void clear() {
     commands.clear();
@@ -125,6 +132,7 @@ struct FramePacket {
     colorMatrices.clear();
     filterParameters.clear();
     customFilterPlans.clear();
+    colorEffects.clear();
   }
 };
 
@@ -381,6 +389,13 @@ class Renderer {
       return nullptr;
     }
     return frame_.customFilterPlans[command.customFilterPlanIndex - 1].get();
+  }
+  const ColorEffectPayload* colorEffect(const RenderCommand& command) const {
+    if (command.colorEffectIndex == 0 ||
+        command.colorEffectIndex > frame_.colorEffects.size()) {
+      return nullptr;
+    }
+    return &frame_.colorEffects[command.colorEffectIndex - 1];
   }
   static int filterBoundsPadding(scene_packet::FilterKind kind,
                                  const std::array<float, 21>& parameters);
