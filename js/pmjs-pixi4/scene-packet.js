@@ -138,6 +138,57 @@ function nativeParticleValues(context, node, childIndex) {
   return value;
 }
 
+function nativeSpriteVertices(node, nodeIndex) {
+  if (!nativeSceneUsePixiWorldState || node.children && node.children.length ||
+      typeof node.calculateVertices !== 'function') return;
+  node.calculateVertices();
+  var vertices = node.vertexData;
+  if (!vertices || vertices.length !== 8) return;
+  var offset = nodeIndex * nativeSceneValueStride;
+  for (var corner = 0; corner < 4; corner++) {
+    var x = vertices[corner * 2], y = vertices[corner * 2 + 1];
+    var destination = offset + (corner < 3 ? corner * 2 : 15);
+    // Skipped world state excludes the additional capture transform.
+    if (nativeSceneRootUsesWorldTransform) {
+      var root = nativeSceneRootTransform;
+      nativeSceneValues[destination] = root.a * x + root.c * y + root.tx;
+      nativeSceneValues[destination + 1] = root.b * x + root.d * y + root.ty;
+    } else {
+      nativeSceneValues[destination] = x;
+      nativeSceneValues[destination + 1] = y;
+    }
+  }
+  nativeSceneMetadata[nodeIndex * nativeSceneMetadataStride + 5] |= 4096;
+}
+
+function nativePackSpriteColor(node, nodeIndex, tint) {
+  if (!nativeSceneUsePixiWorldState || !Number.isFinite(node.worldAlpha)) return;
+  var alpha = Math.max(0, Math.min(1, node.worldAlpha));
+  var red = Math.floor(((tint >>> 16) & 255) * alpha + 0.5);
+  var green = Math.floor(((tint >>> 8) & 255) * alpha + 0.5);
+  var blue = Math.floor((tint & 255) * alpha + 0.5);
+  var offset = nodeIndex * nativeSceneMetadataStride;
+  nativeSceneMetadata[offset + 3] =
+    ((alpha * 255) << 24) | (red << 16) | (green << 8) | blue;
+  nativeSceneMetadata[offset + 5] |= 2048;
+}
+
+function nativeSpriteLocalTransform(node, local) {
+  if (!nativeSceneUsePixiWorldState || !(node instanceof PIXI.Sprite) ||
+      !node.parent || !node.parent.worldTransform) return local;
+  // Leaf Sprites send their final quad; only parents need a local transform.
+  if (!(node.children && node.children.length) &&
+      typeof node.calculateVertices === 'function') return local;
+  var parent = node.parent.worldTransform, world = node.worldTransform;
+  var determinant = parent.a * parent.d - parent.b * parent.c;
+  if (!determinant) return local;
+  var inverse = { a: parent.d / determinant, b: -parent.b / determinant,
+    c: -parent.c / determinant, d: parent.a / determinant,
+    tx: (parent.c * parent.ty - parent.d * parent.tx) / determinant,
+    ty: (parent.b * parent.tx - parent.a * parent.ty) / determinant };
+  return nativeComposeTransform(inverse, world);
+}
+
 var nativePlainSpriteBindingPool = [];
 var nativePlainSpriteBindingPoolUsed = 0;
 var nativePlainSpriteSegmentScratch = [];
