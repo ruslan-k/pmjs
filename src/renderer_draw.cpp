@@ -659,6 +659,8 @@ void Renderer::renderScene() {
       continue;
     }
     if (command.primitive == RenderCommand::Primitive::effect) {
+      if (command.effectIndex == 0 ||
+          command.effectIndex > frame_.effects.size()) continue;
       DrawOperation operation{};
       operation.command = &command;
       operation.primitive = command.primitive;
@@ -667,8 +669,9 @@ void Renderer::renderScene() {
       operations.push_back(operation);
       const auto* filter = preparingFilterDepth ? preparingFilters[preparingFilterDepth - 1] : nullptr;
       const auto frame = effectFrame(filter, width_, height_);
-      const float sx = command.effect.resetViewport[0] / std::max(1, frame[2] - frame[0]);
-      const float sy = command.effect.resetViewport[1] / std::max(1, frame[3] - frame[1]);
+      const auto& effect = frame_.effects[command.effectIndex - 1];
+      const float sx = effect.resetViewport[0] / std::max(1, frame[2] - frame[0]);
+      const float sy = effect.resetViewport[1] / std::max(1, frame[3] - frame[1]);
       // Keep fractional projection offsets; rounding a virtual GL viewport changes edge pixels.
       viewportMapping = {sx, sy, frame[0] * (1 - sx), frame[1] * (1 - sy)};
       continue;
@@ -1520,7 +1523,9 @@ void Renderer::renderScene() {
       scissorActive = false;
     }
     if (operation.primitive == RenderCommand::Primitive::effect) {
-      auto draw = operation.command->effect;
+      if (!operation.command || operation.command->effectIndex == 0 ||
+          operation.command->effectIndex > frame_.effects.size()) continue;
+      auto draw = frame_.effects[operation.command->effectIndex - 1];
       const auto* filter = filterDepth ? filterCommands[filterDepth - 1] : nullptr;
       const auto filterFrame = effectFrame(filter, width_, height_);
       if (filterDepth > 0) {
