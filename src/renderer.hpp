@@ -345,10 +345,12 @@ class Renderer {
   };
 
   struct FilterContentBounds {
+    static constexpr std::size_t maxRegions = 8;
     bool bounded = false;
     bool regionsValid = false;
     std::array<int, 4> rect{};
-    std::vector<std::array<int, 4>> regions;
+    std::array<std::array<int, 4>, maxRegions> regions{};
+    std::size_t regionCount = 0;
   };
 
   static int filterBoundsPadding(scene_packet::FilterKind kind,
@@ -358,7 +360,8 @@ class Renderer {
                         std::array<int, 4>* rect) const;
   bool filterBoundsRegions(
       const RenderCommand* filterBegin,
-      std::vector<std::array<int, 4>>* regions) const;
+      std::array<std::array<int, 4>, FilterContentBounds::maxRegions>* regions,
+      std::size_t* regionCount) const;
   void destroyTileLayer(std::uint32_t handle);
   void queryFilterProgramUniforms();
   TileProgramUniforms queryTileProgramUniforms(std::uint32_t program);
