@@ -700,8 +700,15 @@ void Renderer::renderScene() {
       operations.back().viewportMapping = viewportMapping;
       continue;
     }
+    // Premultiplying before linear filtering is required for Pixi-compatible
+    // transparent edges. With nearest sampling and no blur there is no
+    // interpolation, so doing the multiply in the shader is pixel-equivalent
+    // and avoids allocating a second full-size GPU texture.
+    const bool needsPremultipliedTexture =
+      command.pixiSpritePacking && !command.premultipliedSpriteTexture &&
+      !(command.nearest && command.blur <= 0.0F);
     const auto info = command.image == 0 ? std::optional<ImageInfo>{} :
-      (command.pixiSpritePacking && !command.premultipliedSpriteTexture ?
+      (needsPremultipliedTexture ?
         images_.lookupPremultiplied(command.image) : images_.lookup(command.image));
     if (command.image != 0 && !info) continue;
     const float textureWidth = info ? static_cast<float>(info->width) : 1.0F;
