@@ -1813,11 +1813,16 @@ void Renderer::renderScene() {
   applyBlendMode(BlendMode::normal);
   if (diagnostics_) stats_.commands += frame_.commands.size();
   discardCommandsFrom(0);
+  // RenderCommand used to own CustomFilterPlan directly, so discarding commands
+  // released sampler-image leases immediately after scene execution. Preserve
+  // that ownership boundary now that plans live in the frame side table.
+  frame_.customFilterPlans.clear();
   if (!offscreenRender_ && sceneSubmittedThisFrame_) {
     hasValidSceneFrame_ = true;
   }
 } else {
   discardCommandsFrom(0);
+  frame_.customFilterPlans.clear();
   if (diagnostics_) ++stats_.retainedFrames;
 }
 if (diagnostics_) ++stats_.frames;
