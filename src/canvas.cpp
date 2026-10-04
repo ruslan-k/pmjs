@@ -898,8 +898,8 @@ bool CanvasStore::blurNow(Content& surface) {
 
   // Preserve upstream Content/version ownership while keeping the low-memory
   // separable blur: only one row/column needs scratch storage.
-  std::vector<std::uint8_t> scratch(
-      static_cast<std::size_t>(std::max(width, height)) * 4U);
+  blurScratch_.resize(static_cast<std::size_t>(std::max(width, height)) * 4U);
+  auto& scratch = blurScratch_;
   constexpr int weights[5] = {1, 4, 6, 4, 1};
 
   const std::size_t rowBytes = static_cast<std::size_t>(width) * 4U;
@@ -1560,20 +1560,35 @@ bool CanvasStore::uploadSurface(Surface& target) {
   const int y = target.image ? surface.dirtyY0 : 0;
   const int width = target.image ? surface.dirtyX1 - x : surface.width;
   const int height = target.image ? surface.dirtyY1 - y : surface.height;
-  std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4);
-  for (int row = 0; row < height; ++row) for (int column = 0; column < width; ++column) {
-    const auto source = (static_cast<std::size_t>(y + row) * surface.width + x + column) * 4;
-    const auto destination = (static_cast<std::size_t>(row) * width + column) * 4;
-    const unsigned alpha = surface.pixels[source + 3];
-    for (int channel = 0; channel < 3; ++channel)
-      pixels[destination + channel] = (surface.pixels[source + channel] * alpha + 127) / 255;
-    pixels[destination + 3] = alpha;
+  const std::size_t pixelBytes = static_cast<std::size_t>(width) * height * 4U;
+  uploadScratch_.resize(pixelBytes);
+  auto* pixels = uploadScratch_.data();
+  for (int row = 0; row < height; ++row) {
+    for (int column = 0; column < width; ++column) {
+      const auto source = (static_cast<std::size_t>(y + row) * surface.width + x + column) * 4U;
+      const auto destination = (static_cast<std::size_t>(row) * width + column) * 4U;
+      const unsigned alpha = surface.pixels[source + 3];
+      if (alpha == 255U) {
+        std::memcpy(pixels + destination, surface.pixels.data() + source, 4U);
+      } else if (alpha == 0U) {
+        pixels[destination] = pixels[destination + 1] = pixels[destination + 2] = 0;
+        pixels[destination + 3] = 0;
+      } else {
+        pixels[destination] = static_cast<std::uint8_t>(
+          (surface.pixels[source] * alpha + 127U) / 255U);
+        pixels[destination + 1] = static_cast<std::uint8_t>(
+          (surface.pixels[source + 1] * alpha + 127U) / 255U);
+        pixels[destination + 2] = static_cast<std::uint8_t>(
+          (surface.pixels[source + 2] * alpha + 127U) / 255U);
+        pixels[destination + 3] = static_cast<std::uint8_t>(alpha);
+      }
+    }
   }
   if (target.image == 0) {
-    const auto image = images_.createRgba(surface.width, surface.height, pixels.data(), true);
+    const auto image = images_.createRgba(surface.width, surface.height, pixels, true);
     if (!image) return false;
     target.image = image->handle;
-  } else if (!images_.updateRgbaRegion(target.image, x, y, width, height, pixels.data(), width)) {
+  } else if (!images_.updateRgbaRegion(target.image, x, y, width, height, pixels, width)) {
     return false;
   }
   surface.dirtyX0 = surface.dirtyY0 = 0;
