@@ -30,6 +30,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
 
   const std::size_t originalCommandCount = frame_.commands.size();
   const std::size_t originalEffectCount = frame_.effects.size();
+  const std::size_t originalColorMatrixCount = frame_.colorMatrices.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
   const bool originalSceneHasEffect = sceneHasEffect_;
   const bool originalSceneHasCustomFilter = sceneHasCustomFilter_;
@@ -372,11 +373,19 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       continue;
     }
     if (kind == static_cast<std::uint32_t>(NodeKind::toneAdjust)) {
+      std::array<float, 20> matrix{};
+      std::copy_n(values + valueOffset + 7, 20, matrix.begin());
+      frame_.colorMatrices.push_back(matrix);
       RenderCommand command;
-      std::copy_n(values + valueOffset + 7, 20, command.colorMatrix.begin());
       command.color[3] = state.alpha;
-      command.appliesColorMatrix = true;
-      frame_.commands.push_back(command);
+      command.colorMatrixIndex =
+        static_cast<std::uint32_t>(frame_.colorMatrices.size());
+      try {
+        frame_.commands.push_back(command);
+      } catch (...) {
+        frame_.colorMatrices.pop_back();
+        throw;
+      }
       continue;
     }
     if (kind == static_cast<std::uint32_t>(NodeKind::tileLayer) ||
@@ -514,6 +523,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   } catch (...) {
     discardCommandsFrom(originalCommandCount);
     frame_.effects.resize(originalEffectCount);
+    frame_.colorMatrices.resize(originalColorMatrixCount);
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
     sceneHasEffect_ = originalSceneHasEffect;
     sceneHasCustomFilter_ = originalSceneHasCustomFilter;
@@ -521,6 +531,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   }
   discardCommandsFrom(originalCommandCount);
   frame_.effects.resize(originalEffectCount);
+  frame_.colorMatrices.resize(originalColorMatrixCount);
   sceneSubmittedThisFrame_ = originalSceneSubmitted;
   sceneHasEffect_ = originalSceneHasEffect;
   sceneHasCustomFilter_ = originalSceneHasCustomFilter;
