@@ -563,6 +563,8 @@ class Renderer {
   int primitiveSurfaceColorsUniform_ = -1;
   std::uint32_t vertexArray_ = 0;
   std::uint32_t vertexBuffer_ = 0;
+  std::uint32_t quadIndexBuffer_ = 0;
+  std::size_t quadIndexCapacity_ = 0;
   std::uint32_t whiteTexture_ = 0;
   std::uint32_t blackTexture_ = 0;
   std::uint32_t blackFramebuffer_ = 0;
