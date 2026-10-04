@@ -184,9 +184,9 @@ function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
     Math.floor(Math.max(sx, sx + sw)) + 1));
   var sourceBottom = Math.max(sourceTop + 1, Math.min(source.height,
     Math.floor(Math.max(sy, sy + sh)) + 1));
-  var sourceWidth = sourceRight - sourceLeft;
+  var sourceRegionWidth = sourceRight - sourceLeft;
   var sourcePixels = canvasSourcePixels(source, nativeSource, operationId, {
-    x: sourceLeft, y: sourceTop, width: sourceWidth,
+    x: sourceLeft, y: sourceTop, width: sourceRegionWidth,
     height: sourceBottom - sourceTop
   });
   var destination = context.canvas._ensureNativeCanvas();
@@ -197,7 +197,7 @@ function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
   var alpha = Math.max(0, Math.min(1, Number(context.globalAlpha)));
   var operation = context.globalCompositeOperation;
   var clipped = context._clipPaths.length > 0;
-  var sourceWidth = source.width, sourceHeight = source.height;
+  var sourceImageWidth = source.width, sourceImageHeight = source.height;
   var inverseDw = 1 / dw, inverseDh = 1 / dh;
   var originX = 0.5 - t[4], originY = 0.5 - t[5];
   var span = right - left;
@@ -212,11 +212,12 @@ function drawAffineImage(context, source, nativeSource, sx, sy, sw, sh,
       if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
       var sampleX = Math.floor(sx + u * sw);
       if (sampleX < 0) sampleX = 0;
-      else if (sampleX > sourceWidth - 1) sampleX = sourceWidth - 1;
+      else if (sampleX > sourceImageWidth - 1) sampleX = sourceImageWidth - 1;
       var sampleY = Math.floor(sy + v * sh);
       if (sampleY < 0) sampleY = 0;
-      else if (sampleY > sourceHeight - 1) sampleY = sourceHeight - 1;
-      var sourceOffset = (sampleY * sourceWidth + sampleX) * 4;
+      else if (sampleY > sourceImageHeight - 1) sampleY = sourceImageHeight - 1;
+      var sourceOffset =
+        ((sampleY - sourceTop) * sourceRegionWidth + sampleX - sourceLeft) * 4;
       if (clipped && !passesCanvasClip(context, x + 0.5, y + 0.5)) continue;
       var sourceAlpha = sourcePixels[sourceOffset + 3] / 255 * alpha;
       compositeCanvasPixel(destinationPixels, destinationOffset,
@@ -1233,7 +1234,8 @@ CanvasContext2D.prototype.putImageData = function(imageData, x, y) {
         bounds[1] + bounds[3] >= canvas.height && lightColor(style, this.globalAlpha)[3] === 1;
       // A full opaque first fill reconstructs the surface independently. Other
       // updates must preserve existing Canvas content through its ordinary owner.
-      if (replay.length === 0 && !fullOpaque) {
+      var pristineCanvas = !canvas._nativeCanvas && !canvas._nativeImage;
+      if (replay.length === 0 && !fullOpaque && !pristineCanvas) {
         replayRecordedCanvasOperations();
         return originalFillRect.apply(this, arguments);
       }
