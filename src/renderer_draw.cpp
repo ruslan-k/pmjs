@@ -499,7 +499,7 @@ void Renderer::renderScene() {
         --depth;
         if (depth == 0) end = index;
       } else if (depth == 1) {
-        const bool drawable = !command.colorMatrixIndex != 0 &&
+        const bool drawable = command.colorMatrixIndex == 0 &&
             command.tileLayer == 0 && command.image != 0 &&
             (command.primitive == RenderCommand::Primitive::sprite ||
              command.primitive == RenderCommand::Primitive::tilingSprite) &&
@@ -563,7 +563,7 @@ void Renderer::renderScene() {
       const RenderCommand& command = frame_.commands[index];
       cleanTail = command.action == RenderCommand::Action::draw &&
                   command.primitive != RenderCommand::Primitive::effect &&
-                  !command.colorMatrixIndex != 0 &&
+                  command.colorMatrixIndex == 0 &&
                   command.blendMode == BlendMode::normal;
     }
     if (cleanTail) composedToneCommand = &frame_.commands[toneIndex];
