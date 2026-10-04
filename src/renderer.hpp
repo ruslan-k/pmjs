@@ -98,7 +98,9 @@ struct RenderCommand {
   scene_packet::FilterKind filterKind = scene_packet::FilterKind::blur;
   std::uint32_t filterProgram = 0;
   std::shared_ptr<const CustomFilterPlan> customFilterPlan{};
-  std::array<float, 21> filterParameters{};
+  // Filter parameter blocks are cold and only exist on filter-begin commands.
+  // Keep a 1-based side-table index instead of 84 unused bytes per sprite.
+  std::uint32_t filterParametersIndex = 0;
   float filterResolution = 1.0F;
   Primitive primitive = Primitive::sprite;
   // Effect payloads are large (two 4x4 matrices plus viewport state) and rare.
@@ -112,11 +114,13 @@ struct FramePacket {
   std::vector<RenderCommand> commands;
   std::vector<EffectDraw> effects;
   std::vector<std::array<float, 20>> colorMatrices;
+  std::vector<std::array<float, 21>> filterParameters;
 
   void clear() {
     commands.clear();
     effects.clear();
     colorMatrices.clear();
+    filterParameters.clear();
   }
 };
 
@@ -363,6 +367,10 @@ class Renderer {
     std::size_t regionCount = 0;
   };
 
+  const std::array<float, 21>& filterParams(
+      const RenderCommand& command) const {
+    return frame_.filterParameters[command.filterParametersIndex - 1];
+  }
   static int filterBoundsPadding(scene_packet::FilterKind kind,
                                  const std::array<float, 21>& parameters);
   void computeFilterContentBounds();
