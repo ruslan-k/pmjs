@@ -546,6 +546,18 @@ function colorWithGlobalAlpha(color, globalAlpha) {
   return ((rgba & 0xffffff00) | alpha) >>> 0;
 }
 
+var canvasTextBackend;
+function usesLegacyText() {
+  if (canvasTextBackend === undefined) {
+    canvasTextBackend = typeof NativeHost.canvas.glyphStats === 'function' ?
+      NativeHost.canvas.glyphStats().backend : 'skia65';
+  }
+  return canvasTextBackend === 'freetype';
+}
+function canvasFontSize(size) {
+  return usesLegacyText() ? Math.max(1, Math.round(size)) : size;
+}
+
 var textMeasurementCache = new Map();
 var textMetricsCache = new Map();
 var textMeasurementCacheLimit = 4096;
