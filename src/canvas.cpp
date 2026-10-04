@@ -723,8 +723,7 @@ void CanvasStore::fillRectNow(Content& surface, int x, int y, int width, int hei
   markDirty(surface, x0, y0, x1 - x0, y1 - y0);
 }
 
-
-void CanvasStore::fillRectAdditiveNow(Surface& surface, int x, int y,
+void CanvasStore::fillRectAdditiveNow(Content& surface, int x, int y,
                                       int width, int height,
                                       std::uint32_t rgba) {
   const int x0 = std::clamp(x, 0, surface.width);
@@ -897,17 +896,15 @@ bool CanvasStore::blurNow(Content& surface) {
   const int height = surface.height;
   if (width <= 0 || height <= 0) return true;
 
-  // Separable 5-tap blur does not need a full second RGBA surface. Copy one
-  // row for the horizontal pass, then one column for the vertical pass. This
-  // reduces temporary storage from width*height*4 to max(width,height)*4.
+  // Preserve upstream Content/version ownership while keeping the low-memory
+  // separable blur: only one row/column needs scratch storage.
   std::vector<std::uint8_t> scratch(
       static_cast<std::size_t>(std::max(width, height)) * 4U);
   constexpr int weights[5] = {1, 4, 6, 4, 1};
 
   const std::size_t rowBytes = static_cast<std::size_t>(width) * 4U;
   for (int y = 0; y < height; ++y) {
-    const std::size_t rowOffset =
-        static_cast<std::size_t>(y) * rowBytes;
+    const std::size_t rowOffset = static_cast<std::size_t>(y) * rowBytes;
     std::memcpy(scratch.data(), surface.pixels.data() + rowOffset, rowBytes);
     for (int x = 0; x < width; ++x) {
       for (int channel = 0; channel < 4; ++channel) {
@@ -917,9 +914,8 @@ bool CanvasStore::blurNow(Content& surface) {
           sum += scratch[static_cast<std::size_t>(sampleX) * 4U + channel] *
                  weights[offset + 2];
         }
-        surface.pixels[rowOffset + static_cast<std::size_t>(x) * 4U +
-                       channel] =
-            static_cast<std::uint8_t>((sum + 8) / 16);
+        surface.pixels[rowOffset + static_cast<std::size_t>(x) * 4U + channel] =
+          static_cast<std::uint8_t>((sum + 8) / 16);
       }
     }
   }
@@ -927,7 +923,7 @@ bool CanvasStore::blurNow(Content& surface) {
   for (int x = 0; x < width; ++x) {
     for (int y = 0; y < height; ++y) {
       const std::size_t source =
-          (static_cast<std::size_t>(y) * width + x) * 4U;
+        (static_cast<std::size_t>(y) * width + x) * 4U;
       const std::size_t destination = static_cast<std::size_t>(y) * 4U;
       scratch[destination] = surface.pixels[source];
       scratch[destination + 1] = surface.pixels[source + 1];
@@ -936,7 +932,7 @@ bool CanvasStore::blurNow(Content& surface) {
     }
     for (int y = 0; y < height; ++y) {
       const std::size_t destination =
-          (static_cast<std::size_t>(y) * width + x) * 4U;
+        (static_cast<std::size_t>(y) * width + x) * 4U;
       for (int channel = 0; channel < 4; ++channel) {
         int sum = 0;
         for (int offset = -2; offset <= 2; ++offset) {
@@ -945,7 +941,7 @@ bool CanvasStore::blurNow(Content& surface) {
                  weights[offset + 2];
         }
         surface.pixels[destination + channel] =
-            static_cast<std::uint8_t>((sum + 8) / 16);
+          static_cast<std::uint8_t>((sum + 8) / 16);
       }
     }
   }
@@ -958,33 +954,37 @@ bool CanvasStore::realizeContent(Content& surface) {
   if (surface.state == ContentState::Realized) return true;
   if (surface.state == ContentState::Realizing) return false;
 
-  const std::size_t expected = static_cast<std::size_t>(surface.width) *
-                               static_cast<std::size_t>(surface.height) * 4U;
-  surface.pixels.assign(expected, 0);
-  cpuBytes_ += surface.pixels.size();
-
-  auto pendingCommands = std::move(surface.commands);
-  surface.commands.clear();
-  surface.queuedCommandBytes = 0;
-
-  for (auto& cmd : pendingCommands) {
-    std::visit([this, &surface](auto& c) {
-      using T = std::decay_t<decltype(c)>;
-      if constexpr (std::is_same_v<T, FillRectCmd>) {
-        fillRectNow(surface, c.x, c.y, c.width, c.height, c.rgba);
-      } else if constexpr (std::is_same_v<T, ClearRectCmd>) {
-        clearRectNow(surface, c.x, c.y, c.width, c.height);
-      } else if constexpr (std::is_same_v<T, DrawImageCmd>) {
-        drawImageNow(surface, c.source, c.sourceX, c.sourceY,
-                     c.sourceWidth, c.sourceHeight,
-                     c.destinationX, c.destinationY,
-                     c.destinationWidth, c.destinationHeight, c.alpha);
-        images_.release(c.source);
-      } else if constexpr (std::is_same_v<T, DrawTextCmd>) {
-        drawTextNow(surface, c.fontPaths, c.text, c.x, c.y,
-                    c.pixelSize, c.rgba, c.strokeWidth);
-      } else if constexpr (std::is_same_v<T, BlurCmd>) {
-        blurNow(surface);
+  // Publish CPU content only after every command succeeds. Pending commands
+  // keep their image references on failure, so replay can be retried safely.
+  Content prepared(*this);
+  prepared.width = surface.width;
+  prepared.height = surface.height;
+  prepared.state = ContentState::Realizing;
+  surface.state = ContentState::Realizing;
+  try {
+    prepared.pixels.assign(static_cast<std::size_t>(surface.width) *
+                             static_cast<std::size_t>(surface.height) * 4U, 0);
+    for (const auto& cmd : surface.commands) {
+      const bool ok = std::visit([this, &prepared](const auto& c) -> bool {
+        using T = std::decay_t<decltype(c)>;
+        if constexpr (std::is_same_v<T, FillRectCmd>) {
+          fillRectNow(prepared, c.x, c.y, c.width, c.height, c.rgba);
+          return true;
+        } else if constexpr (std::is_same_v<T, ClearRectCmd>) {
+          clearRectNow(prepared, c.x, c.y, c.width, c.height);
+          return true;
+        } else if constexpr (std::is_same_v<T, DrawImageCmd>) {
+          return drawImageNow(prepared, c);
+        } else if constexpr (std::is_same_v<T, DrawTextCmd>) {
+          return drawTextNow(prepared, c.fontPaths, c.text, c.x, c.y,
+                             c.pixelSize, c.rgba, c.strokeWidth, c.style);
+        } else if constexpr (std::is_same_v<T, BlurCmd>) {
+          return blurNow(prepared);
+        }
+      }, cmd);
+      if (!ok) {
+        surface.state = ContentState::Deferred;
+        return false;
       }
     }
   } catch (...) {
@@ -992,26 +992,9 @@ bool CanvasStore::realizeContent(Content& surface) {
     throw;
   }
 
-  const auto image = images_.createRgba(surface.width, surface.height,
-                                        surface.pixels.data());
-  if (!image) {
-    cpuBytes_ -= surface.pixels.size();
-    std::vector<std::uint8_t>().swap(surface.pixels);
-    if (surface.dirty) {
-      surface.dirty = false;
-      --dirtySurfaceCount_;
-    }
-    surface.dirtyX0 = surface.dirtyY0 = 0;
-    surface.dirtyX1 = surface.dirtyY1 = 0;
-    surface.state = SurfaceState::Deferred;
-    return false;
-  }
-  surface.image = image->handle;
-  surface.state = SurfaceState::Realized;
-  if (surface.dirty) {
-    surface.dirty = false;
-    --dirtySurfaceCount_;
-  }
+  surface.pixels = std::move(prepared.pixels);
+  surface.state = ContentState::Realized;
+  discardCommands(surface);
   surface.dirtyX0 = surface.dirtyY0 = 0;
   surface.dirtyX1 = surface.dirtyY1 = 0;
   peakCpuBytes_ = std::max(peakCpuBytes_, cpuBytes());
@@ -1119,28 +1102,15 @@ std::optional<CanvasInfo> CanvasStore::create(int width, int height) {
   const auto extent = checkedImageExtent(width, height);
   if (!extent) return std::nullopt;
   std::size_t index = 0;
-  if (!freeSurfaceSlots_.empty()) {
-    index = freeSurfaceSlots_.back();
-    freeSurfaceSlots_.pop_back();
-  } else {
-    index = surfaces_.size();
-    if (index >= indexMask) return std::nullopt;
-    surfaces_.emplace_back();
-  }
+  while (index < surfaces_.size() && surfaces_[index].live) ++index;
+  if (index >= indexMask) return std::nullopt;
+  if (index == surfaces_.size()) surfaces_.emplace_back();
   auto& surface = surfaces_[index];
   auto content = std::make_shared<Content>(*this);
   content->width = width;
   content->height = height;
   surface.content = std::move(content);
   surface.image = 0;
-  surface.width = width;
-  surface.height = height;
-  surface.state = SurfaceState::Deferred;
-  surface.pixels.clear();
-  surface.commands.clear();
-  surface.dirtyX0 = surface.dirtyY0 = 0;
-  surface.dirtyX1 = surface.dirtyY1 = 0;
-  surface.dirty = false;
   surface.live = true;
   ++liveCount_;
   peakLiveCount_ = std::max(peakLiveCount_, liveCount_);
@@ -1151,34 +1121,11 @@ std::optional<CanvasInfo> CanvasStore::createRgba(
     int width, int height, std::vector<std::uint8_t> pixels) {
   const auto extent = checkedImageExtent(width, height);
   if (!extent || pixels.size() != extent->rgbaBytes) return std::nullopt;
-  const auto image = images_.createRgba(width, height, pixels.data());
-  if (!image) return std::nullopt;
-  std::size_t index = 0;
-  if (!freeSurfaceSlots_.empty()) {
-    index = freeSurfaceSlots_.back();
-    freeSurfaceSlots_.pop_back();
-  } else {
-    index = surfaces_.size();
-    if (index >= indexMask) {
-      images_.release(image->handle);
-      return std::nullopt;
-    }
-    surfaces_.emplace_back();
-  }
-  auto& surface = surfaces_[index];
-  surface.image = image->handle;
-  surface.width = width;
-  surface.height = height;
-  surface.state = SurfaceState::Realized;
+  const auto canvas = create(width, height);
+  if (!canvas) return std::nullopt;
+  auto& surface = *lookupContent(canvas->handle);
+  surface.state = ContentState::Realized;
   surface.pixels = std::move(pixels);
-  cpuBytes_ += surface.pixels.size();
-  surface.commands.clear();
-  surface.dirtyX0 = surface.dirtyY0 = 0;
-  surface.dirtyX1 = surface.dirtyY1 = 0;
-  surface.dirty = false;
-  surface.live = true;
-  ++liveCount_;
-  peakLiveCount_ = std::max(peakLiveCount_, liveCount_);
   peakCpuBytes_ = std::max(peakCpuBytes_, cpuBytes());
   return canvas;
 }
@@ -1201,15 +1148,14 @@ bool CanvasStore::fillRect(CanvasHandle handle, int x, int y, int width, int hei
   return true;
 }
 
-
 bool CanvasStore::fillRectAdditive(CanvasHandle handle, int x, int y,
                                    int width, int height,
                                    std::uint32_t rgba) {
-  auto* surface = lookup(handle);
+  auto* surface = writableContent(handle);
   if (!surface) return false;
-  // Additive compositing depends on destination pixels, so realize deferred
-  // commands once and keep all pixel work in native C++ rather than JS.
-  if (surface->state == SurfaceState::Deferred && !realizeSurface(*surface)) {
+  // Additive compositing depends on destination pixels, so deferred content
+  // must be realized before the operation.
+  if (surface->state == ContentState::Deferred && !realizeContent(*surface)) {
     return false;
   }
   fillRectAdditiveNow(*surface, x, y, width, height, rgba);
@@ -1347,10 +1293,6 @@ void CanvasStore::markDirty(Content& surface, int x, int y, int width,
   const int y1 = static_cast<int>(std::clamp<std::int64_t>(
     static_cast<std::int64_t>(y) + height, 0, surface.height));
   if (x1 <= x0 || y1 <= y0) return;
-  if (!surface.dirty) {
-    surface.dirty = true;
-    ++dirtySurfaceCount_;
-  }
   if (surface.dirtyX1 <= surface.dirtyX0 || surface.dirtyY1 <= surface.dirtyY0) {
     surface.dirtyX0 = x0;
     surface.dirtyY0 = y0;
@@ -1512,6 +1454,7 @@ std::optional<ImagePixels> CanvasStore::readPixels(CanvasHandle handle, int x,
   result.width = extent->width;
   result.height = extent->height;
   result.rgba.resize(extent->rgbaBytes);
+
   const int sourceX0 = std::max(0, x);
   const int sourceY0 = std::max(0, y);
   const int sourceX1 = std::min(surface->width, x + width);
@@ -1587,27 +1530,13 @@ bool CanvasStore::replacePixels(CanvasHandle handle,
 bool CanvasStore::release(CanvasHandle handle) {
   auto* surface = lookup(handle);
   if (!surface) return false;
-  discardCommands(*surface);
-  if (surface->image != 0) {
-    images_.release(surface->image);
-    surface->image = 0;
-  }
-  surface->width = 0;
-  surface->height = 0;
-  surface->state = SurfaceState::Deferred;
-  cpuBytes_ -= surface->pixels.size();
-  std::vector<std::uint8_t>().swap(surface->pixels);
-  if (surface->dirty) {
-    surface->dirty = false;
-    --dirtySurfaceCount_;
-  }
-  surface->dirtyX0 = surface->dirtyY0 = 0;
-  surface->dirtyX1 = surface->dirtyY1 = 0;
+  if (surface->image) images_.release(surface->image);
+  surface->image = 0;
+  surface->content.reset();
   surface->live = false;
   surface->generation = static_cast<std::uint16_t>(
     (surface->generation + 1U) & generationMask);
   if (surface->generation == 0) surface->generation = 1;
-  freeSurfaceSlots_.push_back(static_cast<std::size_t>(surface - surfaces_.data()));
   --liveCount_;
   return true;
 }
@@ -1653,30 +1582,17 @@ bool CanvasStore::uploadSurface(Surface& target) {
 }
 
 void CanvasStore::uploadDirty() {
-  if (dirtySurfaceCount_ == 0) return;
   for (auto& surface : surfaces_) {
-    if (!surface.live || surface.state != SurfaceState::Realized ||
-        surface.dirtyX1 <= surface.dirtyX0 ||
-        surface.dirtyY1 <= surface.dirtyY0) continue;
-    const std::size_t offset =
-      (static_cast<std::size_t>(surface.dirtyY0) * surface.width +
-       surface.dirtyX0) * 4U;
-    if (images_.updateRgbaRegion(surface.image, surface.dirtyX0,
-        surface.dirtyY0, surface.dirtyX1 - surface.dirtyX0,
-        surface.dirtyY1 - surface.dirtyY0, surface.pixels.data() + offset,
-        surface.width)) {
-      surface.dirtyX0 = surface.dirtyY0 = 0;
-      surface.dirtyX1 = surface.dirtyY1 = 0;
-      if (surface.dirty) {
-        surface.dirty = false;
-        --dirtySurfaceCount_;
-      }
+    if (surface.live && surface.content->state == ContentState::Realized && surface.image) {
+      uploadSurface(surface);
     }
   }
 }
 
 std::size_t CanvasStore::cpuBytes() const {
-  return cpuBytes_;
+  std::size_t result = 0;
+  for (const auto* content : contents_) result += content->pixels.size();
+  return result;
 }
 
 std::size_t CanvasStore::capacityBytes() const {
