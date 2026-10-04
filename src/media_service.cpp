@@ -6,7 +6,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <cmath>
-#include <deque>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -36,11 +35,12 @@ std::uint64_t audioThreadMicros() {
 }
 }
 struct MediaService::Impl {
-  static constexpr std::size_t bufferFrames = 24000, decodeFrames = 8192;
+  static constexpr std::size_t decodeFrames = 8192;
   struct Voice {
-    explicit Voice(std::unique_ptr<AudioDecoderSession> source)
+    explicit Voice(std::unique_ptr<AudioDecoderSession> source,
+                   std::size_t streamBufferFrames)
         : decoder(std::move(source)), sourceChannels(decoder->sourceChannels()) {
-      mix.samples.reserve(bufferFrames * 2);
+      mix.samples.reserve(streamBufferFrames * 2);
       mix.duration = decoder->duration();
       mix.loopStart = decoder->loopStartFrame();
       mix.loopEnd = decoder->loopEndFrame();
@@ -66,6 +66,7 @@ struct MediaService::Impl {
       policy.cacheBytes = 4U * 1024U * 1024U;
       policy.maxAssetBytes = 1U * 1024U * 1024U;
       policy.maxSynchronousBytes = 128U * 1024U;
+      bufferFrames = 16000;
     }
     const auto policyBytes = [](const char* name, std::size_t current) {
       if (const char* raw = std::getenv(name)) {
@@ -78,6 +79,9 @@ struct MediaService::Impl {
     policy.maxAssetBytes = policyBytes("PMJS_AUDIO_MAX_ASSET_BYTES", policy.maxAssetBytes);
     policy.maxSynchronousBytes =
       policyBytes("PMJS_AUDIO_MAX_SYNC_BYTES", policy.maxSynchronousBytes);
+    bufferFrames = std::clamp(
+      policyBytes("PMJS_AUDIO_STREAM_BUFFER_FRAMES", bufferFrames),
+      std::size_t{2048}, std::size_t{96000});
 
     const char* diagnosticFlag = std::getenv("PMJS_AUDIO_DIAGNOSTICS");
     diagnostics = diagnosticFlag && std::string(diagnosticFlag) == "1";
@@ -342,12 +346,13 @@ struct MediaService::Impl {
       std::lock_guard lock(mutex);
       if (diagnostics && intent == AudioIntent::effect) ++cacheStats.rejections;
     }
-    return installVoice(std::make_shared<Voice>(std::move(decoder)));
+    return installVoice(std::make_shared<Voice>(std::move(decoder), bufferFrames));
   }
   std::list<std::string> lru;
   std::unordered_map<std::string, CachedAsset> cache;
   std::size_t cacheBytes = 0;
   PreparedAudioPolicy policy;
+  std::size_t bufferFrames = 24000;
   bool diagnostics = false;
   AudioCacheStats cacheStats;
   std::shared_ptr<std::atomic<std::size_t>> livePcmBytes =
@@ -392,7 +397,8 @@ std::uint32_t MediaService::loadAudio(const std::string& path, std::string* erro
 }
 std::uint32_t MediaService::installAudioDecoder(std::unique_ptr<AudioDecoderSession> decoder) {
   if (!decoder) return 0;
-  return impl_->installVoice(std::make_shared<Impl::Voice>(std::move(decoder)));
+  return impl_->installVoice(
+    std::make_shared<Impl::Voice>(std::move(decoder), impl_->bufferFrames));
 }
 std::uint32_t MediaService::loadAudioBytes(std::vector<std::uint8_t> bytes,
     std::string* error, const AudioLoadOptions& options) {
