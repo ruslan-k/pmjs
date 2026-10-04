@@ -598,7 +598,7 @@ void Renderer::renderScene() {
     float textureHeight = 1;
     float blur = 0;
     ImageHandle maskImage = 0;
-    std::array<float, 6> maskTransform{};
+    const std::array<float, 6>* maskTransform = nullptr;
     const RenderCommand* matrixCommand = nullptr;
     RenderCommand::Action action = RenderCommand::Action::draw;
     bool appliesSpriteColor = false;
@@ -606,9 +606,8 @@ void Renderer::renderScene() {
     bool spriteWorldVertices = false;
     bool premultipliedSpriteTexture = false;
     bool clampedTilingSampling = false;
-    std::array<float, 4> spriteFrame{};
-    std::array<float, 4> colorTone{};
-    std::array<float, 4> blendColor{};
+    const std::array<float, 4>* spriteFrame = nullptr;
+    const ColorEffectPayload* colorEffect = nullptr;
     const RenderCommand* inlineMatrix = nullptr;
     RenderCommand::Primitive primitive = RenderCommand::Primitive::sprite;
     std::array<float, 4> viewportMapping{1, 1, 0, 0};
@@ -818,35 +817,35 @@ void Renderer::renderScene() {
         operations.back().blur != command.blur ||
         operations.back().maskImage != command.maskImage ||
         (command.maskImage &&
-         operations.back().maskTransform != *commandMaskTransform) ||
+         (operations.back().maskTransform == nullptr ||
+          *operations.back().maskTransform != *commandMaskTransform)) ||
         operations.back().appliesSpriteColor != command.appliesSpriteColor ||
         operations.back().pixiSpritePacking != command.pixiSpritePacking ||
         operations.back().spriteWorldVertices != worldVertices ||
         operations.back().premultipliedSpriteTexture != texturePremultiplied ||
-        (command.appliesSpriteColor && operations.back().spriteFrame != command.source) ||
         (command.appliesSpriteColor &&
-         (operations.back().colorTone != commandColorEffect->colorTone ||
-          operations.back().blendColor != commandColorEffect->blendColor)) ||
+         (operations.back().spriteFrame == nullptr ||
+          *operations.back().spriteFrame != command.source)) ||
+        (command.appliesSpriteColor &&
+         (operations.back().colorEffect == nullptr ||
+          operations.back().colorEffect->colorTone != commandColorEffect->colorTone ||
+          operations.back().colorEffect->blendColor != commandColorEffect->blendColor)) ||
         operations.back().inlineMatrix != inlineFilterMatrix[commandIndex] ||
         operations.back().primitive != command.primitive ||
         operations.back().clipped != operationClipped ||
         (operationClipped && operations.back().clip != operationClip)) {
       operations.push_back({0, texture, command.blendMode, command.repeat,
         command.nearest,
-        quadFirstIndex, 6, nullptr,
+        quadFirstIndex, 6, &command,
         operationClip, operationClipped, textureWidth, textureHeight,
-        command.blur, command.maskImage,
-        commandMaskTransform ? *commandMaskTransform : std::array<float, 6>{}});
+        command.blur, command.maskImage, commandMaskTransform});
       operations.back().appliesSpriteColor = command.appliesSpriteColor;
       operations.back().pixiSpritePacking = command.pixiSpritePacking;
       operations.back().spriteWorldVertices = worldVertices;
       operations.back().premultipliedSpriteTexture = texturePremultiplied;
       operations.back().clampedTilingSampling = command.clampedTilingSampling;
-      operations.back().spriteFrame = command.source;
-      if (commandColorEffect) {
-        operations.back().colorTone = commandColorEffect->colorTone;
-        operations.back().blendColor = commandColorEffect->blendColor;
-      }
+      operations.back().spriteFrame = &command.source;
+      operations.back().colorEffect = commandColorEffect;
       operations.back().inlineMatrix = inlineFilterMatrix[commandIndex];
       operations.back().primitive = command.primitive;
     } else {
@@ -1767,17 +1766,19 @@ void Renderer::renderScene() {
     glUniform1i(simpleSprite ? simpleSpritePremultipliedUniform_ : spriteEffectPremultipliedUniform_,
                 operation.premultipliedSpriteTexture ? 1 : 0);
     if (!simpleSprite) {
-      const auto& frame = operation.spriteFrame;
+      if (operation.spriteFrame == nullptr) continue;
+      const auto& frame = *operation.spriteFrame;
       glUniform4f(spriteEffectFrameUniform_, frame[0], frame[1],
         frame[0] + frame[2] - 1, frame[1] + frame[3] - 1);
       glUniform1i(spriteEffectNearestUniform_, operation.nearest);
       glUniform1i(spriteEffectColorEnabledUniform_,
                   operation.appliesSpriteColor ? 1 : 0);
       if (operation.appliesSpriteColor) {
+        if (operation.colorEffect == nullptr) continue;
         glUniform4fv(spriteEffectColorToneUniform_, 1,
-                     operation.colorTone.data());
+                     operation.colorEffect->colorTone.data());
         glUniform4fv(spriteEffectBlendColorUniform_, 1,
-                     operation.blendColor.data());
+                     operation.colorEffect->blendColor.data());
       }
       glUniform2f(spriteEffectTextureSizeUniform_, operation.textureWidth,
                   operation.textureHeight);
@@ -1793,13 +1794,13 @@ void Renderer::renderScene() {
     }
     if (!simpleSprite && operation.maskImage) {
       const auto mask = images_.lookup(operation.maskImage);
-      if (!mask) continue;
+      if (!mask || operation.maskTransform == nullptr) continue;
       glActiveTexture(GL_TEXTURE1);
       glBindTexture(GL_TEXTURE_2D, mask->texture);
       glUniform1i(spriteEffectMaskImageUniform_, 1);
       glUniform1i(spriteEffectMaskEnabledUniform_, 1);
       glUniform1fv(spriteEffectMaskTransformUniform_, 6,
-                   maskMatrix(operation.maskTransform.data()).data());
+                   maskMatrix(operation.maskTransform->data()).data());
       glUniform2f(spriteEffectMaskTextureSizeUniform_,
                   static_cast<float>(mask->width),
                   static_cast<float>(mask->height));
