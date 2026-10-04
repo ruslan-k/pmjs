@@ -29,6 +29,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   }
 
   const std::size_t originalCommandCount = frame_.commands.size();
+  const std::size_t originalEffectCount = frame_.effects.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
   const bool originalSceneHasEffect = sceneHasEffect_;
   const bool originalSceneHasCustomFilter = sceneHasCustomFilter_;
@@ -323,23 +324,31 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     if (effectNode) {
       if (flags != 0 || state.maskImage || !effects_ || !effects_->validHandle(resource)) return false;
       sceneHasEffect_ = true;
-      RenderCommand command{};
-      command.primitive = RenderCommand::Primitive::effect;
-      command.effect.handle = resource;
-      std::copy_n(values + valueOffset, 4, command.effect.viewport.begin());
-      std::copy_n(values + valueOffset + 7, 16, command.effect.projection.begin());
-      std::copy_n(values + valueOffset + 23, 16, command.effect.camera.begin());
-      std::copy_n(values + valueOffset + 39, 2, command.effect.resetViewport.begin());
-      for (const float value : command.effect.viewport) {
+      EffectDraw effect{};
+      effect.handle = resource;
+      std::copy_n(values + valueOffset, 4, effect.viewport.begin());
+      std::copy_n(values + valueOffset + 7, 16, effect.projection.begin());
+      std::copy_n(values + valueOffset + 23, 16, effect.camera.begin());
+      std::copy_n(values + valueOffset + 39, 2, effect.resetViewport.begin());
+      for (const float value : effect.viewport) {
         if (std::abs(value) > 65536) return false;
       }
-      if (command.effect.viewport[2] <= 0 || command.effect.viewport[3] <= 0) return false;
-      for (const float value : command.effect.resetViewport) {
+      if (effect.viewport[2] <= 0 || effect.viewport[3] <= 0) return false;
+      for (const float value : effect.resetViewport) {
         if (value <= 0 || value > 65536) return false;
       }
+      RenderCommand command{};
+      command.primitive = RenderCommand::Primitive::effect;
       command.clip = state.clip;
       command.clipped = state.clipped;
-      frame_.commands.push_back(command);
+      frame_.effects.push_back(effect);
+      command.effectIndex = static_cast<std::uint32_t>(frame_.effects.size());
+      try {
+        frame_.commands.push_back(command);
+      } catch (...) {
+        frame_.effects.pop_back();
+        throw;
+      }
       continue;
     }
     if ((flags & NodeFlags::hasBlurFilter) &&
@@ -504,12 +513,14 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     }
   } catch (...) {
     discardCommandsFrom(originalCommandCount);
+    frame_.effects.resize(originalEffectCount);
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
     sceneHasEffect_ = originalSceneHasEffect;
     sceneHasCustomFilter_ = originalSceneHasCustomFilter;
     throw;
   }
   discardCommandsFrom(originalCommandCount);
+  frame_.effects.resize(originalEffectCount);
   sceneSubmittedThisFrame_ = originalSceneSubmitted;
   sceneHasEffect_ = originalSceneHasEffect;
   sceneHasCustomFilter_ = originalSceneHasCustomFilter;
