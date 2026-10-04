@@ -35,6 +35,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     frame_.filterParameters.size();
   const std::size_t originalCustomFilterPlanCount =
     frame_.customFilterPlans.size();
+  const std::size_t originalColorEffectCount = frame_.colorEffects.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
   const bool originalSceneHasEffect = sceneHasEffect_;
   const bool originalSceneHasCustomFilter = sceneHasCustomFilter_;
@@ -437,10 +438,14 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         if (mvBlend != (material != nullptr) ||
             ((flags & NodeFlags::hasMeshPostTintOverlay) && mvBlend)) return false;
         frame_.commands.back().appliesMeshPostTintOverlay = !mvBlend;
+        ColorEffectPayload colorEffect{};
         std::copy_n(values + valueOffset + 37, 4,
-                    frame_.commands.back().blendColor.begin());
-        if (frame_.commands.back().blendColor[3] < 0 ||
-            frame_.commands.back().blendColor[3] > 1) return false;
+                    colorEffect.blendColor.begin());
+        if (colorEffect.blendColor[3] < 0 ||
+            colorEffect.blendColor[3] > 1) return false;
+        frame_.colorEffects.push_back(colorEffect);
+        frame_.commands.back().colorEffectIndex =
+          static_cast<std::uint32_t>(frame_.colorEffects.size());
       }
       continue;
     }
@@ -517,14 +522,18 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     frame_.commands.back().appliesSpriteColor = flags & NodeFlags::hasSpriteColor;
     if (frame_.commands.back().appliesSpriteColor) {
       if (kind != static_cast<std::uint32_t>(NodeKind::sprite)) return false;
+      ColorEffectPayload colorEffect{};
       std::copy_n(values + valueOffset + 33, 4,
-                  frame_.commands.back().colorTone.begin());
+                  colorEffect.colorTone.begin());
       std::copy_n(values + valueOffset + 37, 4,
-                  frame_.commands.back().blendColor.begin());
-      if (frame_.commands.back().colorTone[3] < 0 ||
-          frame_.commands.back().colorTone[3] > 1 ||
-          frame_.commands.back().blendColor[3] < 0 ||
-          frame_.commands.back().blendColor[3] > 1) return false;
+                  colorEffect.blendColor.begin());
+      if (colorEffect.colorTone[3] < 0 ||
+          colorEffect.colorTone[3] > 1 ||
+          colorEffect.blendColor[3] < 0 ||
+          colorEffect.blendColor[3] > 1) return false;
+      frame_.colorEffects.push_back(colorEffect);
+      frame_.commands.back().colorEffectIndex =
+        static_cast<std::uint32_t>(frame_.colorEffects.size());
     }
     if (!std::isfinite(frame_.commands.back().blur) ||
         frame_.commands.back().blur < 0) return false;
@@ -546,6 +555,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     frame_.colorMatrices.resize(originalColorMatrixCount);
     frame_.filterParameters.resize(originalFilterParameterCount);
     frame_.customFilterPlans.resize(originalCustomFilterPlanCount);
+    frame_.colorEffects.resize(originalColorEffectCount);
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
     sceneHasEffect_ = originalSceneHasEffect;
     sceneHasCustomFilter_ = originalSceneHasCustomFilter;
@@ -556,6 +566,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   frame_.colorMatrices.resize(originalColorMatrixCount);
   frame_.filterParameters.resize(originalFilterParameterCount);
   frame_.customFilterPlans.resize(originalCustomFilterPlanCount);
+  frame_.colorEffects.resize(originalColorEffectCount);
   sceneSubmittedThisFrame_ = originalSceneSubmitted;
   sceneHasEffect_ = originalSceneHasEffect;
   sceneHasCustomFilter_ = originalSceneHasCustomFilter;
