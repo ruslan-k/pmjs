@@ -256,6 +256,9 @@ class CanvasStore {
   // Non-owning registry includes versions kept alive only by queued draws.
   std::unordered_set<Content*> contents_;
   std::vector<Surface> surfaces_;
+  // Reused CPU workspaces keep blur and dirty uploads off the allocator hot path.
+  std::vector<std::uint8_t> blurScratch_;
+  std::vector<std::uint8_t> uploadScratch_;
   std::size_t liveCount_ = 0;
   std::size_t peakCpuBytes_ = 0;
   std::size_t peakLiveCount_ = 0;
