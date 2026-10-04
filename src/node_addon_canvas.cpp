@@ -138,7 +138,7 @@ std::vector<std::filesystem::path> textFontPaths(napi_env env, State& value,
   }
   return paths;
 }
-CanvasTextStyle textStyle(napi_env env, const std::vector<napi_value>& args, size_t index) {
+CanvasTextStyle textStyle(napi_env env, const Arguments& args, std::size_t index) {
   CanvasTextStyle style;
   if (args.size() <= index) return style;
   auto object = args[index];
