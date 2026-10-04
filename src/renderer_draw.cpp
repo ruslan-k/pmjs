@@ -787,13 +787,32 @@ void Renderer::renderScene() {
     const auto vertex1 = worldVertices ? (*commandSpriteVertices)[1] : p1;
     const auto vertex2 = worldVertices ? (*commandSpriteVertices)[2] : p2;
     const auto vertex3 = worldVertices ? (*commandSpriteVertices)[3] : p3;
-    const std::array<float, 48> vertices = {
-      vertex0[0], vertex0[1], uv0[0], uv0[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      vertex1[0], vertex1[1], uv1[0], uv1[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      vertex2[0], vertex2[1], uv2[0], uv2[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
-      vertex3[0], vertex3[1], uv3[0], uv3[1], color[0], color[1], color[2], color[3], u0, v0, u1, v1,
+    const std::size_t baseVertex = vertices_.size() / 12U;
+    const GLsizei quadFirstIndex =
+      static_cast<GLsizei>((baseVertex / 4U) * 6U);
+    const std::size_t vertexOffset = vertices_.size();
+    vertices_.resize(vertexOffset + 48U);
+    const auto writeVertex = [&](std::size_t vertexIndex,
+                                 const std::array<float, 2>& position,
+                                 const std::array<float, 2>& uv) {
+      float* out = vertices_.data() + vertexOffset + vertexIndex * 12U;
+      out[0] = position[0];
+      out[1] = position[1];
+      out[2] = uv[0];
+      out[3] = uv[1];
+      out[4] = color[0];
+      out[5] = color[1];
+      out[6] = color[2];
+      out[7] = color[3];
+      out[8] = u0;
+      out[9] = v0;
+      out[10] = u1;
+      out[11] = v1;
     };
-    const GLsizei quadFirstIndex = appendQuad(vertices);
+    writeVertex(0, vertex0, uv0);
+    writeVertex(1, vertex1, uv1);
+    writeVertex(2, vertex2, uv2);
+    writeVertex(3, vertex3, uv3);
     const bool operationClipped = inlineFilterMatrix[commandIndex] ?
         inlineFilterClipped[commandIndex] : command.clipped;
     const std::array<int, 4>& operationClip =
