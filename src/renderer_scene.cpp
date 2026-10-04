@@ -415,10 +415,12 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       return std::array<float, 2>{placed[0] * x + placed[2] * y + placed[4],
                                   placed[1] * x + placed[3] * y + placed[5]};
     };
-    std::array<std::array<float, 2>, 4> worldVertices;
-    for (std::size_t vertex = 0; vertex < 4; ++vertex) {
-      const std::size_t offset = valueOffset + (vertex < 3 ? vertex * 2 : 15);
-      worldVertices[vertex] = {values[offset], values[offset + 1]};
+    std::array<std::array<float, 2>, 4> worldVertices{};
+    if (spriteVertices) {
+      for (std::size_t vertex = 0; vertex < 4; ++vertex) {
+        const std::size_t offset = valueOffset + (vertex < 3 ? vertex * 2 : 15);
+        worldVertices[vertex] = {values[offset], values[offset + 1]};
+      }
     }
     const auto p0 = spriteVertices ? worldVertices[0] : corner(0, 0);
     const auto p1 = spriteVertices ? worldVertices[1] : corner(destination[0], 0);
@@ -432,16 +434,18 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         (maximumX <= 0 || maximumY <= 0 || minimumX >= queueWidth_ ||
          minimumY >= queueHeight_)) continue;
 
+    const auto imageInfo = images_.lookup(resource);
+    if (!imageInfo) return false;
     if (kind == static_cast<std::uint32_t>(NodeKind::sprite)) {
       if (!queueImage(resource, placed,
             {values[valueOffset + 9], values[valueOffset + 10],
              values[valueOffset + 11], values[valueOffset + 12]},
-            state.alpha, tint, blendMode)) return false;
+            state.alpha, tint, blendMode, &*imageInfo)) return false;
     } else if (kind == static_cast<std::uint32_t>(NodeKind::tilingSprite)) {
       if (!queueTiled(resource, placed,
             {values[valueOffset + 9], values[valueOffset + 10],
              values[valueOffset + 11], values[valueOffset + 12]},
-            destination, state.alpha, tint, blendMode)) return false;
+            destination, state.alpha, tint, blendMode, &*imageInfo)) return false;
     } else {
       return false;
     }
@@ -458,14 +462,15 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         ? RenderCommand::Primitive::tilingSprite
         : RenderCommand::Primitive::sprite;
     frame_.commands.back().spriteWorldVertices = spriteVertices;
-    frame_.commands.back().spriteVertices = worldVertices;
+    if (spriteVertices) frame_.commands.back().spriteVertices = worldVertices;
     frame_.commands.back().standaloneBitmapRegion = flags & NodeFlags::standaloneBitmapRegion;
     frame_.commands.back().packedSpriteColor = flags & NodeFlags::packedSpriteColor;
     if (frame_.commands.back().packedSpriteColor) {
       frame_.commands.back().color = { float((tint >> 16) & 255) / 255,
         float((tint >> 8) & 255) / 255, float(tint & 255) / 255, float(tint >> 24) / 255 };
     }
-    frame_.commands.back().premultipliedSpriteTexture = (flags & NodeFlags::premultipliedSpriteTexture) || images_.lookup(resource)->premultiplied;
+    frame_.commands.back().premultipliedSpriteTexture =
+      (flags & NodeFlags::premultipliedSpriteTexture) || imageInfo->premultiplied;
     frame_.commands.back().pixiSpritePacking = kind == static_cast<std::uint32_t>(NodeKind::sprite);
     frame_.commands.back().appliesSpriteColor = flags & NodeFlags::hasSpriteColor;
     if (frame_.commands.back().appliesSpriteColor) {
