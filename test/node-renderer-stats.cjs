@@ -87,7 +87,7 @@ native.renderFrame();
 
 const stats = native.render.stats();
 if (!Array.isArray(stats.filterApplications) ||
-    stats.filterApplications.length !== 31 ||
+    stats.filterApplications.length !== 32 ||
     stats.filterApplications[3] !== 1) {
   throw new Error('alpha-mask application was not attributed: ' +
     JSON.stringify(stats));
@@ -97,7 +97,7 @@ if (stats.toneAdjustDrawCalls !== 0 ||
   throw new Error('filter draw categories are inconsistent: ' +
     JSON.stringify(stats));
 }
-if (stats.filterTargetAcquires !== 1 || stats.filterTargetReuses !== 1 ||
+if (stats.filterTargetAcquires !== 1 || stats.filterTargetReuses !== 0 ||
     stats.filterTargetClears !== 1 || stats.rendererTargetCreates !== 4 ||
     stats.rendererTargetDestroys !== 0 || stats.framebufferChecks !== 4 ||
     stats.renderTargetBytes !== 32 * 32 * 4 * 4) {
