@@ -260,6 +260,8 @@ void Renderer::beginFrame() {
   const std::size_t previousEffectCount = frame_.effects.size();
   const std::size_t previousColorMatrixCount = frame_.colorMatrices.size();
   const std::size_t previousFilterParameterCount = frame_.filterParameters.size();
+  const std::size_t previousCustomFilterPlanCount =
+    frame_.customFilterPlans.size();
 
   discardCommandsFrom(0);
   if (frame_.commands.capacity() > 2048 &&
@@ -284,6 +286,13 @@ void Renderer::beginFrame() {
     std::vector<std::array<float, 21>>().swap(frame_.filterParameters);
   } else {
     frame_.filterParameters.clear();
+  }
+  if (frame_.customFilterPlans.capacity() > 32 &&
+      previousCustomFilterPlanCount * 4 < frame_.customFilterPlans.capacity()) {
+    std::vector<std::shared_ptr<const CustomFilterPlan>>().swap(
+      frame_.customFilterPlans);
+  } else {
+    frame_.customFilterPlans.clear();
   }
 
   images_.update();
