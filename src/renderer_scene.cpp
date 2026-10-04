@@ -36,6 +36,8 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   const std::size_t originalCustomFilterPlanCount =
     frame_.customFilterPlans.size();
   const std::size_t originalColorEffectCount = frame_.colorEffects.size();
+  const std::size_t originalMaskTransformCount = frame_.maskTransforms.size();
+  const std::size_t originalSpriteVerticesCount = frame_.spriteVertices.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
   const bool originalSceneHasEffect = sceneHasEffect_;
   const bool originalSceneHasCustomFilter = sceneHasCustomFilter_;
@@ -423,7 +425,11 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       frame_.commands.back().clipped = state.clipped;
       if (state.maskImage && !images_.beginUse(state.maskImage)) return false;
       frame_.commands.back().maskImage = state.maskImage;
-      frame_.commands.back().maskTransform = state.maskTransform;
+      if (state.maskImage) {
+        frame_.maskTransforms.push_back(state.maskTransform);
+        frame_.commands.back().maskTransformIndex =
+          static_cast<std::uint32_t>(frame_.maskTransforms.size());
+      }
       frame_.commands.back().nearest =
         kind == static_cast<std::uint32_t>(NodeKind::tileLayer) ||
         (flags & NodeFlags::nearestSampling);
@@ -509,7 +515,11 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         ? RenderCommand::Primitive::tilingSprite
         : RenderCommand::Primitive::sprite;
     frame_.commands.back().spriteWorldVertices = spriteVertices;
-    if (spriteVertices) frame_.commands.back().spriteVertices = worldVertices;
+    if (spriteVertices) {
+      frame_.spriteVertices.push_back(worldVertices);
+      frame_.commands.back().spriteVerticesIndex =
+        static_cast<std::uint32_t>(frame_.spriteVertices.size());
+    }
     frame_.commands.back().standaloneBitmapRegion = flags & NodeFlags::standaloneBitmapRegion;
     frame_.commands.back().packedSpriteColor = flags & NodeFlags::packedSpriteColor;
     if (frame_.commands.back().packedSpriteColor) {
@@ -539,7 +549,11 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         frame_.commands.back().blur < 0) return false;
     if (state.maskImage && !images_.beginUse(state.maskImage)) return false;
     frame_.commands.back().maskImage = state.maskImage;
-    frame_.commands.back().maskTransform = state.maskTransform;
+    if (state.maskImage) {
+      frame_.maskTransforms.push_back(state.maskTransform);
+      frame_.commands.back().maskTransformIndex =
+        static_cast<std::uint32_t>(frame_.maskTransforms.size());
+    }
   }
   return filterDepth == 0;
   };
@@ -556,6 +570,8 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     frame_.filterParameters.resize(originalFilterParameterCount);
     frame_.customFilterPlans.resize(originalCustomFilterPlanCount);
     frame_.colorEffects.resize(originalColorEffectCount);
+    frame_.maskTransforms.resize(originalMaskTransformCount);
+    frame_.spriteVertices.resize(originalSpriteVerticesCount);
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
     sceneHasEffect_ = originalSceneHasEffect;
     sceneHasCustomFilter_ = originalSceneHasCustomFilter;
@@ -567,6 +583,8 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   frame_.filterParameters.resize(originalFilterParameterCount);
   frame_.customFilterPlans.resize(originalCustomFilterPlanCount);
   frame_.colorEffects.resize(originalColorEffectCount);
+  frame_.maskTransforms.resize(originalMaskTransformCount);
+  frame_.spriteVertices.resize(originalSpriteVerticesCount);
   sceneSubmittedThisFrame_ = originalSceneSubmitted;
   sceneHasEffect_ = originalSceneHasEffect;
   sceneHasCustomFilter_ = originalSceneHasCustomFilter;
