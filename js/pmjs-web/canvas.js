@@ -562,10 +562,14 @@ var textMeasurementCache = new Map();
 var textMetricsCache = new Map();
 var textMeasurementCacheLimit = 4096;
 
-function textMeasurementKey(font, text) {
-  // JSON tuple encoding avoids collisions from font paths/text containing
-  // separator characters while preserving path order and font size.
-  return JSON.stringify([font.paths, font.size, text]);
+function textMeasurementKey(font, text, style) {
+  // Include native style because Skia/Freetype metrics can differ for
+  // synthetic bold/italic faces. JSON tuple encoding also avoids collisions
+  // from font paths/text containing separator characters.
+  style = style || nativeTextStyle({}, font);
+  return JSON.stringify([font.paths, font.size, text,
+    !!style.bold, !!style.italic, style.lineJoin || 'miter',
+    style.lineCap || 'butt', Number(style.miterLimit) || 10]);
 }
 
 function boundedTextCacheSet(cache, key, value) {
@@ -576,20 +580,22 @@ function boundedTextCacheSet(cache, key, value) {
   cache.set(key, value);
 }
 
-function measuredTextWidth(font, text) {
-  var key = textMeasurementKey(font, text);
+function measuredTextWidth(font, text, style) {
+  style = style || nativeTextStyle({}, font);
+  var key = textMeasurementKey(font, text, style);
   var width = textMeasurementCache.get(key);
   if (width !== undefined) return width;
-  width = NativeHost.canvas.measureText(font.paths, text, font.size);
+  width = NativeHost.canvas.measureText(font.paths, text, font.size, style);
   boundedTextCacheSet(textMeasurementCache, key, width);
   return width;
 }
 
-function measuredTextMetrics(font, text) {
-  var key = textMeasurementKey(font, text);
+function measuredTextMetrics(font, text, style) {
+  style = style || nativeTextStyle({}, font);
+  var key = textMeasurementKey(font, text, style);
   var metrics = textMetricsCache.get(key);
   if (metrics === undefined) {
-    metrics = NativeHost.canvas.measureTextMetrics(font.paths, text, font.size);
+    metrics = NativeHost.canvas.measureTextMetrics(font.paths, text, font.size, style);
     boundedTextCacheSet(textMetricsCache, key, metrics);
     if (metrics && Number.isFinite(metrics.width) &&
         !textMeasurementCache.has(key)) {
@@ -863,7 +869,7 @@ function nativeTextStyle(context, font) {
 }
 function canvasTextPosition(context, text, x, y) {
   var font = contextFont(context);
-  var width = measuredTextWidth(font, String(text));
+  var width = measuredTextWidth(font, String(text), nativeTextStyle(context, font));
   if (context.textAlign === 'center') x -= width / 2;
   else if (context.textAlign === 'right' || context.textAlign === 'end') x -= width;
   var baseline = context.textBaseline;
@@ -1072,7 +1078,7 @@ CanvasContext2D.prototype.createPattern = function(source, repetition) {
 };
 CanvasContext2D.prototype.measureText = function(text) {
   var font = contextFont(this);
-  return measuredTextMetrics(font, String(text));
+  return measuredTextMetrics(font, String(text), nativeTextStyle(this, font));
 };
 CanvasContext2D.prototype.getImageData = function(x, y, width, height) {
   width = Math.floor(width);
@@ -1370,7 +1376,7 @@ Object.assign(PMJS.web.canvas, {
   },
   measureTextWidth: function(text, descriptor) {
     var font = contextFont(descriptor);
-    return measuredTextWidth(font, String(text));
+    return measuredTextWidth(font, String(text), nativeTextStyle({}, font));
   }
 });
 
