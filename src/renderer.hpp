@@ -78,8 +78,9 @@ struct RenderCommand {
   float blur = 0;
   ImageHandle maskImage = 0;
   std::array<float, 6> maskTransform{};
-  std::array<float, 20> colorMatrix{};
-  bool appliesColorMatrix = false;
+  // Tone matrices are rare and large; keep a 1-based index into the
+  // frame side table instead of 80 cold bytes in every sprite command.
+  std::uint32_t colorMatrixIndex = 0;
   std::array<float, 4> colorTone{};
   std::array<float, 4> blendColor{};
   bool appliesSpriteColor = false;
@@ -110,10 +111,12 @@ struct RenderCommand {
 struct FramePacket {
   std::vector<RenderCommand> commands;
   std::vector<EffectDraw> effects;
+  std::vector<std::array<float, 20>> colorMatrices;
 
   void clear() {
     commands.clear();
     effects.clear();
+    colorMatrices.clear();
   }
 };
 
