@@ -828,7 +828,6 @@ void Renderer::renderScene() {
   std::array<float, 4> rasterFrame{0, 0, static_cast<float>(width_), static_cast<float>(height_)};
   std::array<std::array<float, 4>, scene_packet::maxFilterDepth> rasterFrames{};
   bool targetYDown = offscreenRender_;
-  bool targetYDown = offscreenRender_;
   const auto projectTarget = [&](std::uint32_t program) {
     auto [entry, inserted] = targetProjectionLocations_.try_emplace(program, -1);
     if (inserted) entry->second = glGetUniformLocation(program, "targetProjection");
