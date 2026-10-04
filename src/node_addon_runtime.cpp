@@ -28,6 +28,10 @@ napi_value initialize(napi_env env, napi_callback_info info) try {
   const auto assetRoot = hasProperty(env, options, "assetRoot")
     ? asString(env, property(env, options, "assetRoot")) : std::string();
   std::size_t imageWarmCacheBytes = pmjs::ImageStore::defaultWarmBudgetBytes;
+  if (const char* profile = std::getenv("PMJS_RESOURCE_PROFILE");
+      profile && std::string(profile) == "low") {
+    imageWarmCacheBytes = 2U * 1024U * 1024U;
+  }
   if (hasProperty(env, options, "imageWarmCacheBytes")) {
     constexpr double maxSafeInteger = 9007199254740991.0;
     const double maxCacheBytes = std::min(maxSafeInteger,
