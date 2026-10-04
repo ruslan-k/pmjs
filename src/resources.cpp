@@ -123,114 +123,43 @@ std::optional<ImagePixels> decodeMemory(const void* data, std::size_t size) {
   return std::nullopt;
 }
 
-std::optional<ImagePixels> decodePngFile(const std::filesystem::path& path) {
-  png_image image{};
-  image.version = PNG_IMAGE_VERSION;
-  if (!png_image_begin_read_from_file(&image, path.c_str())) return std::nullopt;
-  image.format = PNG_FORMAT_RGBA;
-  const auto extent = checkedImageExtent(static_cast<int>(image.width),
-                                         static_cast<int>(image.height));
-  if (!extent) {
-    png_image_free(&image);
-    return std::nullopt;
+std::optional<ImagePixels> readTexturePixels(const ImageInfo& image) {
+  const auto extent = checkedImageExtent(image.width, image.height);
+  if (!extent) return std::nullopt;
+  ImagePixels pixels{image.width, image.height,
+                     std::vector<std::uint8_t>(extent->rgbaBytes)};
+  GLint previousRead = 0, previousBuffer = 0;
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousRead);
+  glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousBuffer);
+  constexpr std::array<GLenum, 4> parameters = {
+    GL_PACK_ALIGNMENT, GL_PACK_ROW_LENGTH, GL_PACK_SKIP_PIXELS, GL_PACK_SKIP_ROWS
+  };
+  std::array<GLint, 4> previousPack{};
+  for (std::size_t index = 0; index < parameters.size(); ++index) {
+    glGetIntegerv(parameters[index], &previousPack[index]);
+    glPixelStorei(parameters[index], index == 0 ? 1 : 0);
   }
-  ImagePixels result;
-  result.width = extent->width;
-  result.height = extent->height;
-  result.rgba.resize(extent->rgbaBytes);
-  if (!png_image_finish_read(&image, nullptr, result.rgba.data(), 0, nullptr)) {
-    png_image_free(&image);
-    return std::nullopt;
+  GLuint framebuffer = 0;
+  glGenFramebuffers(1, &framebuffer);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
+  if (framebuffer) {
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                          GL_TEXTURE_2D, image.texture, 0);
   }
-  png_image_free(&image);
-  return result;
-}
-
-std::optional<ImagePixels> decodeJpegFile(const std::filesystem::path& path) {
-  std::FILE* input = std::fopen(path.c_str(), "rb");
-  if (!input) return std::nullopt;
-  jpeg_decompress_struct decoder{};
-  JpegError error{};
-  decoder.err = jpeg_std_error(&error.base);
-  error.base.error_exit = recoverJpegError;
-  std::uint8_t* raw = nullptr;
-  if (setjmp(error.recovery)) {
-    std::free(raw);
-    jpeg_destroy_decompress(&decoder);
-    std::fclose(input);
-    return std::nullopt;
+  const bool complete = framebuffer != 0 &&
+    glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+  // Read back the exact uploaded snapshot. Reopening sourcePath here would be
+  // incorrect if the file was atomically replaced after the texture was loaded.
+  if (complete) {
+    glReadPixels(0, 0, image.width, image.height, GL_RGBA,
+                 GL_UNSIGNED_BYTE, pixels.rgba.data());
   }
-  jpeg_create_decompress(&decoder);
-  jpeg_stdio_src(&decoder, input);
-  if (jpeg_read_header(&decoder, TRUE) != JPEG_HEADER_OK) {
-    jpeg_destroy_decompress(&decoder);
-    std::fclose(input);
-    return std::nullopt;
-  }
-  const auto extent = checkedImageExtent(
-      static_cast<int>(decoder.image_width),
-      static_cast<int>(decoder.image_height));
-  if (!extent) {
-    jpeg_destroy_decompress(&decoder);
-    std::fclose(input);
-    return std::nullopt;
-  }
-  decoder.out_color_space = JCS_RGB;
-  jpeg_start_decompress(&decoder);
-  const std::size_t width = static_cast<std::size_t>(extent->width);
-  const std::size_t rgbBytes = extent->rgbBytes;
-  raw = static_cast<std::uint8_t*>(std::malloc(rgbBytes));
-  if (!raw) {
-    jpeg_destroy_decompress(&decoder);
-    std::fclose(input);
-    return std::nullopt;
-  }
-  while (decoder.output_scanline < decoder.output_height) {
-    JSAMPROW row = raw + decoder.output_scanline * width * 3U;
-    jpeg_read_scanlines(&decoder, &row, 1);
-  }
-  jpeg_finish_decompress(&decoder);
-  jpeg_destroy_decompress(&decoder);
-  std::fclose(input);
-
-  ImagePixels result;
-  result.width = extent->width;
-  result.height = extent->height;
-  result.rgba.resize(extent->rgbaBytes);
-  for (std::size_t source = 0, destination = 0; source < rgbBytes;
-       source += 3U, destination += 4U) {
-    result.rgba[destination] = raw[source];
-    result.rgba[destination + 1U] = raw[source + 1U];
-    result.rgba[destination + 2U] = raw[source + 2U];
-    result.rgba[destination + 3U] = 255;
-  }
-  std::free(raw);
-  return result;
-}
-
-std::optional<ImagePixels> decodeImage(const std::filesystem::path& path) {
-  try {
-    constexpr std::uintmax_t kMaxImageFileSize = 64U * 1024U * 1024U;
-    const auto size = std::filesystem::file_size(path);
-    if (size == 0 || size > kMaxImageFileSize) return std::nullopt;
-
-    std::array<std::uint8_t, 8> signature{};
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open() ||
-        !file.read(reinterpret_cast<char*>(signature.data()),
-                   static_cast<std::streamsize>(signature.size()))) {
-      return std::nullopt;
-    }
-    if (png_sig_cmp(signature.data(), 0, signature.size()) == 0) {
-      return decodePngFile(path);
-    }
-    if (signature[0] == 0xff && signature[1] == 0xd8 &&
-        signature[2] == 0xff) {
-      return decodeJpegFile(path);
-    }
-    return std::nullopt;
-  } catch (...) {
-    return std::nullopt;
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(previousBuffer));
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousRead));
+  glDeleteFramebuffers(1, &framebuffer);
+  for (std::size_t index = 0; index < parameters.size(); ++index) {
+    glPixelStorei(parameters[index], previousPack[index]);
   }
   return complete ? std::optional<ImagePixels>(std::move(pixels)) : std::nullopt;
 }
@@ -396,11 +325,9 @@ bool ImageStore::retainCpuPixels(ImageHandle handle) {
     return true;
   }
   if (slot.cacheKey.empty()) return false;
-  if (!slot.cachedPixels) {
-    slot.cachedPixels = decodeImage(slot.cacheKey);
-    if (slot.cachedPixels) cpuBytes_ += slot.cachedPixels->rgba.capacity();
-  }
+  slot.cachedPixels = readTexturePixels(*info);
   if (!slot.cachedPixels) return false;
+  cpuBytes_ += slot.cachedPixels->rgba.capacity();
   slot.retainCpuPixels = true;
   slot.cpuPixelFrames = 0;
   return true;
@@ -441,21 +368,14 @@ const ImagePixels* ImageStore::readPixels(ImageHandle handle) const {
     return &*slot.cachedPixels;
   }
   if (slot.cacheKey.empty()) return nullptr;
-  if (slot.retainCpuPixels) {
-    if (!slot.cachedPixels) {
-      slot.cachedPixels = decodeImage(slot.cacheKey);
-      if (slot.cachedPixels) cpuBytes_ += slot.cachedPixels->rgba.capacity();
-    }
-    return slot.cachedPixels ? &*slot.cachedPixels : nullptr;
+  slot.cachedPixels = readTexturePixels(*info);
+  if (!slot.cachedPixels) return nullptr;
+  cpuBytes_ += slot.cachedPixels->rgba.capacity();
+  if (!slot.retainCpuPixels) {
+    slot.cpuPixelFrames = 60;
+    transientCpuPixelsActive_ = true;
   }
-  if (!slot.cachedPixels) {
-    slot.cachedPixels = decodeImage(slot.cacheKey);
-    if (slot.cachedPixels) cpuBytes_ += slot.cachedPixels->rgba.capacity();
-  }
-  slot.cpuPixelFrames = 60;
-  transientCpuPixelsActive_ =
-    transientCpuPixelsActive_ || slot.cachedPixels.has_value();
-  return slot.cachedPixels ? &*slot.cachedPixels : nullptr;
+  return &*slot.cachedPixels;
 }
 
 std::optional<ImageInfo> ImageStore::createRgba(int width, int height,
@@ -774,6 +694,7 @@ void ImageStore::destroySlot(std::size_t index) {
   slot.cpuPixelFrames = 0;
   slot.retainCpuPixels = false;
   slot.cacheKey.clear();
+  slot.sourcePath.clear();
   if (slot.cachedPixels) cpuBytes_ -= slot.cachedPixels->rgba.capacity();
   slot.cachedPixels.reset();
   slot.live = false;
