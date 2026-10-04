@@ -97,7 +97,9 @@ struct RenderCommand {
   Action action = Action::draw;
   scene_packet::FilterKind filterKind = scene_packet::FilterKind::blur;
   std::uint32_t filterProgram = 0;
-  std::shared_ptr<const CustomFilterPlan> customFilterPlan{};
+  // Custom plans are rare and own shared_ptr state; keep only a side-table
+  // index in normal commands to avoid shared_ptr traffic on every sprite.
+  std::uint32_t customFilterPlanIndex = 0;
   // Filter parameter blocks are cold and only exist on filter-begin commands.
   // Keep a 1-based side-table index instead of 84 unused bytes per sprite.
   std::uint32_t filterParametersIndex = 0;
@@ -115,12 +117,14 @@ struct FramePacket {
   std::vector<EffectDraw> effects;
   std::vector<std::array<float, 20>> colorMatrices;
   std::vector<std::array<float, 21>> filterParameters;
+  std::vector<std::shared_ptr<const CustomFilterPlan>> customFilterPlans;
 
   void clear() {
     commands.clear();
     effects.clear();
     colorMatrices.clear();
     filterParameters.clear();
+    customFilterPlans.clear();
   }
 };
 
@@ -370,6 +374,13 @@ class Renderer {
   const std::array<float, 21>& filterParams(
       const RenderCommand& command) const {
     return frame_.filterParameters[command.filterParametersIndex - 1];
+  }
+  const CustomFilterPlan* customPlan(const RenderCommand& command) const {
+    if (command.customFilterPlanIndex == 0 ||
+        command.customFilterPlanIndex > frame_.customFilterPlans.size()) {
+      return nullptr;
+    }
+    return frame_.customFilterPlans[command.customFilterPlanIndex - 1].get();
   }
   static int filterBoundsPadding(scene_packet::FilterKind kind,
                                  const std::array<float, 21>& parameters);
