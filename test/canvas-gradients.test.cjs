@@ -87,6 +87,8 @@ test('axis-aligned lighter fill uses the native additive rectangle path', () => 
 
   assert.equal(additive.length, 1);
   assert.deepEqual(additive[0].slice(0, 5), [11, 2, 3, 8, 9]);
-  assert.equal(additive[0][5] & 0xff, 128);
+  // Chromium-65 Canvas alpha uses 8-bit fixed-point multiplication:
+  // 255 * 128 >> 8 = 127 for globalAlpha=0.5.
+  assert.equal(additive[0][5] & 0xff, 127);
   assert.equal(fallbackReads.length, 0);
 });
