@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: low-resource-performance-${{ github.ref }}
+  group: low-resource-performance-v2-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
