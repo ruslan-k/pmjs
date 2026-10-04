@@ -72,3 +72,27 @@ test('prefix fill clears records dirtied by an abandoned build', () => {
   assert.equal(context.nativeSceneValues[40], 0);
   assert.equal(context.nativeSceneValues[81], 0);
 });
+
+
+test('bulk clear zeros records that regrow beyond the previous frame', () => {
+  const context = makeHost(true);
+
+  // Build a larger frame and dirty a tail slot in its second record.
+  recordValues(context);
+  context.nativeSceneValues[81] = 9;
+
+  // Shrink to one record. The next reset only bulk-clears that one-record prefix.
+  context.resetNativeSceneRecords();
+  context.nativeSceneRecord(0, 1, 7, 0xffffff, 0,
+    { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 }, 1, null, null, null);
+
+  // Regrow to two records. The second record must explicitly clear its tail
+  // instead of exposing the stale value left from the older larger frame.
+  context.resetNativeSceneRecords();
+  context.nativeSceneRecord(0, 1, 7, 0xffffff, 0,
+    { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 }, 1, null, null, null);
+  context.nativeSceneRecord(0, 1, 7, 0xffffff, 0,
+    { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 }, 1, null, null, null);
+
+  assert.equal(context.nativeSceneValues[81], 0);
+});
