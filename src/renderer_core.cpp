@@ -253,6 +253,8 @@ bool Renderer::setScreenRenderSize(int width, int height) {
 
 void Renderer::beginFrame() {
   sceneSubmittedThisFrame_ = false;
+  sceneHasEffect_ = false;
+  sceneHasCustomFilter_ = false;
   discardCommandsFrom(0);
   images_.update();
   queueWidth_ = width_;
