@@ -77,8 +77,16 @@ test('incremental affine image sampling matches legacy per-pixel inverse mapping
     NativeHost: {
       runtime: { env() { return ''; } },
       canvas: {
-        readPixels(handle, _x, _y, width, height) {
-          if (handle === 2) return Uint8Array.from(sourcePixels);
+        readPixels(handle, x, y, width, height) {
+          if (handle === 2) {
+            const pixels = new Uint8Array(width * height * 4);
+            for (let row = 0; row < height; row++) {
+              const sourceOffset = ((y + row) * sourceWidth + x) * 4;
+              pixels.set(sourcePixels.subarray(
+                sourceOffset, sourceOffset + width * 4), row * width * 4);
+            }
+            return pixels;
+          }
           return new Uint8Array(width * height * 4);
         },
         writePixels(_handle, left, top, width, height, pixels) {
