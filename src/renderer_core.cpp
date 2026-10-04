@@ -293,9 +293,17 @@ void Renderer::queueQuad(float x, float y, float width, float height,
 bool Renderer::queueImage(ImageHandle image,
                           const std::array<float, 6>& transform,
                           const std::array<float, 4>& source, float alpha,
-                          std::uint32_t tint, BlendMode blendMode) {
-  if (!images_.lookup(image) ||
-      !isValidBlendMode(static_cast<std::uint8_t>(blendMode))) return false;
+                          std::uint32_t tint, BlendMode blendMode,
+                          const ImageInfo* knownInfo) {
+  std::optional<ImageInfo> lookedUp;
+  if (!knownInfo) {
+    lookedUp = images_.lookup(image);
+    if (!lookedUp) return false;
+    knownInfo = &*lookedUp;
+  } else if (knownInfo->handle != image) {
+    return false;
+  }
+  if (!isValidBlendMode(static_cast<std::uint8_t>(blendMode))) return false;
   const std::array<float, 4> color = {
     static_cast<float>((tint >> 16U) & 0xffU) / 255.0F,
     static_cast<float>((tint >> 8U) & 0xffU) / 255.0F,
@@ -318,16 +326,24 @@ bool Renderer::queueTiled(ImageHandle image,
                           const std::array<float, 6>& transform,
                           const std::array<float, 4>& source,
                           const std::array<float, 2>& destination, float alpha,
-                          std::uint32_t tint, BlendMode blendMode) {
-  const auto info = images_.lookup(image);
-  if (!info || destination[0] <= 0 || destination[1] <= 0 ||
+                          std::uint32_t tint, BlendMode blendMode,
+                          const ImageInfo* knownInfo) {
+  std::optional<ImageInfo> lookedUp;
+  if (!knownInfo) {
+    lookedUp = images_.lookup(image);
+    if (!lookedUp) return false;
+    knownInfo = &*lookedUp;
+  } else if (knownInfo->handle != image) {
+    return false;
+  }
+  if (destination[0] <= 0 || destination[1] <= 0 ||
       !isValidBlendMode(static_cast<std::uint8_t>(blendMode))) return false;
   auto boundedSource = source;
-  if (std::isfinite(boundedSource[0]) && info->width > 0) {
-    boundedSource[0] = std::fmod(boundedSource[0], static_cast<float>(info->width));
+  if (std::isfinite(boundedSource[0]) && knownInfo->width > 0) {
+    boundedSource[0] = std::fmod(boundedSource[0], static_cast<float>(knownInfo->width));
   }
-  if (std::isfinite(boundedSource[1]) && info->height > 0) {
-    boundedSource[1] = std::fmod(boundedSource[1], static_cast<float>(info->height));
+  if (std::isfinite(boundedSource[1]) && knownInfo->height > 0) {
+    boundedSource[1] = std::fmod(boundedSource[1], static_cast<float>(knownInfo->height));
   }
   const std::array<float, 4> color = {
     static_cast<float>((tint >> 16U) & 0xffU) / 255.0F,
