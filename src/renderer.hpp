@@ -69,17 +69,36 @@ struct RenderCommand {
     sprite, tilingSprite, screenFill, tileLayer, mesh, effect
   };
 
+  // Keep the aggregate-initialized hot sprite prefix stable.
   ImageHandle image = 0;
   std::array<float, 6> transform;
   std::array<float, 4> source;
   std::array<float, 2> destination;
   std::array<float, 4> color;
   BlendMode blendMode = BlendMode::normal;
-  bool repeat = false;
+
+  // These flags are read frequently but individually waste bytes/padding.
+  // They fit in one 16-bit allocation unit while preserving field syntax.
+  std::uint16_t repeat : 1 = 0;
+  std::uint16_t clipped : 1 = 0;
+  std::uint16_t appliesSpriteColor : 1 = 0;
+  std::uint16_t pixiSpritePacking : 1 = 0;
+  std::uint16_t premultipliedSpriteTexture : 1 = 0;
+  std::uint16_t packedSpriteColor : 1 = 0;
+  std::uint16_t spriteWorldVertices : 1 = 0;
+  std::uint16_t standaloneBitmapRegion : 1 = 0;
+  std::uint16_t appliesMeshPostTintOverlay : 1 = 0;
+  std::uint16_t nearest : 1 = 0;
+  std::uint16_t roundPixels : 1 = 0;
+  std::uint16_t clampedTilingSampling : 1 = 0;
+
+  Action action = Action::draw;
+  Primitive primitive = Primitive::sprite;
+  std::uint8_t textureRotation = 0;
+
   std::uint32_t tileLayer = 0;
   std::array<float, 2> tileAnimation{};
   std::array<int, 4> clip{};
-  bool clipped = false;
   float blur = 0;
   ImageHandle maskImage = 0;
   // Masks are uncommon. Keep their inverse transform in frame-side storage so
@@ -91,19 +110,8 @@ struct RenderCommand {
   // Sprite tone/blend and mesh overlay colors are uncommon. Keep their 32-byte
   // payload in frame-side storage and retain only a 1-based index here.
   std::uint32_t colorEffectIndex = 0;
-  bool appliesSpriteColor = false;
-  bool pixiSpritePacking = false;
-  bool premultipliedSpriteTexture = false;
-  bool packedSpriteColor = false;
-  bool spriteWorldVertices = false;
-  bool standaloneBitmapRegion = false;
   // Explicit world vertices are rare; retain the 32-byte quad in a side table.
   std::uint32_t spriteVerticesIndex = 0;
-  bool appliesMeshPostTintOverlay = false;
-  std::uint8_t textureRotation = 0;
-  bool nearest = false;
-  bool roundPixels = false;
-  Action action = Action::draw;
   scene_packet::FilterKind filterKind = scene_packet::FilterKind::blur;
   std::uint32_t filterProgram = 0;
   // Custom plans are rare and own shared_ptr state; keep only a side-table
@@ -113,12 +121,10 @@ struct RenderCommand {
   // Keep a 1-based side-table index instead of 84 unused bytes per sprite.
   std::uint32_t filterParametersIndex = 0;
   float filterResolution = 1.0F;
-  Primitive primitive = Primitive::sprite;
   // Effect payloads are large (two 4x4 matrices plus viewport state) and rare.
   // Keep only a 1-based side-table index in the hot command vector so normal
   // sprite commands do not drag ~156 bytes of unused effect state through cache.
   std::uint32_t effectIndex = 0;
-  bool clampedTilingSampling = false;
 };
 
 struct FramePacket {
