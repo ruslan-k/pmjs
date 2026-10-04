@@ -404,9 +404,7 @@ void Renderer::renderScene() {
   const bool shouldRenderScene =
       sceneSubmittedThisFrame_ || offscreenRender_ || !hasValidSceneFrame_;
   if (shouldRenderScene) {
-    if (!offscreenRender_ && std::any_of(frame_.commands.begin(), frame_.commands.end(), [](const auto& command) {
-      return command.primitive == RenderCommand::Primitive::effect;
-    })) ensureDepthBuffer(rootTarget);
+    if (!offscreenRender_ && sceneHasEffect_) ensureDepthBuffer(rootTarget);
     if (!offscreenRender_) toneCompositionActive_ = false;
     glBindFramebuffer(GL_FRAMEBUFFER, rootFramebuffer);
     glViewport(0, 0, width_, height_);
@@ -417,8 +415,7 @@ void Renderer::renderScene() {
 
     vertices_.clear();
     vertices_.reserve(frame_.commands.size() * 72);
-    if (filterBoundsEnabled_ || std::any_of(frame_.commands.begin(), frame_.commands.end(),
-        [](const auto& command) { return command.filterKind == scene_packet::FilterKind::custom; })) {
+    if (filterBoundsEnabled_ || sceneHasCustomFilter_) {
       computeFilterContentBounds();
     } else {
       filterBounds_.clear();
