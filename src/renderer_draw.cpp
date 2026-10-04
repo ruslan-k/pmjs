@@ -64,9 +64,11 @@ int Renderer::filterBoundsPadding(scene_packet::FilterKind kind,
 void Renderer::computeFilterContentBounds() {
   constexpr std::size_t maxRegions = FilterContentBounds::maxRegions;
   const std::size_t commandCount = frame_.commands.size();
-  if (filterBounds_.size() < commandCount) {
-    filterBounds_.resize(commandCount);
+  if (filterBounds_.capacity() > 2048 &&
+      commandCount * 4 < filterBounds_.capacity()) {
+    std::vector<FilterContentBounds>().swap(filterBounds_);
   }
+  filterBounds_.resize(commandCount);
   for (std::size_t index = 0; index < commandCount; ++index) {
     auto& bounds = filterBounds_[index];
     bounds.bounded = false;
@@ -413,8 +415,15 @@ void Renderer::renderScene() {
     glClearDepthf(1);
     glClear(GL_COLOR_BUFFER_BIT | (rootTarget.depth ? GL_DEPTH_BUFFER_BIT : 0));
 
+    const std::size_t requiredVertexFloats = frame_.commands.size() * 72U;
     vertices_.clear();
-    vertices_.reserve(frame_.commands.size() * 72);
+    if (vertices_.capacity() > 72U * 2048U &&
+        requiredVertexFloats * 4U < vertices_.capacity()) {
+      std::vector<float>().swap(vertices_);
+    }
+    if (vertices_.capacity() < requiredVertexFloats) {
+      vertices_.reserve(requiredVertexFloats);
+    }
     if (filterBoundsEnabled_ || sceneHasCustomFilter_) {
       computeFilterContentBounds();
     } else {
