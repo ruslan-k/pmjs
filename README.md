@@ -76,6 +76,7 @@ export PMJS_RESOURCE_PROFILE=low
 #   image warm cache: 2 MiB
 #   glyph cache:      4 MiB / 2048 entries
 #   prepared audio:   4 MiB cache, 1 MiB per asset, 128 KiB sync-decode ceiling
+#   stream buffer:     16000 frames (~333 ms at 48 kHz; default profile: 24000)
 #
 # Optional per-game overrides:
 export PMJS_IMAGE_WARM_CACHE_BYTES=2097152
@@ -84,6 +85,7 @@ export PMJS_GLYPH_CACHE_MAX_ENTRIES=2048
 export PMJS_AUDIO_CACHE_BYTES=4194304
 export PMJS_AUDIO_MAX_ASSET_BYTES=1048576
 export PMJS_AUDIO_MAX_SYNC_BYTES=131072
+export PMJS_AUDIO_STREAM_BUFFER_FRAMES=16000
 ```
 
 For RPG Maker MV ports, several runtime A/B switches are available for device-specific bottlenecks:
