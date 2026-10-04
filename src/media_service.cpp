@@ -61,6 +61,24 @@ struct MediaService::Impl {
   };
 
   explicit Impl(std::filesystem::path mediaRoot) : root(std::move(mediaRoot)) {
+    if (const char* profile = std::getenv("PMJS_RESOURCE_PROFILE");
+        profile && std::string(profile) == "low") {
+      policy.cacheBytes = 4U * 1024U * 1024U;
+      policy.maxAssetBytes = 1U * 1024U * 1024U;
+      policy.maxSynchronousBytes = 128U * 1024U;
+    }
+    const auto policyBytes = [](const char* name, std::size_t current) {
+      if (const char* raw = std::getenv(name)) {
+        try { return static_cast<std::size_t>(std::stoull(raw)); }
+        catch (...) {}
+      }
+      return current;
+    };
+    policy.cacheBytes = policyBytes("PMJS_AUDIO_CACHE_BYTES", policy.cacheBytes);
+    policy.maxAssetBytes = policyBytes("PMJS_AUDIO_MAX_ASSET_BYTES", policy.maxAssetBytes);
+    policy.maxSynchronousBytes =
+      policyBytes("PMJS_AUDIO_MAX_SYNC_BYTES", policy.maxSynchronousBytes);
+
     const char* diagnosticFlag = std::getenv("PMJS_AUDIO_DIAGNOSTICS");
     diagnostics = diagnosticFlag && std::string(diagnosticFlag) == "1";
     SDL_AudioSpec requested{};
