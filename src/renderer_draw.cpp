@@ -62,7 +62,7 @@ int Renderer::filterBoundsPadding(scene_packet::FilterKind kind,
 }
 
 void Renderer::computeFilterContentBounds() {
-  constexpr std::size_t maxRegions = 8;
+  constexpr std::size_t maxRegions = FilterContentBounds::maxRegions;
   const std::size_t commandCount = frame_.commands.size();
   if (filterBounds_.size() < commandCount) {
     filterBounds_.resize(commandCount);
@@ -72,7 +72,7 @@ void Renderer::computeFilterContentBounds() {
     bounds.bounded = false;
     bounds.regionsValid = false;
     bounds.rect = {};
-    bounds.regions.clear();
+    bounds.regionCount = 0;
   }
   struct Accumulator {
     std::size_t beginIndex = 0;
@@ -265,8 +265,9 @@ void Renderer::computeFilterContentBounds() {
           top = std::clamp(top, 0, height_);
           right = std::clamp(right, 0, width_);
           bottom = std::clamp(bottom, 0, height_);
-          if (left < right && top < bottom) {
-            out.regions.push_back({left, top, right, bottom});
+          if (left < right && top < bottom &&
+              out.regionCount < FilterContentBounds::maxRegions) {
+            out.regions[out.regionCount++] = {left, top, right, bottom};
           }
         }
       }
@@ -329,8 +330,9 @@ void Renderer::computeFilterContentBounds() {
 
 bool Renderer::filterBoundsRegions(
     const RenderCommand* filterBegin,
-    std::vector<std::array<int, 4>>* regions) const {
-  if (regions == nullptr || filterBegin == nullptr ||
+    std::array<std::array<int, 4>, FilterContentBounds::maxRegions>* regions,
+    std::size_t* regionCount) const {
+  if (regions == nullptr || regionCount == nullptr || filterBegin == nullptr ||
       filterBegin->filterKind != scene_packet::FilterKind::colorMatrix ||
       filterBoundsPadding(filterBegin->filterKind,
                           filterBegin->filterParameters) != 0) {
@@ -342,9 +344,11 @@ bool Renderer::filterBoundsRegions(
       filterBegin - frame_.commands.data());
   if (index >= filterBounds_.size() ||
       !filterBounds_[index].regionsValid ||
-      filterBounds_[index].regions.size() < 2) return false;
+      filterBounds_[index].regionCount < 2) return false;
   std::uint64_t regionArea = 0;
-  for (const auto& region : filterBounds_[index].regions) {
+  for (std::size_t regionIndex = 0;
+       regionIndex < filterBounds_[index].regionCount; ++regionIndex) {
+    const auto& region = filterBounds_[index].regions[regionIndex];
     regionArea += static_cast<std::uint64_t>(region[2] - region[0]) *
                   static_cast<std::uint64_t>(region[3] - region[1]);
   }
@@ -353,6 +357,7 @@ bool Renderer::filterBoundsRegions(
       static_cast<std::uint64_t>(std::max(0, aabb[3] - aabb[1]));
   if (aabbArea == 0 || regionArea * 4 >= aabbArea * 3) return false;
   *regions = filterBounds_[index].regions;
+  *regionCount = filterBounds_[index].regionCount;
   return true;
 }
 
@@ -860,9 +865,10 @@ void Renderer::renderScene() {
   std::array<bool, scene_packet::maxFilterDepth> savedScissor{};
   std::array<std::array<int, 4>, scene_packet::maxFilterDepth> savedClip{};
   std::array<int, 4> activeClip{};
-  constexpr std::size_t maxFilterRegions = 8;
-  static thread_local std::array<std::vector<std::array<int, 4>>,
-      scene_packet::maxFilterDepth> filterRegions;
+  constexpr std::size_t maxFilterRegions = FilterContentBounds::maxRegions;
+  std::array<std::array<std::array<int, 4>, maxFilterRegions>,
+      scene_packet::maxFilterDepth> filterRegions{};
+  std::array<std::size_t, scene_packet::maxFilterDepth> filterRegionCounts{};
   applyBlendMode(activeBlend);
   for (const auto& operation : operations) {
     if (operation.action == RenderCommand::Action::filterBegin) {
@@ -887,12 +893,10 @@ void Renderer::renderScene() {
         operation.command->customFilterPlan ? pot(targetHeight) : targetHeight);
       std::array<int, 4> boundedRect{};
       const bool bounded = !operation.command->customFilterPlan && filterBoundsRect(operation.command, &boundedRect);
-      filterRegions[filterDepth].clear();
-      if (filterRegions[filterDepth].capacity() < maxFilterRegions) {
-        filterRegions[filterDepth].reserve(maxFilterRegions);
-      }
+      filterRegionCounts[filterDepth] = 0;
       const bool multiRegion = !operation.command->customFilterPlan && filterBoundsRegions(
-          operation.command, &filterRegions[filterDepth]);
+          operation.command, &filterRegions[filterDepth],
+          &filterRegionCounts[filterDepth]);
       if (bounded) {
         savedScissor[filterDepth] = true;
         savedClip[filterDepth] = boundedRect;
@@ -1394,9 +1398,11 @@ void Renderer::renderScene() {
         glEnable(GL_BLEND);
         applyBlendMode(activeBlend);
       }
-      if (!filterRegions[filterDepth].empty()) {
+      if (filterRegionCounts[filterDepth] != 0) {
         glEnable(GL_SCISSOR_TEST);
-        for (const auto& region : filterRegions[filterDepth]) {
+        for (std::size_t regionIndex = 0;
+             regionIndex < filterRegionCounts[filterDepth]; ++regionIndex) {
+          const auto& region = filterRegions[filterDepth][regionIndex];
           rasterScissor(region[0], height_ - region[3],
                     region[2] - region[0], region[3] - region[1]);
           glDrawArrays(GL_TRIANGLES, operation.first, operation.count);
