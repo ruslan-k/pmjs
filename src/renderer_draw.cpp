@@ -82,10 +82,17 @@ void Renderer::computeFilterContentBounds() {
     float minY = 0.0F;
     float maxX = 0.0F;
     float maxY = 0.0F;
-    std::vector<std::array<float, 4>> regions;
+    std::array<std::array<float, 4>, maxRegions> regions{};
+    std::size_t regionCount = 0;
   };
-  std::vector<Accumulator> stack;
-  stack.reserve(scene_packet::maxFilterDepth);
+  // Filter depth is bounded by the scene-packet contract. Retain only the
+  // outer stack allocation between frames; each accumulator keeps its tiny
+  // region set inline.
+  static thread_local std::vector<Accumulator> stack;
+  stack.clear();
+  if (stack.capacity() < scene_packet::maxFilterDepth) {
+    stack.reserve(scene_packet::maxFilterDepth);
+  }
   const auto overlapsOrTouches = [](const auto& a, const auto& b) {
     return a[0] <= b[2] && b[0] <= a[2] &&
            a[1] <= b[3] && b[1] <= a[3];
@@ -109,26 +116,26 @@ void Renderer::computeFilterContentBounds() {
     // O(n^2) scans/erase shifts at filterEnd. Eight conservative regions are
     // sufficient for the bounded-filter optimization; merging may only enlarge
     // work, never omit pixels.
-    for (std::size_t index = 0; index < acc.regions.size();) {
+    for (std::size_t index = 0; index < acc.regionCount;) {
       if (!overlapsOrTouches(acc.regions[index], incoming)) {
         ++index;
         continue;
       }
       incoming = mergeRegion(acc.regions[index], incoming);
-      acc.regions[index] = acc.regions.back();
-      acc.regions.pop_back();
+      acc.regions[index] = acc.regions[acc.regionCount - 1];
+      --acc.regionCount;
       index = 0;
     }
 
-    if (acc.regions.size() < maxRegions) {
-      acc.regions.push_back(incoming);
+    if (acc.regionCount < maxRegions) {
+      acc.regions[acc.regionCount++] = incoming;
       return;
     }
 
     std::size_t best = 0;
     float bestWaste = std::numeric_limits<float>::infinity();
     const float incomingArea = regionArea(incoming);
-    for (std::size_t index = 0; index < acc.regions.size(); ++index) {
+    for (std::size_t index = 0; index < acc.regionCount; ++index) {
       const auto joined = mergeRegion(acc.regions[index], incoming);
       const float waste = regionArea(joined) -
                           regionArea(acc.regions[index]) - incomingArea;
@@ -140,17 +147,17 @@ void Renderer::computeFilterContentBounds() {
     acc.regions[best] = mergeRegion(acc.regions[best], incoming);
 
     // The chosen merge can now touch another retained region. Fold those
-    // overlaps in-place; the vector remains <= maxRegions at all times.
-    for (std::size_t index = 0; index < acc.regions.size();) {
+    // overlaps in-place; the set remains <= maxRegions at all times.
+    for (std::size_t index = 0; index < acc.regionCount;) {
       if (index == best ||
           !overlapsOrTouches(acc.regions[best], acc.regions[index])) {
         ++index;
         continue;
       }
       acc.regions[best] = mergeRegion(acc.regions[best], acc.regions[index]);
-      acc.regions[index] = acc.regions.back();
-      acc.regions.pop_back();
-      if (best == acc.regions.size()) best = index;
+      acc.regions[index] = acc.regions[acc.regionCount - 1];
+      --acc.regionCount;
+      if (best == acc.regionCount) best = index;
       index = 0;
     }
   };
@@ -241,9 +248,9 @@ void Renderer::computeFilterContentBounds() {
                     static_cast<int>(std::floor(loY)),
                     static_cast<int>(std::ceil(hiX)),
                     static_cast<int>(std::ceil(hiY))};
-        auto regions = regionsValid ? std::move(level.regions) :
-                                      std::vector<std::array<float, 4>>{};
-        for (const auto& region : regions) {
+        const std::size_t regionCount = regionsValid ? level.regionCount : 0;
+        for (std::size_t regionIndex = 0; regionIndex < regionCount; ++regionIndex) {
+          const auto& region = level.regions[regionIndex];
           int left = static_cast<int>(std::floor(region[0]));
           int top = static_cast<int>(std::floor(region[1]));
           int right = static_cast<int>(std::ceil(region[2]));
@@ -853,8 +860,8 @@ void Renderer::renderScene() {
   std::array<bool, scene_packet::maxFilterDepth> savedScissor{};
   std::array<std::array<int, 4>, scene_packet::maxFilterDepth> savedClip{};
   std::array<int, 4> activeClip{};
-  std::array<std::vector<std::array<int, 4>>, scene_packet::maxFilterDepth>
-      filterRegions{};
+  static thread_local std::array<std::vector<std::array<int, 4>>,
+      scene_packet::maxFilterDepth> filterRegions;
   applyBlendMode(activeBlend);
   for (const auto& operation : operations) {
     if (operation.action == RenderCommand::Action::filterBegin) {
@@ -880,6 +887,9 @@ void Renderer::renderScene() {
       std::array<int, 4> boundedRect{};
       const bool bounded = !operation.command->customFilterPlan && filterBoundsRect(operation.command, &boundedRect);
       filterRegions[filterDepth].clear();
+      if (filterRegions[filterDepth].capacity() < maxRegions) {
+        filterRegions[filterDepth].reserve(maxRegions);
+      }
       const bool multiRegion = !operation.command->customFilterPlan && filterBoundsRegions(
           operation.command, &filterRegions[filterDepth]);
       if (bounded) {
