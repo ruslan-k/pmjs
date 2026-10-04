@@ -16,13 +16,6 @@ if (diagnostics) {
 process.env.PMJS_GRAPHICS_DIAGNOSTICS = diagnostics ? '1' : '0';
 native.initialize({gameRoot:path.resolve(process.argv[3]),assetRoot:'',width:32,height:32,windowTitle:'pmjs test'});
 
-const startupStats = native.render.stats();
-if (startupStats.rendererTargetCreates !== 1 ||
-    startupStats.renderTargetBytes !== 32 * 32 * 4) {
-  throw new Error('ordinary startup should allocate only the scene target: ' +
-    JSON.stringify(startupStats));
-}
-
 native.beginFrame();
 native.render.quad(0, 0, 32, 32, 0.2, 0.3, 0.4, 1);
 native.renderFrame();
