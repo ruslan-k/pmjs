@@ -263,6 +263,8 @@ void Renderer::beginFrame() {
   const std::size_t previousCustomFilterPlanCount =
     frame_.customFilterPlans.size();
   const std::size_t previousColorEffectCount = frame_.colorEffects.size();
+  const std::size_t previousMaskTransformCount = frame_.maskTransforms.size();
+  const std::size_t previousSpriteVerticesCount = frame_.spriteVertices.size();
 
   discardCommandsFrom(0);
   if (frame_.commands.capacity() > 2048 &&
@@ -300,6 +302,19 @@ void Renderer::beginFrame() {
     std::vector<ColorEffectPayload>().swap(frame_.colorEffects);
   } else {
     frame_.colorEffects.clear();
+  }
+  if (frame_.maskTransforms.capacity() > 64 &&
+      previousMaskTransformCount * 4 < frame_.maskTransforms.capacity()) {
+    std::vector<std::array<float, 6>>().swap(frame_.maskTransforms);
+  } else {
+    frame_.maskTransforms.clear();
+  }
+  if (frame_.spriteVertices.capacity() > 64 &&
+      previousSpriteVerticesCount * 4 < frame_.spriteVertices.capacity()) {
+    std::vector<std::array<std::array<float, 2>, 4>>().swap(
+      frame_.spriteVertices);
+  } else {
+    frame_.spriteVertices.clear();
   }
 
   images_.update();
