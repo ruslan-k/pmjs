@@ -33,6 +33,8 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   const std::size_t originalColorMatrixCount = frame_.colorMatrices.size();
   const std::size_t originalFilterParameterCount =
     frame_.filterParameters.size();
+  const std::size_t originalCustomFilterPlanCount =
+    frame_.customFilterPlans.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
   const bool originalSceneHasEffect = sceneHasEffect_;
   const bool originalSceneHasCustomFilter = sceneHasCustomFilter_;
@@ -165,6 +167,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         command.action = RenderCommand::Action::filterBegin;
         command.filterKind = static_cast<FilterKind>(blendValue);
         std::array<float, 21> filterParameters{};
+        std::shared_ptr<const CustomFilterPlan> customFilterPlan;
         std::copy_n(values + valueOffset + 7, 10,
                     filterParameters.begin());
         std::copy_n(values + valueOffset + 22, 11,
@@ -182,14 +185,14 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
           sceneHasCustomFilter_ = true;
           const auto plan = filterPlans_.find(resource);
           if (plan != filterPlans_.end()) {
-            command.customFilterPlan = plan->second.lock();
-            if (!command.customFilterPlan) return false;
+            customFilterPlan = plan->second.lock();
+            if (!customFilterPlan) return false;
           } else if (resource == 0 || resource > filterPrograms_.size() ||
               filterParameters[0] < 0 ||
               filterParameters[0] > 65536 ||
               command.filterResolution != 1) return false;
-          command.filterProgram = command.customFilterPlan ? 0 : resource;
-          if (!command.customFilterPlan) {
+          command.filterProgram = customFilterPlan ? 0 : resource;
+          if (!customFilterPlan) {
             const auto& program = filterProgram(resource);
             std::size_t components = 0;
             if (program.pixiVertex) return false;
@@ -312,6 +315,11 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         frame_.filterParameters.push_back(filterParameters);
         command.filterParametersIndex =
           static_cast<std::uint32_t>(frame_.filterParameters.size());
+        if (customFilterPlan) {
+          frame_.customFilterPlans.push_back(customFilterPlan);
+          command.customFilterPlanIndex =
+            static_cast<std::uint32_t>(frame_.customFilterPlans.size());
+        }
         ++filterDepth;
       } else {
         if (filterDepth == 0 || blendValue != 0 || resource != 0) return false;
@@ -321,6 +329,9 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       try {
         frame_.commands.push_back(command);
       } catch (...) {
+        if (command.customFilterPlanIndex != 0) {
+          frame_.customFilterPlans.pop_back();
+        }
         if (command.filterParametersIndex != 0) {
           frame_.filterParameters.pop_back();
         }
@@ -534,6 +545,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     frame_.effects.resize(originalEffectCount);
     frame_.colorMatrices.resize(originalColorMatrixCount);
     frame_.filterParameters.resize(originalFilterParameterCount);
+    frame_.customFilterPlans.resize(originalCustomFilterPlanCount);
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
     sceneHasEffect_ = originalSceneHasEffect;
     sceneHasCustomFilter_ = originalSceneHasCustomFilter;
@@ -543,6 +555,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   frame_.effects.resize(originalEffectCount);
   frame_.colorMatrices.resize(originalColorMatrixCount);
   frame_.filterParameters.resize(originalFilterParameterCount);
+  frame_.customFilterPlans.resize(originalCustomFilterPlanCount);
   sceneSubmittedThisFrame_ = originalSceneSubmitted;
   sceneHasEffect_ = originalSceneHasEffect;
   sceneHasCustomFilter_ = originalSceneHasCustomFilter;
