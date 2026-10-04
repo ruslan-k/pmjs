@@ -65,7 +65,7 @@ bool RuntimeCore::submitScene(std::uint32_t version,
   for (std::size_t index = 0; index < nodeCount; ++index) {
     const std::size_t offset = index * scene_packet::metadataStride;
     const auto kindValue = current(offset);
-    if (kindValue > static_cast<std::uint32_t>(scene_packet::NodeKind::mesh)) {
+    if (kindValue > static_cast<std::uint32_t>(scene_packet::NodeKind::effect)) {
       return false;
     }
     const auto kind = static_cast<scene_packet::NodeKind>(kindValue);
