@@ -10,6 +10,7 @@
 
 namespace pmjs {
 namespace {
+constexpr std::array<float, 4> zeroColor{};
 std::array<int, 4> effectFrame(const RenderCommand* filter, int width, int height) {
   if (!filter || !filter->clipped) return {0, 0, width, height};
   return {std::clamp(filter->clip[0], 0, width),
@@ -791,6 +792,8 @@ void Renderer::renderScene() {
     const std::array<int, 4>& operationClip =
         inlineFilterMatrix[commandIndex] ? inlineFilterClip[commandIndex] :
                                            command.clip;
+    const auto* commandColorEffect = colorEffect(command);
+    if (command.appliesSpriteColor && commandColorEffect == nullptr) continue;
     if (operations.empty() || operations.back().tileLayer != 0 ||
         operations.back().texture != texture ||
         operations.back().blendMode != command.blendMode ||
@@ -805,8 +808,9 @@ void Renderer::renderScene() {
         operations.back().spriteWorldVertices != worldVertices ||
         operations.back().premultipliedSpriteTexture != texturePremultiplied ||
         (command.appliesSpriteColor && operations.back().spriteFrame != command.source) ||
-        operations.back().colorTone != command.colorTone ||
-        operations.back().blendColor != command.blendColor ||
+        (command.appliesSpriteColor &&
+         (operations.back().colorTone != commandColorEffect->colorTone ||
+          operations.back().blendColor != commandColorEffect->blendColor)) ||
         operations.back().inlineMatrix != inlineFilterMatrix[commandIndex] ||
         operations.back().primitive != command.primitive ||
         operations.back().clipped != operationClipped ||
@@ -822,8 +826,10 @@ void Renderer::renderScene() {
       operations.back().premultipliedSpriteTexture = texturePremultiplied;
       operations.back().clampedTilingSampling = command.clampedTilingSampling;
       operations.back().spriteFrame = command.source;
-      operations.back().colorTone = command.colorTone;
-      operations.back().blendColor = command.blendColor;
+      if (commandColorEffect) {
+        operations.back().colorTone = commandColorEffect->colorTone;
+        operations.back().blendColor = commandColorEffect->blendColor;
+      }
       operations.back().inlineMatrix = inlineFilterMatrix[commandIndex];
       operations.back().primitive = command.primitive;
     } else {
@@ -1616,7 +1622,10 @@ void Renderer::renderScene() {
                   command.tileAnimation[1]);
       glUniform4fv(uniforms.color, 1, command.color.data());
       if (usesOverlay) {
-        glUniform4fv(uniforms.overlayColor, 1, command.blendColor.data());
+        const auto* commandColorEffect = colorEffect(command);
+        const auto& overlayColor =
+          commandColorEffect ? commandColorEffect->blendColor : zeroColor;
+        glUniform4fv(uniforms.overlayColor, 1, overlayColor.data());
         glUniform1i(uniforms.trianglePaintEnabled, triangleMaterial != nullptr);
         glUniform1i(uniforms.mvBlendEnabled, bitmapMaterial != nullptr);
         glUniform1i(uniforms.nearestSampling, operation.nearest);
