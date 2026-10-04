@@ -195,8 +195,10 @@ Renderer::Renderer(int width, int height, ImageStore& images)
 
   glGenVertexArrays(1, &vertexArray_);
   glGenBuffers(1, &vertexBuffer_);
+  glGenBuffers(1, &quadIndexBuffer_);
   glBindVertexArray(vertexArray_);
   glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer_);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadIndexBuffer_);
   glEnableVertexAttribArray(0);
   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 12 * sizeof(float), nullptr);
   glEnableVertexAttribArray(1);
@@ -515,6 +517,7 @@ Renderer::~Renderer() {
   if (whiteTexture_) glDeleteTextures(1, &whiteTexture_);
   if (blackFramebuffer_) glDeleteFramebuffers(1, &blackFramebuffer_);
   if (blackTexture_) glDeleteTextures(1, &blackTexture_);
+  if (quadIndexBuffer_) glDeleteBuffers(1, &quadIndexBuffer_);
   if (vertexBuffer_) glDeleteBuffers(1, &vertexBuffer_);
   if (vertexArray_) glDeleteVertexArrays(1, &vertexArray_);
   if (program_) glDeleteProgram(program_);
