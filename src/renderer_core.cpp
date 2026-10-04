@@ -258,6 +258,7 @@ void Renderer::beginFrame() {
   discardCommandsFrom(0);
   frame_.effects.clear();
   frame_.colorMatrices.clear();
+  frame_.filterParameters.clear();
   images_.update();
   queueWidth_ = width_;
   queueHeight_ = height_;
