@@ -105,6 +105,7 @@ class ImageStore {
   bool unpin(ImageHandle handle);
   bool touch(ImageHandle handle);
   bool beginUse(ImageHandle handle);
+  bool beginUse(const ImageInfo& knownInfo);
   bool endUse(ImageHandle handle);
   void update();
   std::optional<ImageInfo> lookup(ImageHandle handle) const;
