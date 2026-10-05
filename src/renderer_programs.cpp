@@ -430,13 +430,15 @@ std::uint32_t Renderer::createFilterProgram(const std::string& fragmentSource, c
     glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniformCount);
     glGetProgramiv(program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &uniformNameSize);
     int total = 0;
+    std::vector<char> uniformName(static_cast<std::size_t>(
+      std::max(1, uniformNameSize)));
     for (GLint index = 0; index < uniformCount; ++index) {
-      std::vector<char> name(std::max(1, uniformNameSize));
       GLint count = 0;
       GLenum type = 0;
       GLsizei length = 0;
-      glGetActiveUniform(program, index, name.size(), &length, &count, &type, name.data());
-      const std::string key(name.data(), length);
+      glGetActiveUniform(program, index, uniformName.size(), &length, &count,
+                         &type, uniformName.data());
+      const std::string key(uniformName.data(), length);
       if (key == "pmjsScreenSize" || key == "pmjsFilterFrame" ||
           key == "pmjsFilterTextureSize" || key == "pmjsTargetYDown") continue;
       if (key == "projectionMatrix") {
