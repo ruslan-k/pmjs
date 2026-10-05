@@ -563,8 +563,8 @@ void Renderer::renderScene() {
     std::uint32_t tileLayer = 0;
     std::uint32_t texture;
     BlendMode blendMode;
-    bool repeat;
-    bool nearest;
+    bool repeat : 1;
+    bool nearest : 1;
     GLsizei first;
     GLsizei count;
     const RenderCommand* command = nullptr;
@@ -577,11 +577,11 @@ void Renderer::renderScene() {
     const std::array<float, 6>* maskTransform = nullptr;
     const RenderCommand* matrixCommand = nullptr;
     RenderCommand::Action action = RenderCommand::Action::draw;
-    bool appliesSpriteColor = false;
-    bool pixiSpritePacking = false;
-    bool spriteWorldVertices = false;
-    bool premultipliedSpriteTexture = false;
-    bool clampedTilingSampling = false;
+    bool appliesSpriteColor : 1 = false;
+    bool pixiSpritePacking : 1 = false;
+    bool spriteWorldVertices : 1 = false;
+    bool premultipliedSpriteTexture : 1 = false;
+    bool clampedTilingSampling : 1 = false;
     const std::array<float, 4>* spriteFrame = nullptr;
     const ColorEffectPayload* colorEffect = nullptr;
     const RenderCommand* inlineMatrix = nullptr;
