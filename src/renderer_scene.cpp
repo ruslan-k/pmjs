@@ -56,29 +56,46 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   struct SceneState {
     std::array<float, 6> world;
     float alpha;
-    std::array<int, 4> clip;
-    bool clipped;
-    ImageHandle maskImage;
-    std::array<float, 6> maskTransform;
+    std::uint32_t clipIndex = 0;
+    ImageHandle maskImage = 0;
+    std::uint32_t maskTransformIndex = 0;
 
     SceneState(const std::array<float, 6>& worldValue, float alphaValue,
-               const std::array<int, 4>& clipValue, bool clippedValue,
-               ImageHandle maskImageValue,
-               const std::array<float, 6>& maskTransformValue)
-        : world(worldValue), alpha(alphaValue), clip(clipValue),
-          clipped(clippedValue), maskImage(maskImageValue),
-          maskTransform(maskTransformValue) {}
+               std::uint32_t clipIndexValue, ImageHandle maskImageValue,
+               std::uint32_t maskTransformIndexValue)
+        : world(worldValue), alpha(alphaValue), clipIndex(clipIndexValue),
+          maskImage(maskImageValue),
+          maskTransformIndex(maskTransformIndexValue) {}
   };
   // Scene submission is a per-frame hot path. Reuse its state buffer so a
   // large map does not malloc/free the same block every frame. Drop an
   // excessively oversized buffer after a scene-size collapse to keep the
   // low-memory target bounded.
   static thread_local std::vector<SceneState> states;
+  static thread_local std::vector<std::array<int, 4>> stateClips;
+  static thread_local std::vector<std::array<float, 6>> stateMaskTransforms;
   if (states.capacity() > 1024 && nodeCount * 4 < states.capacity()) {
     std::vector<SceneState>().swap(states);
   }
+  if (stateClips.capacity() > 256 && nodeCount * 4 < stateClips.capacity()) {
+    std::vector<std::array<int, 4>>().swap(stateClips);
+  }
+  if (stateMaskTransforms.capacity() > 256 &&
+      nodeCount * 4 < stateMaskTransforms.capacity()) {
+    std::vector<std::array<float, 6>>().swap(stateMaskTransforms);
+  }
   states.clear();
+  stateClips.clear();
+  stateMaskTransforms.clear();
   if (states.capacity() < nodeCount) states.reserve(nodeCount);
+  const auto sceneClip = [&](const SceneState& state)
+      -> const std::array<int, 4>& {
+    return stateClips[state.clipIndex - 1U];
+  };
+  const auto sceneMaskTransform = [&](const SceneState& state)
+      -> const std::array<float, 6>& {
+    return stateMaskTransforms[state.maskTransformIndex - 1U];
+  };
   std::size_t filterDepth = 0;
   for (std::size_t index = 0; index < nodeCount; ++index) {
     const std::size_t metadataOffset = index * metadataStride;
@@ -125,7 +142,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       values[valueOffset + 4], values[valueOffset + 5]
     };
     static const SceneState rootState{
-      {1, 0, 0, 1, 0, 0}, 1.0F, {}, false, 0, {}
+      {1, 0, 0, 1, 0, 0}, 1.0F, 0, 0, 0
     };
     const SceneState& parent = parentIndex == noParent
       ? rootState : states[parentIndex];
@@ -139,12 +156,16 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     };
     if (spriteVertices) world = parent.world;
     states.emplace_back(world, parent.alpha * values[valueOffset + 6],
-      parent.clip, parent.clipped, parent.maskImage, parent.maskTransform);
+      parent.clipIndex, parent.maskImage, parent.maskTransformIndex);
     SceneState& state = states.back();
     if (flags & NodeFlags::hasAlphaMask) {
       if (state.maskImage || !images_.lookup(maskImage)) return false;
       state.maskImage = maskImage;
-      std::copy_n(values + valueOffset + 22, 6, state.maskTransform.begin());
+      std::array<float, 6> ownMaskTransform{};
+      std::copy_n(values + valueOffset + 22, 6, ownMaskTransform.begin());
+      stateMaskTransforms.push_back(ownMaskTransform);
+      state.maskTransformIndex =
+        static_cast<std::uint32_t>(stateMaskTransforms.size());
     }
     if (flags & NodeFlags::hasClipRectangle) {
       const float left = values[valueOffset + 17];
@@ -160,20 +181,23 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         static_cast<int>(std::ceil(std::max(right, 0.0F))),
         static_cast<int>(std::ceil(std::max(bottom, 0.0F))),
       };
-      if (state.clipped) {
-        own = {std::max(own[0], state.clip[0]),
-               std::max(own[1], state.clip[1]),
-               std::min(own[2], state.clip[2]),
-               std::min(own[3], state.clip[3])};
+      if (state.clipIndex != 0) {
+        const auto& inheritedClip = sceneClip(state);
+        own = {std::max(own[0], inheritedClip[0]),
+               std::max(own[1], inheritedClip[1]),
+               std::min(own[2], inheritedClip[2]),
+               std::min(own[3], inheritedClip[3])};
       }
-      state.clip = own;
-      state.clipped = true;
+      stateClips.push_back(own);
+      state.clipIndex = static_cast<std::uint32_t>(stateClips.size());
     }
     if (filterMarker) {
       if (maskImage != 0 || flags & ~NodeFlags::hasClipRectangle) return false;
       RenderCommand command;
       FilterCommandPayload commandFilterPayload{};
-      setCommandClip(command, state.clip, state.clipped);
+      setCommandClip(command,
+        state.clipIndex ? sceneClip(state) : std::array<int, 4>{},
+        state.clipIndex != 0);
       if (kind == static_cast<std::uint32_t>(NodeKind::filterBegin)) {
         if (filterDepth >= maxFilterDepth ||
             blendValue > static_cast<std::uint32_t>(FilterKind::custom)) {
@@ -383,7 +407,9 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       }
       RenderCommand command{};
       command.primitive = RenderCommand::Primitive::effect;
-      setCommandClip(command, state.clip, state.clipped);
+      setCommandClip(command,
+        state.clipIndex ? sceneClip(state) : std::array<int, 4>{},
+        state.clipIndex != 0);
       frame_.effects.push_back(effect);
       command.effectIndex = static_cast<std::uint32_t>(frame_.effects.size());
       try {
@@ -410,7 +436,9 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
                 static_cast<float>(queueHeight_),
                 {red, green, blue, std::floor(state.alpha * 255.0F) / 255.0F});
       frame_.commands.back().primitive = RenderCommand::Primitive::screenFill;
-      setCommandClip(frame_.commands.back(), state.clip, state.clipped);
+      setCommandClip(frame_.commands.back(),
+        state.clipIndex ? sceneClip(state) : std::array<int, 4>{},
+        state.clipIndex != 0);
       continue;
     }
     if (kind == static_cast<std::uint32_t>(NodeKind::toneAdjust)) {
@@ -440,11 +468,13 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       if (!queueTileLayer(resource, state.world,
             animation,
             state.alpha, tint, blendMode)) return false;
-      setCommandClip(frame_.commands.back(), state.clip, state.clipped);
+      setCommandClip(frame_.commands.back(),
+        state.clipIndex ? sceneClip(state) : std::array<int, 4>{},
+        state.clipIndex != 0);
       if (state.maskImage && !images_.beginUse(state.maskImage)) return false;
       frame_.commands.back().maskImage = state.maskImage;
       if (state.maskImage) {
-        frame_.maskTransforms.push_back(state.maskTransform);
+        frame_.maskTransforms.push_back(sceneMaskTransform(state));
         frame_.commands.back().maskTransformIndex =
           static_cast<std::uint32_t>(frame_.maskTransforms.size());
       }
@@ -520,7 +550,9 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     } else {
       return false;
     }
-    setCommandClip(frame_.commands.back(), state.clip, state.clipped);
+    setCommandClip(frame_.commands.back(),
+        state.clipIndex ? sceneClip(state) : std::array<int, 4>{},
+        state.clipIndex != 0);
     frame_.commands.back().blur =
       flags & NodeFlags::hasBlurFilter ? values[valueOffset + 21] : 0.0F;
     frame_.commands.back().nearest = flags & NodeFlags::nearestSampling;
@@ -567,7 +599,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     if (state.maskImage && !images_.beginUse(state.maskImage)) return false;
     frame_.commands.back().maskImage = state.maskImage;
     if (state.maskImage) {
-      frame_.maskTransforms.push_back(state.maskTransform);
+      frame_.maskTransforms.push_back(sceneMaskTransform(state));
       frame_.commands.back().maskTransformIndex =
         static_cast<std::uint32_t>(frame_.maskTransforms.size());
     }
