@@ -627,6 +627,7 @@ bool ImageStore::updateRgba(ImageHandle handle, const void* pixels) {
     ++textureFullUpdates_;
     textureUploadBytes_ += uploadBytes;
   }
+  trimPremultiplyScratch();
   return ok;
 }
 
@@ -711,6 +712,7 @@ bool ImageStore::updateRgbaRegion(ImageHandle handle, int x, int y, int width,
     ++textureRegionUpdates_;
     textureUploadBytes_ += uploadBytes;
   }
+  trimPremultiplyScratch();
   return ok;
 }
 
@@ -799,6 +801,7 @@ std::optional<ImageInfo> ImageStore::lookupPremultiplied(ImageHandle handle) {
   }
   info->texture = slot.premultipliedTexture;
   info->premultiplied = true;
+  trimPremultiplyScratch();
   return info;
 }
 
@@ -808,6 +811,11 @@ void ImageStore::clearPremultipliedTexture(Slot& slot) {
     gpuBytes_ -= static_cast<std::size_t>(slot.width) * slot.height * 4U;
   }
   slot.premultipliedTexture = 0;
+}
+
+void ImageStore::trimPremultiplyScratch() {
+  if (premultiplyScratch_.capacity() <= premultiplyScratchRetainBytes_) return;
+  std::vector<std::uint8_t>().swap(premultiplyScratch_);
 }
 
 bool ImageStore::retain(ImageHandle handle) {
