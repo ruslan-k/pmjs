@@ -30,13 +30,15 @@ struct State {
   State(const std::string& root, int initWidth, int initHeight,
         const std::string& assetRoot, const std::string& windowTitle,
         std::size_t imageWarmCacheBytes,
-        std::uint16_t transientCpuPixelFrames)
+        std::uint16_t transientCpuPixelFrames,
+        std::size_t premultiplyScratchRetainBytes)
       : core(root, initWidth, initHeight, windowTitle),
         width(core.width()), height(core.height()), platform(core.platform()),
         images(core.images()), canvases(core.canvases()),
         renderer(core.renderer()), vfs(core.vfs()) {
     images.setWarmBudgetBytes(imageWarmCacheBytes);
     images.setTransientCpuPixelFrames(transientCpuPixelFrames);
+    images.setPremultiplyScratchRetainBytes(premultiplyScratchRetainBytes);
     if (!assetRoot.empty()) assets = std::make_unique<pmjs::Vfs>(assetRoot);
   }
 
