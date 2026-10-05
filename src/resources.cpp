@@ -921,8 +921,16 @@ bool ImageStore::release(ImageHandle handle) {
 }
 
 bool ImageStore::beginUse(ImageHandle handle) {
-  const auto info = lookup(handle);
-  return info && beginUse(*info);
+  if ((handle & canvasHandleTag) != 0) return false;
+  const std::uint32_t encodedIndex = handle & indexMask;
+  if (encodedIndex == 0) return false;
+  const std::size_t index = encodedIndex - 1U;
+  if (index >= slots_.size()) return false;
+  auto& slot = slots_[index];
+  const auto generation = static_cast<std::uint16_t>(handle >> 16U);
+  if (!slot.live || slot.generation != generation) return false;
+  slot.inFlight.fetch_add(1, std::memory_order_acq_rel);
+  return true;
 }
 
 bool ImageStore::beginUse(const ImageInfo& knownInfo) {
@@ -934,8 +942,10 @@ bool ImageStore::beginUse(const ImageInfo& knownInfo) {
   if (index >= slots_.size()) return false;
   auto& slot = slots_[index];
   const auto generation = static_cast<std::uint16_t>(handle >> 16U);
-  if (!slot.live || slot.generation != generation ||
-      slot.texture != knownInfo.texture ||
+  const bool matchingTexture =
+    slot.texture == knownInfo.texture ||
+    slot.premultipliedTexture == knownInfo.texture;
+  if (!slot.live || slot.generation != generation || !matchingTexture ||
       slot.width != knownInfo.width || slot.height != knownInfo.height) {
     return false;
   }
