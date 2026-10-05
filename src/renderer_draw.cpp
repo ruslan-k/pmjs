@@ -71,12 +71,17 @@ void Renderer::computeFilterContentBounds() {
     std::vector<FilterContentBounds>().swap(filterBounds_);
   }
   filterBounds_.resize(commandCount);
+  if (filterRegionSets_.capacity() > 256 &&
+      commandCount * 4 < filterRegionSets_.capacity()) {
+    std::vector<FilterRegionSet>().swap(filterRegionSets_);
+  }
+  filterRegionSets_.clear();
   for (std::size_t index = 0; index < commandCount; ++index) {
     auto& bounds = filterBounds_[index];
     bounds.bounded = false;
     bounds.regionsValid = false;
     bounds.rect = {};
-    bounds.regionCount = 0;
+    bounds.regionSetIndex = 0;
   }
   struct Accumulator {
     std::size_t beginIndex = 0;
@@ -247,6 +252,7 @@ void Renderer::computeFilterContentBounds() {
                     static_cast<int>(std::floor(loY)),
                     static_cast<int>(std::ceil(hiX)),
                     static_cast<int>(std::ceil(hiY))};
+        FilterRegionSet regionSet{};
         const std::size_t regionCount = regionsValid ? level.regionCount : 0;
         for (std::size_t regionIndex = 0; regionIndex < regionCount; ++regionIndex) {
           const auto& region = level.regions[regionIndex];
@@ -265,9 +271,14 @@ void Renderer::computeFilterContentBounds() {
           right = std::clamp(right, 0, width_);
           bottom = std::clamp(bottom, 0, height_);
           if (left < right && top < bottom &&
-              out.regionCount < FilterContentBounds::maxRegions) {
-            out.regions[out.regionCount++] = {left, top, right, bottom};
+              regionSet.count < FilterContentBounds::maxRegions) {
+            regionSet.regions[regionSet.count++] = {left, top, right, bottom};
           }
+        }
+        if (regionSet.count != 0) {
+          filterRegionSets_.push_back(regionSet);
+          out.regionSetIndex =
+            static_cast<std::uint32_t>(filterRegionSets_.size());
         }
       }
       if (stackDepth != 0) {
@@ -348,11 +359,17 @@ bool Renderer::filterBoundsRegions(
       filterBegin - frame_.commands.data());
   if (index >= filterBounds_.size() ||
       !filterBounds_[index].regionsValid ||
-      filterBounds_[index].regionCount < 2) return false;
+      filterBounds_[index].regionSetIndex == 0 ||
+      filterBounds_[index].regionSetIndex > filterRegionSets_.size()) {
+    return false;
+  }
+  const auto& regionSet =
+    filterRegionSets_[filterBounds_[index].regionSetIndex - 1U];
+  if (regionSet.count < 2) return false;
   std::uint64_t regionArea = 0;
   for (std::size_t regionIndex = 0;
-       regionIndex < filterBounds_[index].regionCount; ++regionIndex) {
-    const auto& region = filterBounds_[index].regions[regionIndex];
+       regionIndex < regionSet.count; ++regionIndex) {
+    const auto& region = regionSet.regions[regionIndex];
     regionArea += static_cast<std::uint64_t>(region[2] - region[0]) *
                   static_cast<std::uint64_t>(region[3] - region[1]);
   }
@@ -360,8 +377,8 @@ bool Renderer::filterBoundsRegions(
       static_cast<std::uint64_t>(std::max(0, aabb[2] - aabb[0])) *
       static_cast<std::uint64_t>(std::max(0, aabb[3] - aabb[1]));
   if (aabbArea == 0 || regionArea * 4 >= aabbArea * 3) return false;
-  *regions = filterBounds_[index].regions;
-  *regionCount = filterBounds_[index].regionCount;
+  *regions = regionSet.regions;
+  *regionCount = regionSet.count;
   return true;
 }
 
