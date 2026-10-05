@@ -384,6 +384,15 @@ class Renderer {
       const RenderCommand& command) const {
     return frame_.filterPayloads[command.filterPayloadIndex - 1];
   }
+  scene_packet::FilterKind filterKind(const RenderCommand& command) const {
+    return filterPayload(command).kind;
+  }
+  float filterResolution(const RenderCommand& command) const {
+    return filterPayload(command).resolution;
+  }
+  std::uint32_t filterProgramHandle(const RenderCommand& command) const {
+    return filterPayload(command).program;
+  }
   const std::array<float, 21>& filterParams(
       const RenderCommand& command) const {
     const auto& payload = filterPayload(command);
