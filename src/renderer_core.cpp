@@ -263,6 +263,7 @@ void Renderer::beginFrame() {
   const std::size_t previousCustomFilterPlanCount =
     frame_.customFilterPlans.size();
   const std::size_t previousColorEffectCount = frame_.colorEffects.size();
+  const std::size_t previousClipCount = frame_.clips.size();
   const std::size_t previousMaskTransformCount = frame_.maskTransforms.size();
   const std::size_t previousSpriteVerticesCount = frame_.spriteVertices.size();
 
@@ -302,6 +303,12 @@ void Renderer::beginFrame() {
     std::vector<ColorEffectPayload>().swap(frame_.colorEffects);
   } else {
     frame_.colorEffects.clear();
+  }
+  if (frame_.clips.capacity() > 64 &&
+      previousClipCount * 4 < frame_.clips.capacity()) {
+    std::vector<std::array<int, 4>>().swap(frame_.clips);
+  } else {
+    frame_.clips.clear();
   }
   if (frame_.maskTransforms.capacity() > 64 &&
       previousMaskTransformCount * 4 < frame_.maskTransforms.capacity()) {
