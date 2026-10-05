@@ -278,8 +278,38 @@ std::vector<float> floatVector(napi_env env, napi_value input) {
 }
 
 std::vector<std::uint32_t> uintVector(napi_env env, napi_value input) {
+  bool typed = false;
+  check(env, napi_is_typedarray(env, input, &typed), "expected integer array");
+  if (typed) {
+    napi_typedarray_type type;
+    std::size_t length = 0;
+    void* data = nullptr;
+    napi_value arrayBuffer;
+    std::size_t byteOffset = 0;
+    check(env, napi_get_typedarray_info(env, input, &type, &length, &data,
+      &arrayBuffer, &byteOffset), "invalid integer typed array");
+    std::vector<std::uint32_t> result(length);
+    if (type == napi_uint32_array) {
+      const auto* values = static_cast<const std::uint32_t*>(data);
+      std::copy(values, values + length, result.begin());
+      return result;
+    }
+    if (type == napi_uint16_array) {
+      const auto* values = static_cast<const std::uint16_t*>(data);
+      std::transform(values, values + length, result.begin(),
+        [](std::uint16_t value) { return static_cast<std::uint32_t>(value); });
+      return result;
+    }
+    if (type == napi_uint8_array) {
+      const auto* values = static_cast<const std::uint8_t*>(data);
+      std::transform(values, values + length, result.begin(),
+        [](std::uint8_t value) { return static_cast<std::uint32_t>(value); });
+      return result;
+    }
+    throw std::runtime_error("expected Uint8Array, Uint16Array, or Uint32Array");
+  }
   std::uint32_t length = 0;
-  check(env, napi_get_array_length(env, input, &length), "expected handle array");
+  check(env, napi_get_array_length(env, input, &length), "expected integer array");
   std::vector<std::uint32_t> result;
   result.reserve(length);
   for (std::uint32_t index = 0; index < length; ++index) {
