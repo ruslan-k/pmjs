@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -186,6 +187,21 @@ bool premultiplyRgba(const void* sourcePixels, int width, int height,
         ? destinationRow + static_cast<std::size_t>(column) * 4U
         : nullptr;
       const unsigned alpha = sourcePixel[3];
+      if (alpha == 255U) {
+        if (destinationPixel) std::memcpy(destinationPixel, sourcePixel, 4U);
+        continue;
+      }
+      if (alpha == 0U) {
+        changed |= sourcePixel[0] != 0 || sourcePixel[1] != 0 ||
+                   sourcePixel[2] != 0;
+        if (destinationPixel) {
+          destinationPixel[0] = 0;
+          destinationPixel[1] = 0;
+          destinationPixel[2] = 0;
+          destinationPixel[3] = 0;
+        }
+        continue;
+      }
       for (std::size_t channel = 0; channel < 3; ++channel) {
         const auto converted = static_cast<std::uint8_t>(
           (sourcePixel[channel] * alpha + 127U) / 255U);
