@@ -431,7 +431,8 @@ void Renderer::renderScene() {
     if (vertices_.capacity() < requiredVertexFloats) {
       vertices_.reserve(requiredVertexFloats);
     }
-    if (filterBoundsEnabled_ || sceneHasCustomFilter_) {
+    if (sceneHasFilter_ &&
+        (filterBoundsEnabled_ || sceneHasCustomFilter_)) {
       computeFilterContentBounds();
     } else {
       filterBounds_.clear();
@@ -533,7 +534,7 @@ void Renderer::renderScene() {
     }
   }
   std::uint32_t composedToneCommandIndex = 0;
-  if (!offscreenRender_) {
+  if (!offscreenRender_ && sceneHasToneAdjust_) {
     std::size_t toneIndex = frame_.commands.size();
     std::size_t toneCount = 0;
     std::size_t filterDepthAtTone = 0;
