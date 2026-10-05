@@ -122,6 +122,12 @@ class ImageStore {
     warmBudgetDirty_ = true;
   }
   std::size_t warmBudgetBytes() const { return warmBudgetBytes_; }
+  void setTransientCpuPixelFrames(std::uint16_t frames) {
+    transientCpuPixelFrames_ = frames;
+  }
+  std::uint16_t transientCpuPixelFrames() const {
+    return transientCpuPixelFrames_;
+  }
   std::size_t warmBytes() const;
   std::size_t warmCount() const;
   std::size_t pinnedBytes() const;
@@ -174,6 +180,7 @@ class ImageStore {
   mutable std::size_t cpuBytes_ = 0;
   std::size_t peakGpuBytes_ = 0;
   std::size_t warmBudgetBytes_ = defaultWarmBudgetBytes;
+  std::uint16_t transientCpuPixelFrames_ = 60;
   mutable bool transientCpuPixelsActive_ = false;
   bool warmBudgetDirty_ = false;
   std::uint64_t useSerial_ = 0;
