@@ -500,8 +500,10 @@ class Renderer {
   std::array<float, 4> clearColor_{0.0F, 0.0F, 0.0F, 1.0F};
   bool sceneSubmittedThisFrame_ = false;
   bool sceneHasEffect_ = false;
+  bool sceneHasFilter_ = false;
   bool sceneHasCustomFilter_ = false;
   bool sceneHasColorMatrixFilter_ = false;
+  bool sceneHasToneAdjust_ = false;
   bool hasValidSceneFrame_ = false;
   FramePacket frame_;
   std::vector<float> vertices_;
