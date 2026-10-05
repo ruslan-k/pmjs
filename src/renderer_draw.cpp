@@ -440,24 +440,22 @@ void Renderer::renderScene() {
   // Trim only after a large scene collapses so peak maps do not pin memory.
   const std::size_t commandCount = frame_.commands.size();
   static thread_local std::vector<bool> inlineFilterBoundary;
-  static thread_local std::vector<const RenderCommand*> inlineFilterMatrix;
-  static thread_local std::vector<bool> inlineFilterClipped;
-  static thread_local std::vector<std::array<int, 4>> inlineFilterClip;
-  static thread_local std::vector<std::size_t> filterDepthBefore;
-  if (inlineFilterMatrix.capacity() > 1024 &&
-      commandCount * 4 < inlineFilterMatrix.capacity()) {
+  // Store the filter command as index+1 instead of an 8-byte pointer. Clip
+  // intersection is needed only for commands that actually inline a matrix, so
+  // compute it while preparing that draw instead of retaining another 16-byte
+  // clip plus flag for every command in the frame.
+  static thread_local std::vector<std::uint32_t> inlineFilterCommand;
+  static thread_local std::vector<std::uint8_t> filterDepthBefore;
+  if (inlineFilterCommand.capacity() > 1024 &&
+      commandCount * 4 < inlineFilterCommand.capacity()) {
     std::vector<bool>().swap(inlineFilterBoundary);
-    std::vector<const RenderCommand*>().swap(inlineFilterMatrix);
-    std::vector<bool>().swap(inlineFilterClipped);
-    std::vector<std::array<int, 4>>().swap(inlineFilterClip);
-    std::vector<std::size_t>().swap(filterDepthBefore);
+    std::vector<std::uint32_t>().swap(inlineFilterCommand);
+    std::vector<std::uint8_t>().swap(filterDepthBefore);
   }
   inlineFilterBoundary.assign(commandCount, false);
-  inlineFilterMatrix.assign(commandCount, nullptr);
-  inlineFilterClipped.assign(commandCount, false);
-  inlineFilterClip.assign(commandCount, {});
+  inlineFilterCommand.assign(commandCount, 0);
   filterDepthBefore.assign(commandCount, 0);
-  std::size_t scannedFilterDepth = 0;
+  std::uint8_t scannedFilterDepth = 0;
   for (std::size_t index = 0; index < frame_.commands.size(); ++index) {
     const RenderCommand& command = frame_.commands[index];
     if (command.action == RenderCommand::Action::filterEnd &&
@@ -534,23 +532,7 @@ void Renderer::renderScene() {
     inlineFilterBoundary[begin] = true;
     inlineFilterBoundary[end] = true;
     for (const std::size_t drawIndex : drawIndices) {
-      inlineFilterMatrix[drawIndex] = &filter;
-      const RenderCommand& draw = frame_.commands[drawIndex];
-      if (filter.clipped && draw.clipped) {
-        inlineFilterClipped[drawIndex] = true;
-        inlineFilterClip[drawIndex] = {
-          std::max(filter.clip[0], draw.clip[0]),
-          std::max(filter.clip[1], draw.clip[1]),
-          std::min(filter.clip[2], draw.clip[2]),
-          std::min(filter.clip[3], draw.clip[3]),
-        };
-      } else if (filter.clipped) {
-        inlineFilterClipped[drawIndex] = true;
-        inlineFilterClip[drawIndex] = filter.clip;
-      } else if (draw.clipped) {
-        inlineFilterClipped[drawIndex] = true;
-        inlineFilterClip[drawIndex] = draw.clip;
-      }
+      inlineFilterCommand[drawIndex] = static_cast<std::uint32_t>(begin + 1);
     }
     begin = end;
   }
@@ -813,11 +795,24 @@ void Renderer::renderScene() {
     writeVertex(1, vertex1, uv1);
     writeVertex(2, vertex2, uv2);
     writeVertex(3, vertex3, uv3);
-    const bool operationClipped = inlineFilterMatrix[commandIndex] ?
-        inlineFilterClipped[commandIndex] : command.clipped;
-    const std::array<int, 4>& operationClip =
-        inlineFilterMatrix[commandIndex] ? inlineFilterClip[commandIndex] :
-                                           command.clip;
+    const auto inlineFilterIndex = inlineFilterCommand[commandIndex];
+    const RenderCommand* inlineFilter = inlineFilterIndex == 0 ? nullptr :
+      &frame_.commands[inlineFilterIndex - 1U];
+    bool operationClipped = command.clipped;
+    std::array<int, 4> operationClip = command.clip;
+    if (inlineFilter && inlineFilter->clipped) {
+      if (command.clipped) {
+        operationClip = {
+          std::max(inlineFilter->clip[0], command.clip[0]),
+          std::max(inlineFilter->clip[1], command.clip[1]),
+          std::min(inlineFilter->clip[2], command.clip[2]),
+          std::min(inlineFilter->clip[3], command.clip[3]),
+        };
+      } else {
+        operationClip = inlineFilter->clip;
+      }
+      operationClipped = true;
+    }
     const auto* commandColorEffect = colorEffect(command);
     if (command.appliesSpriteColor && commandColorEffect == nullptr) continue;
     if (operations.empty() || operations.back().tileLayer != 0 ||
@@ -842,7 +837,7 @@ void Renderer::renderScene() {
          (operations.back().colorEffect == nullptr ||
           operations.back().colorEffect->colorTone != commandColorEffect->colorTone ||
           operations.back().colorEffect->blendColor != commandColorEffect->blendColor)) ||
-        operations.back().inlineMatrix != inlineFilterMatrix[commandIndex] ||
+        operations.back().inlineMatrix != inlineFilter ||
         operations.back().primitive != command.primitive ||
         operations.back().clipped != operationClipped ||
         (operationClipped && operations.back().clip != operationClip)) {
@@ -858,7 +853,7 @@ void Renderer::renderScene() {
       operations.back().clampedTilingSampling = command.clampedTilingSampling;
       operations.back().spriteFrame = &command.source;
       operations.back().colorEffect = commandColorEffect;
-      operations.back().inlineMatrix = inlineFilterMatrix[commandIndex];
+      operations.back().inlineMatrix = inlineFilter;
       operations.back().primitive = command.primitive;
     } else {
       operations.back().count += 6;
