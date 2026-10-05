@@ -146,6 +146,11 @@ inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
     voice.leftGain * (voice.pan > 0 ? 1 - voice.pan : 1);
   const float rightPanGain =
     voice.rightGain * (voice.pan < 0 ? 1 + voice.pan : 1);
+  bool stableGain = voice.gainStep == 0;
+  float stableLeftGain = stableGain
+    ? voice.volume * voice.gain * leftPanGain : 0.0F;
+  float stableRightGain = stableGain
+    ? voice.volume * voice.gain * rightPanGain : 0.0F;
   for (int frame = 0; frame < frames; ++frame) {
     std::uint64_t nextSampleFrame = voice.positionFrame + 1;
     if (voice.asset) {
@@ -188,12 +193,29 @@ inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
       voice.samples.frontStereoPair(
         currentLeft, currentRight, nextLeft, nextRight);
     }
-    const float left =
-      currentLeft * (1 - fraction) + nextLeft * fraction;
-    const float right =
-      currentRight * (1 - fraction) + nextRight * fraction;
-    const float leftGain = voice.volume * voice.gain * leftPanGain;
-    const float rightGain = voice.volume * voice.gain * rightPanGain;
+    float left;
+    float right;
+    if (fraction == 0.0F) {
+      // The overwhelmingly common pitch=1 path lands exactly on source
+      // frames. Avoid four interpolation multiplies/adds per output frame.
+      left = currentLeft;
+      right = currentRight;
+    } else {
+      const float inverseFraction = 1.0F - fraction;
+      left = currentLeft * inverseFraction + nextLeft * fraction;
+      right = currentRight * inverseFraction + nextRight * fraction;
+    }
+    if (!stableGain && voice.gainStep == 0) {
+      // A fade can reach its target inside this callback. Cache the now-stable
+      // gains for the remainder of the buffer.
+      stableGain = true;
+      stableLeftGain = voice.volume * voice.gain * leftPanGain;
+      stableRightGain = voice.volume * voice.gain * rightPanGain;
+    }
+    const float leftGain = stableGain
+      ? stableLeftGain : voice.volume * voice.gain * leftPanGain;
+    const float rightGain = stableGain
+      ? stableRightGain : voice.volume * voice.gain * rightPanGain;
     output[frame * 2] += left * leftGain * master;
     output[frame * 2 + 1] += right * rightGain * master;
     voice.phase += voice.pitch;
