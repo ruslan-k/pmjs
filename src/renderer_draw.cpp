@@ -742,7 +742,8 @@ void Renderer::renderScene() {
     const float textureHeight = info ? static_cast<float>(info->height) : 1.0F;
     const std::uint32_t texture = info ? info->texture : whiteTexture_;
     const bool texturePremultiplied = command.premultipliedSpriteTexture || (info && info->premultiplied);
-    const auto* commandSpriteVertices = spriteVertices(command);
+    const auto* commandSpriteVertices =
+      command.spriteWorldVertices ? spriteVertices(command) : nullptr;
     if (command.spriteWorldVertices && commandSpriteVertices == nullptr) continue;
     const auto* commandMaskTransform =
       command.maskImage ? maskTransform(command) : nullptr;
@@ -870,8 +871,11 @@ void Renderer::renderScene() {
     const auto* commandColorEffect =
       command.appliesSpriteColor ? colorEffect(command) : nullptr;
     if (command.appliesSpriteColor && commandColorEffect == nullptr) continue;
+    const bool needsPreviousPayload =
+      command.maskImage != 0 || command.appliesSpriteColor;
     const RenderCommand* previousCommand =
-      operations.empty() ? nullptr : resolveOperationCommand(operations.back());
+      needsPreviousPayload && !operations.empty()
+        ? resolveOperationCommand(operations.back()) : nullptr;
     const auto* previousMaskTransform =
       command.maskImage && previousCommand
         ? maskTransform(*previousCommand) : nullptr;
