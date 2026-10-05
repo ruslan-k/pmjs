@@ -43,6 +43,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
   const bool originalSceneHasEffect = sceneHasEffect_;
   const bool originalSceneHasCustomFilter = sceneHasCustomFilter_;
+  const bool originalSceneHasColorMatrixFilter = sceneHasColorMatrixFilter_;
   // A scene packet can emit at most one command per node. Reserve once at the
   // packet boundary instead of repeatedly growing the retained command vector.
   if (frame_.commands.capacity() < originalCommandCount + nodeCount) {
@@ -318,6 +319,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
               filterParameters[1] <= 0 ||
               filterParameters[2] <= 0) return false;
         } else if (commandFilterPayload.kind == FilterKind::colorMatrix) {
+          sceneHasColorMatrixFilter_ = true;
           if (resource != 0 || filterParameters[20] < 0 ||
               filterParameters[20] > 1) return false;
         } else if (commandFilterPayload.kind == FilterKind::pictureBlend) {
@@ -588,6 +590,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
     sceneHasEffect_ = originalSceneHasEffect;
     sceneHasCustomFilter_ = originalSceneHasCustomFilter;
+    sceneHasColorMatrixFilter_ = originalSceneHasColorMatrixFilter;
     throw;
   }
   discardCommandsFrom(originalCommandCount);
