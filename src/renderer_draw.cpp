@@ -445,26 +445,13 @@ void Renderer::renderScene() {
   // compute it while preparing that draw instead of retaining another 16-byte
   // clip plus flag for every command in the frame.
   static thread_local std::vector<std::uint32_t> inlineFilterCommand;
-  static thread_local std::vector<std::uint8_t> filterDepthBefore;
   if (inlineFilterCommand.capacity() > 1024 &&
       commandCount * 4 < inlineFilterCommand.capacity()) {
     std::vector<bool>().swap(inlineFilterBoundary);
     std::vector<std::uint32_t>().swap(inlineFilterCommand);
-    std::vector<std::uint8_t>().swap(filterDepthBefore);
   }
   inlineFilterBoundary.assign(commandCount, false);
   inlineFilterCommand.assign(commandCount, 0);
-  filterDepthBefore.assign(commandCount, 0);
-  std::uint8_t scannedFilterDepth = 0;
-  for (std::size_t index = 0; index < frame_.commands.size(); ++index) {
-    const RenderCommand& command = frame_.commands[index];
-    if (command.action == RenderCommand::Action::filterEnd &&
-        scannedFilterDepth > 0) --scannedFilterDepth;
-    filterDepthBefore[index] = scannedFilterDepth;
-    if (command.action == RenderCommand::Action::filterBegin) {
-      ++scannedFilterDepth;
-    }
-  }
   const auto preservesAlpha = [](const std::array<float, 21>& matrix) {
     constexpr float epsilon = 0.000001F;
     return std::abs(matrix[15]) <= epsilon &&
@@ -484,11 +471,18 @@ void Renderer::renderScene() {
            std::abs(matrix[13]) <= epsilon &&
            std::abs(matrix[14]) <= epsilon;
   };
+  std::size_t scannedFilterDepth = 0;
   for (std::size_t begin = 0; begin < frame_.commands.size(); ++begin) {
     const RenderCommand& filter = frame_.commands[begin];
-    if (filter.action != RenderCommand::Action::filterBegin ||
+    if (filter.action == RenderCommand::Action::filterEnd) {
+      if (scannedFilterDepth > 0) --scannedFilterDepth;
+      continue;
+    }
+    if (filter.action != RenderCommand::Action::filterBegin) continue;
+    const bool topLevelFilter = scannedFilterDepth == 0;
+    ++scannedFilterDepth;
+    if (!topLevelFilter ||
         filter.blendMode != BlendMode::normal ||
-        filterDepthBefore[begin] != 0 ||
         filter.filterKind != scene_packet::FilterKind::colorMatrix ||
         !preservesAlpha(filterParams(filter))) continue;
     std::size_t depth = 1;
@@ -535,6 +529,7 @@ void Renderer::renderScene() {
       inlineFilterCommand[drawIndex] = static_cast<std::uint32_t>(begin + 1);
     }
     begin = end;
+    scannedFilterDepth = 0;
   }
   const RenderCommand* composedToneCommand = nullptr;
   if (!offscreenRender_) {
