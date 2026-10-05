@@ -967,28 +967,29 @@ function ensureNativeGpuMesh(mesh) {
   if (typeof nativeMaterializationStats !== 'undefined') {
     nativeMaterializationStats.meshMisses++;
   }
-  var nativeUvs = Array.prototype.slice.call(uvs);
+  var nativePositions = vertices;
+  var nativeUvs = uvs;
+  var nativeIndices = indices;
   if (uvTransform) {
+    nativeUvs = new Float32Array(uvs.length);
     for (var uvIndex = 0; uvIndex < nativeUvs.length; uvIndex += 2) {
-      var uvX = nativeUvs[uvIndex], uvY = nativeUvs[uvIndex + 1];
+      var uvX = uvs[uvIndex], uvY = uvs[uvIndex + 1];
       nativeUvs[uvIndex] = uvTransform.a * uvX + uvTransform.c * uvY + uvTransform.tx;
       nativeUvs[uvIndex + 1] =
         uvTransform.b * uvX + uvTransform.d * uvY + uvTransform.ty;
     }
   }
-  var geometry = { image: nativeSource.handle, positions: Array.prototype.slice.call(vertices),
-    uvs: nativeUvs, indices: Array.prototype.slice.call(indices), drawMode: drawMode };
   var material = nativeMeshMaterials.get(mesh);
   var nativeMesh;
   if (!material) {
-    nativeMesh = NativeHost.render.createMesh(geometry.image, geometry.positions,
-      geometry.uvs, geometry.indices, geometry.drawMode);
+    nativeMesh = NativeHost.render.createMesh(nativeSource.handle, nativePositions,
+      nativeUvs, nativeIndices, drawMode);
   } else if (material.owner === 'mpp-triangle-bitmap') {
-    nativeMesh = NativeHost.plugins.mpp.createBitmapMesh(geometry.image, geometry.positions,
-      geometry.uvs, geometry.indices, geometry.drawMode, material.descriptor);
+    nativeMesh = NativeHost.plugins.mpp.createBitmapMesh(nativeSource.handle, nativePositions,
+      nativeUvs, nativeIndices, drawMode, material.descriptor);
   } else if (material.owner === 'mv-bitmap') {
-    nativeMesh = NativeHost.mv.createBitmapMesh(geometry.image, geometry.positions,
-      geometry.uvs, geometry.indices, geometry.drawMode, {
+    nativeMesh = NativeHost.mv.createBitmapMesh(nativeSource.handle, nativePositions,
+      nativeUvs, nativeIndices, drawMode, {
         texelBounds: material.descriptor.texelBounds,
         alphaMode: mesh.texture.baseTexture.__pmjsPremultiplied ? 'premultiplied' : 'straight'
       });
