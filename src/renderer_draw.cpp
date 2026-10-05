@@ -568,7 +568,7 @@ void Renderer::renderScene() {
     bool nearest : 1;
     GLsizei first;
     GLsizei count;
-    const RenderCommand* command = nullptr;
+    std::uint32_t commandIndex = 0;
     std::uint32_t clipOverrideIndex = 0;
     bool clipped = false;
     float textureWidth = 1;
@@ -607,12 +607,20 @@ void Renderer::renderScene() {
   if (operations.capacity() < frame_.commands.size()) {
     operations.reserve(frame_.commands.size());
   }
+  const auto resolveOperationCommand = [&](const DrawOperation& operation)
+      -> const RenderCommand* {
+    if (operation.commandIndex == 0 ||
+        operation.commandIndex > frame_.commands.size()) {
+      return nullptr;
+    }
+    return &frame_.commands[operation.commandIndex - 1U];
+  };
   const auto resolvedOperationClip = [&](const DrawOperation& operation)
       -> const std::array<int, 4>& {
     if (operation.clipOverrideIndex != 0) {
       return operationClipOverrides[operation.clipOverrideIndex - 1U];
     }
-    return commandClip(*operation.command);
+    return commandClip(*resolveOperationCommand(operation));
   };
   const std::array<float, 4> defaultViewportMapping{1, 1, 0, 0};
   const auto resolvedViewportMapping = [&](const DrawOperation& operation)
@@ -643,7 +651,8 @@ void Renderer::renderScene() {
       if (command.action == RenderCommand::Action::filterEnd &&
           preparingFilterDepth > 0) --preparingFilterDepth;
       DrawOperation operation{};
-      operation.command = &command;
+      operation.commandIndex =
+        static_cast<std::uint32_t>(commandIndex + 1U);
       operation.action = command.action;
       if (command.action == RenderCommand::Action::filterEnd) {
         const std::array<float, 48> vertices = {
@@ -680,7 +689,8 @@ void Renderer::renderScene() {
       if (command.effectIndex == 0 ||
           command.effectIndex > frame_.effects.size()) continue;
       DrawOperation operation{};
-      operation.command = &command;
+      operation.commandIndex =
+        static_cast<std::uint32_t>(commandIndex + 1U);
       operation.primitive = command.primitive;
       operation.clipped = command.clipped;
       operations.push_back(operation);
@@ -697,7 +707,8 @@ void Renderer::renderScene() {
     }
     if (command.tileLayer != 0) {
       operations.push_back({command.tileLayer, 0, command.blendMode,
-                            false, command.nearest, 0, 0, &command, 0,
+                            false, command.nearest, 0, 0,
+                            static_cast<std::uint32_t>(commandIndex + 1U), 0,
                             command.clipped, 1, 1, 0, 0, {}});
       operations.back().primitive = command.primitive;
       if (viewportMapping != defaultViewportMapping) {
@@ -842,7 +853,7 @@ void Renderer::renderScene() {
     const auto* commandColorEffect = colorEffect(command);
     if (command.appliesSpriteColor && commandColorEffect == nullptr) continue;
     const RenderCommand* previousCommand =
-      operations.empty() ? nullptr : operations.back().command;
+      operations.empty() ? nullptr : resolveOperationCommand(operations.back());
     const auto* previousMaskTransform =
       previousCommand ? maskTransform(*previousCommand) : nullptr;
     const auto* previousColorEffect =
@@ -876,7 +887,8 @@ void Renderer::renderScene() {
          resolvedOperationClip(operations.back()) != operationClip)) {
       operations.push_back({0, texture, command.blendMode, command.repeat,
         command.nearest,
-        quadFirstIndex, 6, &command,
+        quadFirstIndex, 6,
+        static_cast<std::uint32_t>(commandIndex + 1U),
         0, operationClipped, textureWidth, textureHeight,
         command.blur, command.maskImage});
       if (operationClipped &&
@@ -978,9 +990,10 @@ void Renderer::renderScene() {
   std::array<std::size_t, scene_packet::maxFilterDepth> filterRegionCounts{};
   applyBlendMode(activeBlend);
   for (const auto& operation : operations) {
+    const RenderCommand* operationCommand = resolveOperationCommand(operation);
     if (operation.action == RenderCommand::Action::filterBegin) {
       targetYDown = true;
-      const auto* operationCustomPlan = customPlan(*operation.command);
+      const auto* operationCustomPlan = customPlan(*operationCommand);
       rasterResolution = operationCustomPlan ?
         operationCustomPlan->resolutions[0] : 1.0F;
       rasterResolutions[filterDepth] = rasterResolution;
@@ -1002,19 +1015,19 @@ void Renderer::renderScene() {
         operationCustomPlan ? pot(targetHeight) : targetHeight);
       std::array<int, 4> boundedRect{};
       const bool bounded = !operationCustomPlan &&
-        filterBoundsRect(operation.command, &boundedRect);
+        filterBoundsRect(operationCommand, &boundedRect);
       filterRegionCounts[filterDepth] = 0;
-      const bool multiRegion = !customPlan(*operation.command) && filterBoundsRegions(
-          operation.command, &filterRegions[filterDepth],
+      const bool multiRegion = !customPlan(*operationCommand) && filterBoundsRegions(
+          operationCommand, &filterRegions[filterDepth],
           &filterRegionCounts[filterDepth]);
       if (bounded) {
         savedScissor[filterDepth] = true;
         savedClip[filterDepth] = boundedRect;
       } else {
-        savedScissor[filterDepth] = operation.command->clipped;
-        savedClip[filterDepth] = operation.command->clipped ? commandClip(*operation.command) : std::array<int, 4>{};
+        savedScissor[filterDepth] = operationCommand->clipped;
+        savedClip[filterDepth] = operationCommand->clipped ? commandClip(*operationCommand) : std::array<int, 4>{};
       }
-      filterCommands[filterDepth] = operation.command;
+      filterCommands[filterDepth] = operationCommand;
       if (scissorActive) {
         glDisable(GL_SCISSOR_TEST);
         scissorActive = false;
@@ -1641,9 +1654,9 @@ void Renderer::renderScene() {
       scissorActive = false;
     }
     if (operation.primitive == RenderCommand::Primitive::effect) {
-      if (!operation.command || operation.command->effectIndex == 0 ||
-          operation.command->effectIndex > frame_.effects.size()) continue;
-      auto draw = frame_.effects[operation.command->effectIndex - 1];
+      if (!operationCommand || operationCommand->effectIndex == 0 ||
+          operationCommand->effectIndex > frame_.effects.size()) continue;
+      auto draw = frame_.effects[operationCommand->effectIndex - 1];
       const auto* filter = filterDepth ? filterCommands[filterDepth - 1] : nullptr;
       const auto filterFrame = effectFrame(
         filter && filter->clipped ? &commandClip(*filter) : nullptr,
@@ -1692,8 +1705,8 @@ void Renderer::renderScene() {
     }
     if (operation.tileLayer != 0) {
       const auto layer = tileLayers_.find(operation.tileLayer);
-      if (layer == tileLayers_.end() || !operation.command) continue;
-      const auto& command = *operation.command;
+      if (layer == tileLayers_.end() || !operationCommand) continue;
+      const auto& command = *operationCommand;
       const auto& transform = command.transform;
       const auto& mapping = resolvedViewportMapping(operation);
       const std::array<float, 9> world = {
@@ -1818,15 +1831,15 @@ void Renderer::renderScene() {
     glUniform1i(simpleSprite ? simpleSpritePremultipliedUniform_ : spriteEffectPremultipliedUniform_,
                 operation.premultipliedSpriteTexture ? 1 : 0);
     if (!simpleSprite) {
-      if (operation.command == nullptr) continue;
-      const auto& frame = operation.command->source;
+      if (operationCommand == nullptr) continue;
+      const auto& frame = operationCommand->source;
       glUniform4f(spriteEffectFrameUniform_, frame[0], frame[1],
         frame[0] + frame[2] - 1, frame[1] + frame[3] - 1);
       glUniform1i(spriteEffectNearestUniform_, operation.nearest);
       glUniform1i(spriteEffectColorEnabledUniform_,
                   operation.appliesSpriteColor ? 1 : 0);
       if (operation.appliesSpriteColor) {
-        const auto* operationColorEffect = colorEffect(*operation.command);
+        const auto* operationColorEffect = colorEffect(*operationCommand);
         if (operationColorEffect == nullptr) continue;
         glUniform4fv(spriteEffectColorToneUniform_, 1,
                      operationColorEffect->colorTone.data());
@@ -1850,7 +1863,7 @@ void Renderer::renderScene() {
     if (!simpleSprite && operation.maskImage) {
       const auto mask = images_.lookup(operation.maskImage);
       const auto* operationMaskTransform =
-        operation.command ? maskTransform(*operation.command) : nullptr;
+        operationCommand ? maskTransform(*operationCommand) : nullptr;
       if (!mask || operationMaskTransform == nullptr) continue;
       glActiveTexture(GL_TEXTURE1);
       glBindTexture(GL_TEXTURE_2D, mask->texture);
