@@ -29,10 +29,13 @@ napi_value initialize(napi_env env, napi_callback_info info) try {
     ? asString(env, property(env, options, "assetRoot")) : std::string();
   std::size_t imageWarmCacheBytes = pmjs::ImageStore::defaultWarmBudgetBytes;
   std::uint16_t transientCpuPixelFrames = 60;
+  std::size_t premultiplyScratchRetainBytes =
+    std::numeric_limits<std::size_t>::max();
   if (const char* profile = std::getenv("PMJS_RESOURCE_PROFILE");
       profile && std::string(profile) == "low") {
     imageWarmCacheBytes = 2U * 1024U * 1024U;
     transientCpuPixelFrames = 30;
+    premultiplyScratchRetainBytes = 1U * 1024U * 1024U;
   }
   if (const char* rawFrames = std::getenv("PMJS_IMAGE_CPU_PIXEL_FRAMES")) {
     try {
@@ -44,6 +47,23 @@ napi_value initialize(napi_env env, napi_callback_info info) try {
     } catch (...) {
       throw std::runtime_error(
         "PMJS_IMAGE_CPU_PIXEL_FRAMES must be an integer between 0 and 65535");
+    }
+  }
+  if (const char* rawScratch =
+        std::getenv("PMJS_IMAGE_PREMULTIPLY_SCRATCH_RETAIN_BYTES")) {
+    try {
+      std::size_t parsed = 0;
+      const auto configured = std::stoull(rawScratch, &parsed);
+      if (parsed == 0 || rawScratch[parsed] != '\0' ||
+          configured > std::numeric_limits<std::size_t>::max()) {
+        throw std::out_of_range(
+          "PMJS_IMAGE_PREMULTIPLY_SCRATCH_RETAIN_BYTES");
+      }
+      premultiplyScratchRetainBytes =
+        static_cast<std::size_t>(configured);
+    } catch (...) {
+      throw std::runtime_error(
+        "PMJS_IMAGE_PREMULTIPLY_SCRATCH_RETAIN_BYTES must be a non-negative integer");
     }
   }
   if (hasProperty(env, options, "imageWarmCacheBytes")) {
@@ -64,7 +84,8 @@ napi_value initialize(napi_env env, napi_callback_info info) try {
   if (title.empty()) throw std::runtime_error("windowTitle must not be empty");
   state = std::make_unique<State>(
     asString(env, property(env, options, "gameRoot")), width, height,
-    assetRoot, title, imageWarmCacheBytes, transientCpuPixelFrames);
+    assetRoot, title, imageWarmCacheBytes, transientCpuPixelFrames,
+    premultiplyScratchRetainBytes);
   return undefined(env);
 } catch (const std::exception& error) {
   napi_throw_error(env, nullptr, error.what());
