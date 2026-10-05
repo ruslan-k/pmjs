@@ -136,15 +136,23 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     };
     const SceneState& parent = parentIndex == noParent
       ? rootState : states[parentIndex];
-    std::array<float, 6> world = {
-      parent.world[0] * local[0] + parent.world[2] * local[1],
-      parent.world[1] * local[0] + parent.world[3] * local[1],
-      parent.world[0] * local[2] + parent.world[2] * local[3],
-      parent.world[1] * local[2] + parent.world[3] * local[3],
-      parent.world[0] * local[4] + parent.world[2] * local[5] + parent.world[4],
-      parent.world[1] * local[4] + parent.world[3] * local[5] + parent.world[5],
-    };
-    if (spriteVertices) world = parent.world;
+    std::array<float, 6> world;
+    if (spriteVertices) {
+      // Explicit world vertices bypass the node's local transform entirely.
+      world = parent.world;
+    } else if (parentIndex == noParent) {
+      // Multiplication by the root identity matrix is exact but wasted work.
+      world = local;
+    } else {
+      world = {
+        parent.world[0] * local[0] + parent.world[2] * local[1],
+        parent.world[1] * local[0] + parent.world[3] * local[1],
+        parent.world[0] * local[2] + parent.world[2] * local[3],
+        parent.world[1] * local[2] + parent.world[3] * local[3],
+        parent.world[0] * local[4] + parent.world[2] * local[5] + parent.world[4],
+        parent.world[1] * local[4] + parent.world[3] * local[5] + parent.world[5],
+      };
+    }
     states.emplace_back(world, parent.alpha * values[valueOffset + 6],
       parent.clipIndex, parent.maskImage, parent.maskTransformIndex);
     SceneState& state = states.back();
