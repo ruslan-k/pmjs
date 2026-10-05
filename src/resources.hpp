@@ -183,6 +183,7 @@ class ImageStore {
   std::uint64_t textureFullUpdates_ = 0;
   std::uint64_t textureRegionUpdates_ = 0;
   std::uint64_t textureUploadBytes_ = 0;
+  std::vector<std::uint8_t> premultiplyScratch_;
   ImageHandle fallbackHandle_ = 0;
   std::uint64_t fallbackUses_ = 0;
 };
