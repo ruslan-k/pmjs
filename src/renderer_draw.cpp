@@ -1151,9 +1151,9 @@ void Renderer::renderScene() {
       rasterFrame = filterDepth ? rasterFrames[filterDepth - 1] :
         std::array<float, 4>{0, 0, static_cast<float>(width_), static_cast<float>(height_)};
       const RenderCommand& filter = *filterCommands[filterDepth];
-      const auto kind = kind;
-      const auto& params = params;
-      const float resolution = resolution;
+      const auto kind = filterKind(filter);
+      const auto& params = filterParams(filter);
+      const float resolution = filterResolution(filter);
       const CustomFilterPlan* const filterCustomPlan =
         kind == scene_packet::FilterKind::custom ? customPlan(filter) : nullptr;
       if (diagnostics_) {
