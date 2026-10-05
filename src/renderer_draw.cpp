@@ -567,7 +567,7 @@ void Renderer::renderScene() {
     GLsizei first;
     GLsizei count;
     const RenderCommand* command = nullptr;
-    std::array<int, 4> clip{};
+    std::uint32_t clipOverrideIndex = 0;
     bool clipped = false;
     float textureWidth = 1;
     float textureHeight = 1;
@@ -588,14 +588,27 @@ void Renderer::renderScene() {
     std::array<float, 4> viewportMapping{1, 1, 0, 0};
   };
   static thread_local std::vector<DrawOperation> operations;
+  static thread_local std::vector<std::array<int, 4>> operationClipOverrides;
   if (operations.capacity() > 1024 &&
       frame_.commands.size() * 4 < operations.capacity()) {
     std::vector<DrawOperation>().swap(operations);
   }
+  if (operationClipOverrides.capacity() > 1024 &&
+      frame_.commands.size() * 4 < operationClipOverrides.capacity()) {
+    std::vector<std::array<int, 4>>().swap(operationClipOverrides);
+  }
   operations.clear();
+  operationClipOverrides.clear();
   if (operations.capacity() < frame_.commands.size()) {
     operations.reserve(frame_.commands.size());
   }
+  const auto resolvedOperationClip = [&](const DrawOperation& operation)
+      -> const std::array<int, 4>& {
+    if (operation.clipOverrideIndex != 0) {
+      return operationClipOverrides[operation.clipOverrideIndex - 1U];
+    }
+    return operation.command->clip;
+  };
   const auto appendQuad = [&](const std::array<float, 48>& quad) {
     const std::size_t baseVertex = vertices_.size() / 12U;
     const GLsizei firstIndex =
@@ -655,7 +668,6 @@ void Renderer::renderScene() {
       DrawOperation operation{};
       operation.command = &command;
       operation.primitive = command.primitive;
-      operation.clip = command.clip;
       operation.clipped = command.clipped;
       operations.push_back(operation);
       const auto* filter = preparingFilterDepth ? preparingFilters[preparingFilterDepth - 1] : nullptr;
@@ -669,7 +681,7 @@ void Renderer::renderScene() {
     }
     if (command.tileLayer != 0) {
       operations.push_back({command.tileLayer, 0, command.blendMode,
-                            false, command.nearest, 0, 0, &command, command.clip,
+                            false, command.nearest, 0, 0, &command, 0,
                             command.clipped, 1, 1, 0, 0, {}, {}});
       operations.back().primitive = command.primitive;
       operations.back().viewportMapping = viewportMapping;
@@ -834,12 +846,19 @@ void Renderer::renderScene() {
         operations.back().inlineMatrix != inlineFilter ||
         operations.back().primitive != command.primitive ||
         operations.back().clipped != operationClipped ||
-        (operationClipped && operations.back().clip != operationClip)) {
+        (operationClipped &&
+         resolvedOperationClip(operations.back()) != operationClip)) {
       operations.push_back({0, texture, command.blendMode, command.repeat,
         command.nearest,
         quadFirstIndex, 6, &command,
-        operationClip, operationClipped, textureWidth, textureHeight,
+        0, operationClipped, textureWidth, textureHeight,
         command.blur, command.maskImage, commandMaskTransform});
+      if (operationClipped &&
+          (!command.clipped || operationClip != command.clip)) {
+        operationClipOverrides.push_back(operationClip);
+        operations.back().clipOverrideIndex =
+          static_cast<std::uint32_t>(operationClipOverrides.size());
+      }
       operations.back().appliesSpriteColor = command.appliesSpriteColor;
       operations.back().pixiSpritePacking = command.pixiSpritePacking;
       operations.back().spriteWorldVertices = worldVertices;
@@ -1586,10 +1605,11 @@ void Renderer::renderScene() {
         glEnable(GL_SCISSOR_TEST);
         scissorActive = true;
       }
-      rasterScissor(operation.clip[0], height_ - operation.clip[3],
-                std::max(0, operation.clip[2] - operation.clip[0]),
-                std::max(0, operation.clip[3] - operation.clip[1]));
-      activeClip = operation.clip;
+      const auto& operationClip = resolvedOperationClip(operation);
+      rasterScissor(operationClip[0], height_ - operationClip[3],
+                std::max(0, operationClip[2] - operationClip[0]),
+                std::max(0, operationClip[3] - operationClip[1]));
+      activeClip = operationClip;
     } else if (scissorActive) {
       glDisable(GL_SCISSOR_TEST);
       scissorActive = false;
