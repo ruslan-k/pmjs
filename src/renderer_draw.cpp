@@ -485,12 +485,12 @@ void Renderer::renderScene() {
         !preservesAlpha(filterParams(filter))) continue;
     std::size_t depth = 1;
     std::size_t end = begin;
-    static thread_local std::vector<std::size_t> drawIndices;
+    static thread_local std::vector<std::uint32_t> drawIndices;
     drawIndices.clear();
     if (drawIndices.capacity() < 16) drawIndices.reserve(16);
     if (drawIndices.capacity() > 1024 &&
         frame_.commands.size() * 4 < drawIndices.capacity()) {
-      std::vector<std::size_t>().swap(drawIndices);
+      std::vector<std::uint32_t>().swap(drawIndices);
       drawIndices.reserve(16);
     }
     bool eligible = true;
@@ -512,7 +512,7 @@ void Renderer::renderScene() {
         if (!drawable) {
           eligible = false;
         } else {
-          drawIndices.push_back(index);
+          drawIndices.push_back(static_cast<std::uint32_t>(index));
         }
       }
     }
