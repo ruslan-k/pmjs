@@ -1611,14 +1611,20 @@ bool CanvasStore::uploadSurface(Surface& target) {
       pixels + static_cast<std::size_t>(row) * destinationRowBytes;
 
     bool opaqueRow = true;
+    bool transparentRow = true;
     for (int column = 0; column < width; ++column) {
-      if (sourceRow[static_cast<std::size_t>(column) * 4U + 3U] != 255U) {
-        opaqueRow = false;
-        break;
-      }
+      const auto alpha =
+        sourceRow[static_cast<std::size_t>(column) * 4U + 3U];
+      opaqueRow = opaqueRow && alpha == 255U;
+      transparentRow = transparentRow && alpha == 0U;
+      if (!opaqueRow && !transparentRow) break;
     }
     if (opaqueRow) {
       std::memcpy(destinationRow, sourceRow, destinationRowBytes);
+      continue;
+    }
+    if (transparentRow) {
+      std::memset(destinationRow, 0, destinationRowBytes);
       continue;
     }
 
