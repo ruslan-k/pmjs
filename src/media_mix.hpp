@@ -94,13 +94,16 @@ class StreamSampleBuffer {
     size_ -= count;
   }
 
-  // Read the current and next interleaved stereo frames with one wrap test.
-  // mixVoiceInto() calls this once per output frame instead of mapping four
-  // logical indices through the ring separately.
-  void frontStereoPair(float& left, float& right,
-                       float& nextLeft, float& nextRight) const {
+  void frontStereo(float& left, float& right) const {
     left = storage_[head_];
     right = storage_[head_ + 1U < storage_.size() ? head_ + 1U : 0U];
+  }
+
+  // Read the current and next interleaved stereo frames with one wrap test.
+  // Used only when resampling needs interpolation between source frames.
+  void frontStereoPair(float& left, float& right,
+                       float& nextLeft, float& nextRight) const {
+    frontStereo(left, right);
     std::size_t next = head_ + 2U;
     if (next >= storage_.size()) next -= storage_.size();
     nextLeft = storage_[next];
@@ -181,26 +184,31 @@ inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
       }
     }
     const float fraction = static_cast<float>(voice.phase);
-    float currentLeft, currentRight, nextLeft, nextRight;
+    float currentLeft, currentRight;
     if (voice.asset) {
       const auto currentOffset = voice.positionFrame * 2;
-      const auto nextOffset = nextSampleFrame * 2;
       currentLeft = voice.asset->samples[currentOffset];
       currentRight = voice.asset->samples[currentOffset + 1];
-      nextLeft = voice.asset->samples[nextOffset];
-      nextRight = voice.asset->samples[nextOffset + 1];
     } else {
-      voice.samples.frontStereoPair(
-        currentLeft, currentRight, nextLeft, nextRight);
+      voice.samples.frontStereo(currentLeft, currentRight);
     }
     float left;
     float right;
     if (fraction == 0.0F) {
       // The overwhelmingly common pitch=1 path lands exactly on source
-      // frames. Avoid four interpolation multiplies/adds per output frame.
+      // frames. Avoid next-frame reads plus interpolation arithmetic.
       left = currentLeft;
       right = currentRight;
     } else {
+      float nextLeft, nextRight;
+      if (voice.asset) {
+        const auto nextOffset = nextSampleFrame * 2;
+        nextLeft = voice.asset->samples[nextOffset];
+        nextRight = voice.asset->samples[nextOffset + 1];
+      } else {
+        voice.samples.frontStereoPair(
+          currentLeft, currentRight, nextLeft, nextRight);
+      }
       const float inverseFraction = 1.0F - fraction;
       left = currentLeft * inverseFraction + nextLeft * fraction;
       right = currentRight * inverseFraction + nextRight * fraction;
