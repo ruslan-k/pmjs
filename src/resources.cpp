@@ -412,7 +412,7 @@ const ImagePixels* ImageStore::readPixels(ImageHandle handle) const {
   const auto& slot = slots_[encodedIndex - 1U];
   if (slot.cachedPixels) {
     if (!slot.retainCpuPixels && !slot.cacheKey.empty()) {
-      slot.cpuPixelFrames = 60;
+      slot.cpuPixelFrames = transientCpuPixelFrames_;
       transientCpuPixelsActive_ = true;
     }
     return &*slot.cachedPixels;
@@ -422,7 +422,7 @@ const ImagePixels* ImageStore::readPixels(ImageHandle handle) const {
   if (!slot.cachedPixels) return nullptr;
   cpuBytes_ += slot.cachedPixels->rgba.capacity();
   if (!slot.retainCpuPixels) {
-    slot.cpuPixelFrames = 60;
+    slot.cpuPixelFrames = transientCpuPixelFrames_;
     transientCpuPixelsActive_ = true;
   }
   return &*slot.cachedPixels;
