@@ -586,10 +586,11 @@ void Renderer::renderScene() {
     const ColorEffectPayload* colorEffect = nullptr;
     const RenderCommand* inlineMatrix = nullptr;
     RenderCommand::Primitive primitive = RenderCommand::Primitive::sprite;
-    std::array<float, 4> viewportMapping{1, 1, 0, 0};
+    std::uint32_t viewportMappingIndex = 0;
   };
   static thread_local std::vector<DrawOperation> operations;
   static thread_local std::vector<std::array<int, 4>> operationClipOverrides;
+  static thread_local std::vector<std::array<float, 4>> operationViewportMappings;
   if (operations.capacity() > 1024 &&
       frame_.commands.size() * 4 < operations.capacity()) {
     std::vector<DrawOperation>().swap(operations);
@@ -598,8 +599,13 @@ void Renderer::renderScene() {
       frame_.commands.size() * 4 < operationClipOverrides.capacity()) {
     std::vector<std::array<int, 4>>().swap(operationClipOverrides);
   }
+  if (operationViewportMappings.capacity() > 256 &&
+      frame_.commands.size() * 4 < operationViewportMappings.capacity()) {
+    std::vector<std::array<float, 4>>().swap(operationViewportMappings);
+  }
   operations.clear();
   operationClipOverrides.clear();
+  operationViewportMappings.clear();
   if (operations.capacity() < frame_.commands.size()) {
     operations.reserve(frame_.commands.size());
   }
@@ -609,6 +615,14 @@ void Renderer::renderScene() {
       return operationClipOverrides[operation.clipOverrideIndex - 1U];
     }
     return commandClip(*operation.command);
+  };
+  const std::array<float, 4> defaultViewportMapping{1, 1, 0, 0};
+  const auto resolvedViewportMapping = [&](const DrawOperation& operation)
+      -> const std::array<float, 4>& {
+    if (operation.viewportMappingIndex != 0) {
+      return operationViewportMappings[operation.viewportMappingIndex - 1U];
+    }
+    return defaultViewportMapping;
   };
   const auto appendQuad = [&](const std::array<float, 48>& quad) {
     const std::size_t baseVertex = vertices_.size() / 12U;
@@ -687,7 +701,11 @@ void Renderer::renderScene() {
                             false, command.nearest, 0, 0, &command, 0,
                             command.clipped, 1, 1, 0, 0, {}, {}});
       operations.back().primitive = command.primitive;
-      operations.back().viewportMapping = viewportMapping;
+      if (viewportMapping != defaultViewportMapping) {
+        operationViewportMappings.push_back(viewportMapping);
+        operations.back().viewportMappingIndex =
+          static_cast<std::uint32_t>(operationViewportMappings.size());
+      }
       continue;
     }
     const auto info = command.image == 0 ? std::optional<ImageInfo>{} :
@@ -1672,7 +1690,7 @@ void Renderer::renderScene() {
       if (layer == tileLayers_.end() || !operation.command) continue;
       const auto& command = *operation.command;
       const auto& transform = command.transform;
-      const auto& mapping = operation.viewportMapping;
+      const auto& mapping = resolvedViewportMapping(operation);
       const std::array<float, 9> world = {
         transform[0] * mapping[0], transform[1] * mapping[1], 0.0F,
         transform[2] * mapping[0], transform[3] * mapping[1], 0.0F,
