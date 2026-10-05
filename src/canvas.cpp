@@ -1599,24 +1599,46 @@ bool CanvasStore::uploadSurface(Surface& target) {
   const std::size_t pixelBytes = static_cast<std::size_t>(width) * height * 4U;
   prepareScratch(uploadScratch_, pixelBytes);
   auto* pixels = uploadScratch_.data();
+  const std::size_t sourceRowBytes =
+    static_cast<std::size_t>(surface.width) * 4U;
+  const std::size_t destinationRowBytes =
+    static_cast<std::size_t>(width) * 4U;
   for (int row = 0; row < height; ++row) {
+    const auto* sourceRow = surface.pixels.data() +
+      static_cast<std::size_t>(y + row) * sourceRowBytes +
+      static_cast<std::size_t>(x) * 4U;
+    auto* destinationRow =
+      pixels + static_cast<std::size_t>(row) * destinationRowBytes;
+
+    bool opaqueRow = true;
     for (int column = 0; column < width; ++column) {
-      const auto source = (static_cast<std::size_t>(y + row) * surface.width + x + column) * 4U;
-      const auto destination = (static_cast<std::size_t>(row) * width + column) * 4U;
-      const unsigned alpha = surface.pixels[source + 3];
+      if (sourceRow[static_cast<std::size_t>(column) * 4U + 3U] != 255U) {
+        opaqueRow = false;
+        break;
+      }
+    }
+    if (opaqueRow) {
+      std::memcpy(destinationRow, sourceRow, destinationRowBytes);
+      continue;
+    }
+
+    for (int column = 0; column < width; ++column) {
+      const auto source = static_cast<std::size_t>(column) * 4U;
+      const unsigned alpha = sourceRow[source + 3U];
       if (alpha == 255U) {
-        std::memcpy(pixels + destination, surface.pixels.data() + source, 4U);
+        std::memcpy(destinationRow + source, sourceRow + source, 4U);
       } else if (alpha == 0U) {
-        pixels[destination] = pixels[destination + 1] = pixels[destination + 2] = 0;
-        pixels[destination + 3] = 0;
+        destinationRow[source] = destinationRow[source + 1U] =
+          destinationRow[source + 2U] = 0;
+        destinationRow[source + 3U] = 0;
       } else {
-        pixels[destination] = static_cast<std::uint8_t>(
-          (surface.pixels[source] * alpha + 127U) / 255U);
-        pixels[destination + 1] = static_cast<std::uint8_t>(
-          (surface.pixels[source + 1] * alpha + 127U) / 255U);
-        pixels[destination + 2] = static_cast<std::uint8_t>(
-          (surface.pixels[source + 2] * alpha + 127U) / 255U);
-        pixels[destination + 3] = static_cast<std::uint8_t>(alpha);
+        destinationRow[source] = static_cast<std::uint8_t>(
+          (sourceRow[source] * alpha + 127U) / 255U);
+        destinationRow[source + 1U] = static_cast<std::uint8_t>(
+          (sourceRow[source + 1U] * alpha + 127U) / 255U);
+        destinationRow[source + 2U] = static_cast<std::uint8_t>(
+          (sourceRow[source + 2U] * alpha + 127U) / 255U);
+        destinationRow[source + 3U] = static_cast<std::uint8_t>(alpha);
       }
     }
   }
