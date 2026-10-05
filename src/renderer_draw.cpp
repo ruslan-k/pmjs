@@ -854,10 +854,15 @@ void Renderer::renderScene() {
     const auto& uv2 = sourceCorners[uvOrder[2]];
     const auto& uv3 = sourceCorners[uvOrder[3]];
     auto color = command.color;
-    if (command.pixiSpritePacking && !command.packedSpriteColor) {
-      const float alpha = std::clamp(color[3], 0.0F, 1.0F);
+    if (command.pixiSpritePacking && !command.packedSpriteColor &&
+        color[3] != 1.0F) {
+      // queueImage() stores tint channels as exact 8-bit/255 values and
+      // clamps alpha. At alpha=1 this quantization is therefore an identity;
+      // skip four floor/clamp operations for the common opaque sprite path.
+      const float alpha = color[3];
       for (std::size_t channel = 0; channel < 3; ++channel) {
-        color[channel] = std::floor(color[channel] * 255.0F * alpha + 0.5F) / 255.0F;
+        color[channel] =
+          std::floor(color[channel] * 255.0F * alpha + 0.5F) / 255.0F;
       }
       color[3] = std::floor(alpha * 255.0F) / 255.0F;
     }
