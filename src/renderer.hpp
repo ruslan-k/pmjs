@@ -376,8 +376,11 @@ class Renderer {
     bool bounded = false;
     bool regionsValid = false;
     std::array<int, 4> rect{};
-    std::array<std::array<int, 4>, maxRegions> regions{};
-    std::size_t regionCount = 0;
+    std::uint32_t regionSetIndex = 0;
+  };
+  struct FilterRegionSet {
+    std::array<std::array<int, 4>, FilterContentBounds::maxRegions> regions{};
+    std::uint8_t count = 0;
   };
 
   const FilterCommandPayload& filterPayload(
@@ -510,6 +513,7 @@ class Renderer {
   RendererStats stats_;
   bool diagnostics_ = false;
   std::vector<FilterContentBounds> filterBounds_;
+  std::vector<FilterRegionSet> filterRegionSets_;
   bool filterBoundsEnabled_ = true;
   std::uint32_t program_ = 0;
   std::uint32_t simpleProgram_ = 0;
