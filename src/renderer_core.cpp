@@ -259,6 +259,7 @@ void Renderer::beginFrame() {
   const std::size_t previousCommandCount = frame_.commands.size();
   const std::size_t previousEffectCount = frame_.effects.size();
   const std::size_t previousColorMatrixCount = frame_.colorMatrices.size();
+  const std::size_t previousFilterPayloadCount = frame_.filterPayloads.size();
   const std::size_t previousFilterParameterCount = frame_.filterParameters.size();
   const std::size_t previousCustomFilterPlanCount =
     frame_.customFilterPlans.size();
@@ -284,6 +285,12 @@ void Renderer::beginFrame() {
     std::vector<std::array<float, 20>>().swap(frame_.colorMatrices);
   } else {
     frame_.colorMatrices.clear();
+  }
+  if (frame_.filterPayloads.capacity() > 64 &&
+      previousFilterPayloadCount * 4 < frame_.filterPayloads.capacity()) {
+    std::vector<FilterCommandPayload>().swap(frame_.filterPayloads);
+  } else {
+    frame_.filterPayloads.clear();
   }
   if (frame_.filterParameters.capacity() > 64 &&
       previousFilterParameterCount * 4 < frame_.filterParameters.capacity()) {
