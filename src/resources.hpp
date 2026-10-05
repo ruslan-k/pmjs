@@ -152,6 +152,7 @@ class ImageStore {
     bool gpuOnly = false;
     bool renderTarget = false;
     bool premultiplied = false;
+    bool premultiplyIdentity = false;
     std::uint32_t premultipliedTexture = 0;
     bool retainCpuPixels = false;
     std::string cacheKey;
