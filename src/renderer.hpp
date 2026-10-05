@@ -501,6 +501,7 @@ class Renderer {
   bool sceneSubmittedThisFrame_ = false;
   bool sceneHasEffect_ = false;
   bool sceneHasCustomFilter_ = false;
+  bool sceneHasColorMatrixFilter_ = false;
   bool hasValidSceneFrame_ = false;
   FramePacket frame_;
   std::vector<float> vertices_;
