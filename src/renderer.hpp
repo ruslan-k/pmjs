@@ -63,6 +63,14 @@ struct ColorEffectPayload {
   std::array<float, 4> blendColor{};
 };
 
+struct FilterCommandPayload {
+  scene_packet::FilterKind kind = scene_packet::FilterKind::blur;
+  std::uint32_t program = 0;
+  std::uint32_t customPlanIndex = 0;
+  std::uint32_t parametersIndex = 0;
+  float resolution = 1.0F;
+};
+
 struct RenderCommand {
   enum class Action : std::uint8_t { draw, filterBegin, filterEnd };
   enum class Primitive : std::uint8_t {
@@ -97,11 +105,7 @@ struct RenderCommand {
   bool nearest : 1 = false;
   bool roundPixels : 1 = false;
   Action action = Action::draw;
-  scene_packet::FilterKind filterKind = scene_packet::FilterKind::blur;
-  std::uint32_t filterProgram = 0;
-  std::uint32_t customFilterPlanIndex = 0;
-  std::uint32_t filterParametersIndex = 0;
-  float filterResolution = 1.0F;
+  std::uint32_t filterPayloadIndex = 0;
   Primitive primitive = Primitive::sprite;
   std::uint32_t effectIndex = 0;
   bool clampedTilingSampling = false;
@@ -111,6 +115,7 @@ struct FramePacket {
   std::vector<RenderCommand> commands;
   std::vector<EffectDraw> effects;
   std::vector<std::array<float, 20>> colorMatrices;
+  std::vector<FilterCommandPayload> filterPayloads;
   std::vector<std::array<float, 21>> filterParameters;
   std::vector<std::shared_ptr<const CustomFilterPlan>> customFilterPlans;
   std::vector<ColorEffectPayload> colorEffects;
@@ -122,6 +127,7 @@ struct FramePacket {
     commands.clear();
     effects.clear();
     colorMatrices.clear();
+    filterPayloads.clear();
     filterParameters.clear();
     customFilterPlans.clear();
     colorEffects.clear();
@@ -374,16 +380,22 @@ class Renderer {
     std::size_t regionCount = 0;
   };
 
+  const FilterCommandPayload& filterPayload(
+      const RenderCommand& command) const {
+    return frame_.filterPayloads[command.filterPayloadIndex - 1];
+  }
   const std::array<float, 21>& filterParams(
       const RenderCommand& command) const {
-    return frame_.filterParameters[command.filterParametersIndex - 1];
+    const auto& payload = filterPayload(command);
+    return frame_.filterParameters[payload.parametersIndex - 1];
   }
   const CustomFilterPlan* customPlan(const RenderCommand& command) const {
-    if (command.customFilterPlanIndex == 0 ||
-        command.customFilterPlanIndex > frame_.customFilterPlans.size()) {
+    const auto& payload = filterPayload(command);
+    if (payload.customPlanIndex == 0 ||
+        payload.customPlanIndex > frame_.customFilterPlans.size()) {
       return nullptr;
     }
-    return frame_.customFilterPlans[command.customFilterPlanIndex - 1].get();
+    return frame_.customFilterPlans[payload.customPlanIndex - 1].get();
   }
   const ColorEffectPayload* colorEffect(const RenderCommand& command) const {
     if (command.colorEffectIndex == 0 ||
