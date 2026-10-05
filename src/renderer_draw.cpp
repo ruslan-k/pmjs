@@ -984,6 +984,10 @@ void Renderer::renderScene() {
 
   BlendMode activeBlend = BlendMode::normal;
   std::uint32_t activeProgram = 0;
+  bool simpleSpriteProjectionValid = false;
+  bool simpleSpriteProjectionYDown = false;
+  bool effectSpriteProjectionValid = false;
+  bool effectSpriteProjectionYDown = false;
   bool scissorActive = false;
   std::size_t filterDepth = 0;
   std::array<const RenderCommand*, scene_packet::maxFilterDepth> filterCommands{};
@@ -1851,10 +1855,28 @@ void Renderer::renderScene() {
     }
     // Pixi render targets project downward in GL; readback reflection cannot
     // reproduce sampling and edge coverage at exact pixel-center boundaries.
-    const float ySign = targetYDown ? 1.0F : -1.0F;
-    const std::array<float, 9> projection = {2.0F / width_, 0, 0, 0, ySign * 2.0F / height_, 0, -1, -ySign, 1};
-    glUniform1i(simpleSprite ? simpleTargetYDownUniform_ : spriteEffectTargetYDownUniform_, targetYDown);
-    glUniformMatrix3fv(simpleSprite ? simpleSpriteProjectionUniform_ : spriteEffectProjectionUniform_, 1, GL_FALSE, projection.data());
+    // Projection depends only on target orientation and logical dimensions, so
+    // do not resend it for every texture/state batch on the same target.
+    bool& projectionValid = simpleSprite
+      ? simpleSpriteProjectionValid : effectSpriteProjectionValid;
+    bool& projectionYDown = simpleSprite
+      ? simpleSpriteProjectionYDown : effectSpriteProjectionYDown;
+    if (!projectionValid || projectionYDown != targetYDown) {
+      const float ySign = targetYDown ? 1.0F : -1.0F;
+      const std::array<float, 9> projection = {
+        2.0F / width_, 0, 0,
+        0, ySign * 2.0F / height_, 0,
+        -1, -ySign, 1
+      };
+      glUniform1i(simpleSprite ? simpleTargetYDownUniform_
+                              : spriteEffectTargetYDownUniform_,
+                  targetYDown);
+      glUniformMatrix3fv(simpleSprite ? simpleSpriteProjectionUniform_
+                                     : spriteEffectProjectionUniform_,
+                         1, GL_FALSE, projection.data());
+      projectionValid = true;
+      projectionYDown = targetYDown;
+    }
     glUniform1i(simpleSprite ? simpleTilingClampUniform_ : spriteEffectTilingClampUniform_,
                 operation.clampedTilingSampling);
     if (simpleSprite) glUniform2f(simpleTextureSizeUniform_, operation.textureWidth, operation.textureHeight);
