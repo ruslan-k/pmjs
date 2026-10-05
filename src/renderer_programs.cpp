@@ -413,7 +413,18 @@ std::uint32_t Renderer::createFilterProgram(const std::string& fragmentSource, c
     throw std::invalid_argument("invalid filter vertex source");
   const GLuint program = linkProgram(vertexSource.empty() ? vertex : vertexSource.c_str(), source.c_str());
   try {
-    FilterProgram result{program, vertexSource + "\n" + source, !vertexSource.empty(), {}};
+    FilterProgram result;
+    result.program = program;
+    result.source = vertexSource + "\n" + source;
+    result.pixiVertex = !vertexSource.empty();
+    result.targetYDown = glGetUniformLocation(program, "pmjsTargetYDown");
+    result.sampler = glGetUniformLocation(program, "uSampler");
+    result.screenSize = glGetUniformLocation(program, "pmjsScreenSize");
+    result.filterFrame = glGetUniformLocation(program, "pmjsFilterFrame");
+    result.filterTextureSize =
+      glGetUniformLocation(program, "pmjsFilterTextureSize");
+    result.filterArea = glGetUniformLocation(program, "filterArea");
+    result.filterClamp = glGetUniformLocation(program, "filterClamp");
     GLint uniformCount = 0;
     GLint uniformNameSize = 0;
     glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniformCount);
