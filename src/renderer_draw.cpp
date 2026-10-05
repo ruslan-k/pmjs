@@ -434,14 +434,24 @@ void Renderer::renderScene() {
     glClearDepthf(1);
     glClear(GL_COLOR_BUFFER_BIT | (rootTarget.depth ? GL_DEPTH_BUFFER_BIT : 0));
 
-    const std::size_t requiredVertexFloats = frame_.commands.size() * 48U;
+    const std::size_t maximumVertexFloats = frame_.commands.size() * 48U;
+    const std::size_t previousVertexFloats = vertices_.size();
     vertices_.clear();
+    // Command count is only an upper bound: containers, filters, effects,
+    // tile layers and culled sprites do not all emit a quad. Reserving the
+    // full bound can pin ~12 MiB for a 65536-node scene even when only a
+    // fraction is visible. Use last frame's actual vertex count as the warm
+    // estimate and let the vector grow only if the scene really needs more.
+    constexpr std::size_t initialVertexReserve = 48U * 256U;
+    const std::size_t expectedVertexFloats = std::min(
+      maximumVertexFloats,
+      std::max(previousVertexFloats, initialVertexReserve));
     if (vertices_.capacity() > 48U * 2048U &&
-        requiredVertexFloats * 4U < vertices_.capacity()) {
+        previousVertexFloats * 4U < vertices_.capacity()) {
       std::vector<float>().swap(vertices_);
     }
-    if (vertices_.capacity() < requiredVertexFloats) {
-      vertices_.reserve(requiredVertexFloats);
+    if (vertices_.capacity() < expectedVertexFloats) {
+      vertices_.reserve(expectedVertexFloats);
     }
     if (sceneHasFilter_ &&
         (filterBoundsEnabled_ || sceneHasCustomFilter_)) {
