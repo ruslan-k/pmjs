@@ -581,6 +581,9 @@ bool ImageStore::updateRgba(ImageHandle handle, const void* pixels) {
     auto& slot = slots_[(handle & indexMask) - 1U];
     const std::size_t uploadBytes = static_cast<std::size_t>(info->width) *
       static_cast<std::size_t>(info->height) * 4U;
+    if (slot.cachedPixels && slot.cachedPixels->rgba.size() == uploadBytes) {
+      std::memcpy(slot.cachedPixels->rgba.data(), pixels, uploadBytes);
+    }
     if (!slot.premultiplied) {
       bool identity = false;
       if (slot.premultipliedTexture &&
@@ -646,6 +649,21 @@ bool ImageStore::updateRgbaRegion(ImageHandle handle, int x, int y, int width,
     auto& slot = slots_[(handle & indexMask) - 1U];
     const std::size_t uploadBytes = static_cast<std::size_t>(width) *
       static_cast<std::size_t>(height) * 4U;
+    if (slot.cachedPixels &&
+        slot.cachedPixels->width == info->width &&
+        slot.cachedPixels->height == info->height) {
+      const auto* source = static_cast<const std::uint8_t*>(pixels);
+      const std::size_t sourceStride =
+        static_cast<std::size_t>(sourceRowPixels) * 4U;
+      const std::size_t rowBytes = static_cast<std::size_t>(width) * 4U;
+      for (int row = 0; row < height; ++row) {
+        std::memcpy(
+          slot.cachedPixels->rgba.data() +
+            (static_cast<std::size_t>(y + row) * info->width + x) * 4U,
+          source + static_cast<std::size_t>(row) * sourceStride,
+          rowBytes);
+      }
+    }
     if (!slot.premultiplied) {
       const bool wholeImage = x == 0 && y == 0 &&
         width == info->width && height == info->height;
@@ -728,17 +746,30 @@ std::optional<ImageInfo> ImageStore::lookupPremultiplied(ImageHandle handle) {
     slot.premultipliedTexture = slot.texture;
   }
   if (!slot.premultipliedTexture) {
-    auto pixels = readTexturePixels(*info);
-    if (!pixels) return std::nullopt;
+    std::optional<ImagePixels> readback;
+    const std::uint8_t* uploadPixels = nullptr;
+    std::size_t uploadBytes = 0;
     bool changed = false;
-    for (std::size_t offset = 0; offset < pixels->rgba.size(); offset += 4) {
-      const unsigned alpha = pixels->rgba[offset + 3];
-      for (std::size_t channel = 0; channel < 3; ++channel) {
-        auto& value = pixels->rgba[offset + channel];
-        const auto converted = static_cast<std::uint8_t>((value * alpha + 127) / 255);
-        changed |= converted != value;
-        value = converted;
+    if (slot.cachedPixels &&
+        slot.cachedPixels->width == info->width &&
+        slot.cachedPixels->height == info->height) {
+      const std::size_t required = static_cast<std::size_t>(info->width) *
+        static_cast<std::size_t>(info->height) * 4U;
+      if (premultiplyScratch_.capacity() > 4U * 1024U * 1024U &&
+          required * 4U < premultiplyScratch_.capacity()) {
+        std::vector<std::uint8_t>().swap(premultiplyScratch_);
       }
+      changed = premultiplyRgba(slot.cachedPixels->rgba.data(),
+        info->width, info->height, info->width, &premultiplyScratch_);
+      uploadPixels = premultiplyScratch_.data();
+      uploadBytes = premultiplyScratch_.size();
+    } else {
+      readback = readTexturePixels(*info);
+      if (!readback) return std::nullopt;
+      changed = premultiplyRgba(readback->rgba.data(), info->width,
+        info->height, info->width, &premultiplyScratch_);
+      uploadPixels = premultiplyScratch_.data();
+      uploadBytes = premultiplyScratch_.size();
     }
     slot.premultiplyIdentity = !changed;
     if (!changed) {
@@ -754,15 +785,15 @@ std::optional<ImageInfo> ImageStore::lookupPremultiplied(ImageHandle handle) {
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
       glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
       glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, info->width, info->height, 0,
-        GL_RGBA, GL_UNSIGNED_BYTE, pixels->rgba.data());
+        GL_RGBA, GL_UNSIGNED_BYTE, uploadPixels);
       if (!texture || glGetError() != GL_NO_ERROR) {
         if (texture) glDeleteTextures(1, &texture);
         return std::nullopt;
       }
       slot.premultipliedTexture = texture;
       ++textureCreates_;
-      textureUploadBytes_ += pixels->rgba.size();
-      gpuBytes_ += pixels->rgba.size();
+      textureUploadBytes_ += uploadBytes;
+      gpuBytes_ += uploadBytes;
       peakGpuBytes_ = std::max(peakGpuBytes_, gpuBytes_);
     }
   }
