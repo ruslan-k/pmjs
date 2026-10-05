@@ -60,17 +60,20 @@ std::optional<ImagePixels> decodeJpegFromMemory(const void* data, std::size_t si
   if (!data || size < 4) return std::nullopt;
   jpeg_decompress_struct decoder{};
   JpegError error{};
+  auto* result = new ImagePixels;
+  std::uint8_t* rowBuffer = nullptr;
   decoder.err = jpeg_std_error(&error.base);
   error.base.error_exit = recoverJpegError;
-  std::uint8_t* raw = nullptr;
   if (setjmp(error.recovery)) {
-    std::free(raw);
+    std::free(rowBuffer);
+    delete result;
     jpeg_destroy_decompress(&decoder);
     return std::nullopt;
   }
   jpeg_create_decompress(&decoder);
   jpeg_mem_src(&decoder, static_cast<const unsigned char*>(data), size);
   if (jpeg_read_header(&decoder, TRUE) != JPEG_HEADER_OK) {
+    delete result;
     jpeg_destroy_decompress(&decoder);
     return std::nullopt;
   }
@@ -78,38 +81,51 @@ std::optional<ImagePixels> decodeJpegFromMemory(const void* data, std::size_t si
       static_cast<int>(decoder.image_width),
       static_cast<int>(decoder.image_height));
   if (!extent) {
+    delete result;
     jpeg_destroy_decompress(&decoder);
     return std::nullopt;
   }
   decoder.out_color_space = JCS_RGB;
   jpeg_start_decompress(&decoder);
   const std::size_t width = static_cast<std::size_t>(extent->width);
-  const std::size_t rgbBytes = extent->rgbBytes;
-  raw = static_cast<std::uint8_t*>(std::malloc(rgbBytes));
-  if (!raw) {
+  result->width = extent->width;
+  result->height = extent->height;
+  try {
+    result->rgba.resize(extent->rgbaBytes);
+  } catch (...) {
+    delete result;
+    jpeg_destroy_decompress(&decoder);
+    throw;
+  }
+  rowBuffer = static_cast<std::uint8_t*>(std::malloc(width * 3U));
+  if (!rowBuffer) {
+    delete result;
     jpeg_destroy_decompress(&decoder);
     return std::nullopt;
   }
   while (decoder.output_scanline < decoder.output_height) {
-    JSAMPROW row = raw + decoder.output_scanline * width * 3U;
+    const std::size_t rowIndex =
+      static_cast<std::size_t>(decoder.output_scanline);
+    JSAMPROW row = rowBuffer;
     jpeg_read_scanlines(&decoder, &row, 1);
+    auto* destination = result->rgba.data() + rowIndex * width * 4U;
+    for (std::size_t column = 0; column < width; ++column) {
+      const std::size_t source = column * 3U;
+      const std::size_t target = column * 4U;
+      destination[target] = rowBuffer[source];
+      destination[target + 1U] = rowBuffer[source + 1U];
+      destination[target + 2U] = rowBuffer[source + 2U];
+      destination[target + 3U] = 255;
+    }
   }
+  std::free(rowBuffer);
+  rowBuffer = nullptr;
   jpeg_finish_decompress(&decoder);
   jpeg_destroy_decompress(&decoder);
 
-  ImagePixels result;
-  result.width = extent->width;
-  result.height = extent->height;
-  result.rgba.resize(extent->rgbaBytes);
-  for (std::size_t source = 0, destination = 0; source < rgbBytes;
-       source += 3U, destination += 4U) {
-    result.rgba[destination] = raw[source];
-    result.rgba[destination + 1U] = raw[source + 1U];
-    result.rgba[destination + 2U] = raw[source + 2U];
-    result.rgba[destination + 3U] = 255;
-  }
-  std::free(raw);
-  return result;
+  ImagePixels output = std::move(*result);
+  delete result;
+  return output;
 }
 
 std::optional<ImagePixels> decodeMemory(const void* data, std::size_t size) {
