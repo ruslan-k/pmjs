@@ -446,12 +446,13 @@ void Renderer::renderScene() {
   // nodes, so the remaining index bits have ample headroom.
   constexpr std::uint32_t inlineFilterBoundaryBit = 0x80000000U;
   static thread_local std::vector<std::uint32_t> inlineFilterCommand;
-  if (inlineFilterCommand.capacity() > 1024 &&
-      commandCount * 4 < inlineFilterCommand.capacity()) {
-    std::vector<std::uint32_t>().swap(inlineFilterCommand);
-  }
-  inlineFilterCommand.assign(commandCount, 0);
-  const auto preservesAlpha = [](const std::array<float, 21>& matrix) {
+  if (sceneHasColorMatrixFilter_) {
+    if (inlineFilterCommand.capacity() > 1024 &&
+        commandCount * 4 < inlineFilterCommand.capacity()) {
+      std::vector<std::uint32_t>().swap(inlineFilterCommand);
+    }
+    inlineFilterCommand.assign(commandCount, 0);
+    const auto preservesAlpha = [](const std::array<float, 21>& matrix) {
     constexpr float epsilon = 0.000001F;
     return std::abs(matrix[15]) <= epsilon &&
            std::abs(matrix[16]) <= epsilon &&
@@ -529,6 +530,7 @@ void Renderer::renderScene() {
     }
     begin = end;
     scannedFilterDepth = 0;
+    }
   }
   std::uint32_t composedToneCommandIndex = 0;
   if (!offscreenRender_) {
@@ -643,7 +645,8 @@ void Renderer::renderScene() {
   for (std::size_t commandIndex = 0;
        commandIndex < frame_.commands.size(); ++commandIndex) {
     const RenderCommand& command = frame_.commands[commandIndex];
-    const auto inlineFilterTag = inlineFilterCommand[commandIndex];
+    const auto inlineFilterTag = sceneHasColorMatrixFilter_
+      ? inlineFilterCommand[commandIndex] : 0U;
     if (inlineFilterTag & inlineFilterBoundaryBit) continue;
     if (command.action != RenderCommand::Action::draw) {
       viewportMapping = {1, 1, 0, 0};
