@@ -176,6 +176,7 @@ class ImageStore {
   static std::size_t residentBytes(const Slot& slot);
   void destroySlot(std::size_t index);
   void clearPremultipliedTexture(Slot& slot);
+  void trimPremultiplyScratch();
   std::deque<Slot> slots_;
   std::vector<std::size_t> freeSlots_;
   std::unordered_map<std::string, ImageHandle> pathCache_;
