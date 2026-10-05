@@ -749,25 +749,52 @@ void Renderer::renderScene() {
       command.maskImage ? maskTransform(command) : nullptr;
     if (command.maskImage && commandMaskTransform == nullptr) continue;
     const auto& t = command.transform;
-    const auto point = [&](float x, float y, std::size_t corner) {
-      float px = t[0] * x + t[2] * y + t[4];
-      float py = t[1] * x + t[3] * y + t[5];
-      if (command.spriteWorldVertices) { px = (*commandSpriteVertices)[corner][0]; py = (*commandSpriteVertices)[corner][1]; }
+    const auto projectPoint = [&](float px, float py) {
       if (command.roundPixels) {
         px = std::floor(px);
         py = std::floor(py);
       }
       px = px * viewportMapping[0] + viewportMapping[2];
       py = py * viewportMapping[1] + viewportMapping[3];
-      return std::array<float, 2>{px / static_cast<float>(width_) * 2.0F - 1.0F,
-                                  1.0F - py / static_cast<float>(height_) * 2.0F};
+      return std::array<float, 2>{
+        px / static_cast<float>(width_) * 2.0F - 1.0F,
+        1.0F - py / static_cast<float>(height_) * 2.0F
+      };
     };
     const float localWidth = command.destination[0];
     const float localHeight = command.destination[1];
-    const auto p0 = point(0, 0, 0);
-    const auto p1 = point(localWidth, 0, 1);
-    const auto p2 = point(localWidth, localHeight, 2);
-    const auto p3 = point(0, localHeight, 3);
+    std::array<float, 2> p0;
+    std::array<float, 2> p1;
+    std::array<float, 2> p2;
+    std::array<float, 2> p3;
+    if (command.spriteWorldVertices) {
+      p0 = projectPoint((*commandSpriteVertices)[0][0],
+                        (*commandSpriteVertices)[0][1]);
+      p1 = projectPoint((*commandSpriteVertices)[1][0],
+                        (*commandSpriteVertices)[1][1]);
+      p2 = projectPoint((*commandSpriteVertices)[2][0],
+                        (*commandSpriteVertices)[2][1]);
+      p3 = projectPoint((*commandSpriteVertices)[3][0],
+                        (*commandSpriteVertices)[3][1]);
+    } else if (t[0] == 1.0F && t[1] == 0.0F &&
+               t[2] == 0.0F && t[3] == 1.0F) {
+      // Most RPG Maker sprites are translated but not rotated/scaled. Avoid
+      // the full affine multiply for all four corners in that common case.
+      p0 = projectPoint(t[4], t[5]);
+      p1 = projectPoint(localWidth + t[4], t[5]);
+      p2 = projectPoint(localWidth + t[4], localHeight + t[5]);
+      p3 = projectPoint(t[4], localHeight + t[5]);
+    } else {
+      const auto point = [&](float x, float y) {
+        return projectPoint(
+          t[0] * x + t[2] * y + t[4],
+          t[1] * x + t[3] * y + t[5]);
+      };
+      p0 = point(0, 0);
+      p1 = point(localWidth, 0);
+      p2 = point(localWidth, localHeight);
+      p3 = point(0, localHeight);
+    }
     if (preparingFilterDepth == 0) {
       const bool left = p0[0] <= -1 && p1[0] <= -1 &&
                         p2[0] <= -1 && p3[0] <= -1;
