@@ -78,7 +78,7 @@ struct RenderCommand {
   bool repeat = false;
   std::uint32_t tileLayer = 0;
   std::array<float, 2> tileAnimation{};
-  std::array<int, 4> clip{};
+  std::uint32_t clipIndex = 0;
   bool clipped = false;
   float blur = 0;
   ImageHandle maskImage = 0;
@@ -114,6 +114,7 @@ struct FramePacket {
   std::vector<std::array<float, 21>> filterParameters;
   std::vector<std::shared_ptr<const CustomFilterPlan>> customFilterPlans;
   std::vector<ColorEffectPayload> colorEffects;
+  std::vector<std::array<int, 4>> clips;
   std::vector<std::array<float, 6>> maskTransforms;
   std::vector<std::array<std::array<float, 2>, 4>> spriteVertices;
 
@@ -124,6 +125,7 @@ struct FramePacket {
     filterParameters.clear();
     customFilterPlans.clear();
     colorEffects.clear();
+    clips.clear();
     maskTransforms.clear();
     spriteVertices.clear();
   }
@@ -389,6 +391,17 @@ class Renderer {
       return nullptr;
     }
     return &frame_.colorEffects[command.colorEffectIndex - 1];
+  }
+  const std::array<int, 4>& commandClip(const RenderCommand& command) const {
+    return frame_.clips[command.clipIndex - 1];
+  }
+  void setCommandClip(RenderCommand& command, const std::array<int, 4>& clip,
+                      bool clipped) {
+    command.clipped = clipped;
+    command.clipIndex = 0;
+    if (!clipped) return;
+    frame_.clips.push_back(clip);
+    command.clipIndex = static_cast<std::uint32_t>(frame_.clips.size());
   }
   const std::array<float, 6>* maskTransform(
       const RenderCommand& command) const {
