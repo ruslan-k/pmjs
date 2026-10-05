@@ -465,6 +465,8 @@ std::optional<ImageInfo> ImageStore::createRgba(int width, int height,
   slot.gpuOnly = pixels == nullptr;
   slot.renderTarget = false;
   slot.premultiplied = premultiplied;
+  slot.premultiplyIdentity = !premultiplied && pixels != nullptr &&
+    !premultiplyRgba(pixels, width, height, width, nullptr);
   slot.live = true;
   ++liveCount_;
   gpuBytes_ += extent->rgbaBytes;
@@ -563,30 +565,45 @@ bool ImageStore::updateRgba(ImageHandle handle, const void* pixels) {
     auto& slot = slots_[(handle & indexMask) - 1U];
     const std::size_t uploadBytes = static_cast<std::size_t>(info->width) *
       static_cast<std::size_t>(info->height) * 4U;
-    if (slot.premultipliedTexture == slot.texture) {
-      if (premultiplyRgba(pixels, info->width, info->height, info->width,
-                          nullptr)) {
-        slot.premultipliedTexture = 0;
-      }
-    } else if (slot.premultipliedTexture) {
-      const std::size_t required = static_cast<std::size_t>(info->width) *
-        static_cast<std::size_t>(info->height) * 4U;
-      if (premultiplyScratch_.capacity() > 4U * 1024U * 1024U &&
-          required * 4U < premultiplyScratch_.capacity()) {
-        std::vector<std::uint8_t>().swap(premultiplyScratch_);
-      }
-      premultiplyRgba(pixels, info->width, info->height, info->width,
-                      &premultiplyScratch_);
-      while (glGetError() != GL_NO_ERROR) {}
-      glBindTexture(GL_TEXTURE_2D, slot.premultipliedTexture);
-      glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, info->width, info->height,
-                      GL_RGBA, GL_UNSIGNED_BYTE, premultiplyScratch_.data());
-      if (glGetError() == GL_NO_ERROR) {
-        textureUploadBytes_ += uploadBytes;
+    if (!slot.premultiplied) {
+      bool identity = false;
+      if (slot.premultipliedTexture &&
+          slot.premultipliedTexture != slot.texture) {
+        const std::size_t required = static_cast<std::size_t>(info->width) *
+          static_cast<std::size_t>(info->height) * 4U;
+        if (premultiplyScratch_.capacity() > 4U * 1024U * 1024U &&
+            required * 4U < premultiplyScratch_.capacity()) {
+          std::vector<std::uint8_t>().swap(premultiplyScratch_);
+        }
+        identity = !premultiplyRgba(
+          pixels, info->width, info->height, info->width,
+          &premultiplyScratch_);
+        if (identity) {
+          clearPremultipliedTexture(slot);
+          slot.premultipliedTexture = slot.texture;
+        } else {
+          while (glGetError() != GL_NO_ERROR) {}
+          glBindTexture(GL_TEXTURE_2D, slot.premultipliedTexture);
+          glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+          glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, info->width, info->height,
+                          GL_RGBA, GL_UNSIGNED_BYTE,
+                          premultiplyScratch_.data());
+          if (glGetError() == GL_NO_ERROR) {
+            textureUploadBytes_ += uploadBytes;
+          } else {
+            clearPremultipliedTexture(slot);
+          }
+        }
       } else {
-        clearPremultipliedTexture(slot);
+        identity = !premultiplyRgba(
+          pixels, info->width, info->height, info->width, nullptr);
+        if (slot.premultipliedTexture == slot.texture && !identity) {
+          slot.premultipliedTexture = 0;
+        } else if (identity) {
+          slot.premultipliedTexture = slot.texture;
+        }
       }
+      slot.premultiplyIdentity = identity;
     }
     ++textureFullUpdates_;
     textureUploadBytes_ += uploadBytes;
@@ -613,31 +630,49 @@ bool ImageStore::updateRgbaRegion(ImageHandle handle, int x, int y, int width,
     auto& slot = slots_[(handle & indexMask) - 1U];
     const std::size_t uploadBytes = static_cast<std::size_t>(width) *
       static_cast<std::size_t>(height) * 4U;
-    if (slot.premultipliedTexture == slot.texture) {
-      if (premultiplyRgba(pixels, width, height, sourceRowPixels, nullptr)) {
-        slot.premultipliedTexture = 0;
-      }
-    } else if (slot.premultipliedTexture) {
-      const std::size_t required = static_cast<std::size_t>(width) *
-        static_cast<std::size_t>(height) * 4U;
-      if (premultiplyScratch_.capacity() > 4U * 1024U * 1024U &&
-          required * 4U < premultiplyScratch_.capacity()) {
-        std::vector<std::uint8_t>().swap(premultiplyScratch_);
-      }
-      premultiplyRgba(pixels, width, height, sourceRowPixels,
-                      &premultiplyScratch_);
-      while (glGetError() != GL_NO_ERROR) {}
-      glBindTexture(GL_TEXTURE_2D, slot.premultipliedTexture);
-      glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-      glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
-      glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, GL_RGBA,
-                      GL_UNSIGNED_BYTE, premultiplyScratch_.data());
-      glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-      if (glGetError() == GL_NO_ERROR) {
-        textureUploadBytes_ += uploadBytes;
+    if (!slot.premultiplied) {
+      const bool wholeImage = x == 0 && y == 0 &&
+        width == info->width && height == info->height;
+      bool regionIdentity = false;
+      if (slot.premultipliedTexture &&
+          slot.premultipliedTexture != slot.texture) {
+        const std::size_t required = static_cast<std::size_t>(width) *
+          static_cast<std::size_t>(height) * 4U;
+        if (premultiplyScratch_.capacity() > 4U * 1024U * 1024U &&
+            required * 4U < premultiplyScratch_.capacity()) {
+          std::vector<std::uint8_t>().swap(premultiplyScratch_);
+        }
+        regionIdentity = !premultiplyRgba(
+          pixels, width, height, sourceRowPixels, &premultiplyScratch_);
+        if (wholeImage && regionIdentity) {
+          clearPremultipliedTexture(slot);
+          slot.premultipliedTexture = slot.texture;
+        } else {
+          while (glGetError() != GL_NO_ERROR) {}
+          glBindTexture(GL_TEXTURE_2D, slot.premultipliedTexture);
+          glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+          glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
+          glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, GL_RGBA,
+                          GL_UNSIGNED_BYTE, premultiplyScratch_.data());
+          glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+          if (glGetError() == GL_NO_ERROR) {
+            textureUploadBytes_ += uploadBytes;
+          } else {
+            clearPremultipliedTexture(slot);
+          }
+        }
       } else {
-        clearPremultipliedTexture(slot);
+        regionIdentity = !premultiplyRgba(
+          pixels, width, height, sourceRowPixels, nullptr);
+        if (slot.premultipliedTexture == slot.texture && !regionIdentity) {
+          slot.premultipliedTexture = 0;
+        } else if (wholeImage && regionIdentity) {
+          slot.premultipliedTexture = slot.texture;
+        }
       }
+      slot.premultiplyIdentity = wholeImage
+        ? regionIdentity
+        : slot.premultiplyIdentity && regionIdentity;
     }
     ++textureRegionUpdates_;
     textureUploadBytes_ += uploadBytes;
@@ -673,6 +708,9 @@ std::optional<ImageInfo> ImageStore::lookupPremultiplied(ImageHandle handle) {
   auto& slot = slots_[(handle & indexMask) - 1U];
   // Render targets are already framebuffer pixels, not decoded straight images.
   if (slot.gpuOnly) return info;
+  if (slot.premultiplyIdentity) {
+    slot.premultipliedTexture = slot.texture;
+  }
   if (!slot.premultipliedTexture) {
     auto pixels = readTexturePixels(*info);
     if (!pixels) return std::nullopt;
@@ -686,6 +724,7 @@ std::optional<ImageInfo> ImageStore::lookupPremultiplied(ImageHandle handle) {
         value = converted;
       }
     }
+    slot.premultiplyIdentity = !changed;
     if (!changed) {
       slot.premultipliedTexture = slot.texture;
     } else {
