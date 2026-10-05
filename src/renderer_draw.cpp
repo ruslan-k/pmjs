@@ -89,14 +89,10 @@ void Renderer::computeFilterContentBounds() {
     std::array<std::array<float, 4>, maxRegions> regions{};
     std::size_t regionCount = 0;
   };
-  // Filter depth is bounded by the scene-packet contract. Retain only the
-  // outer stack allocation between frames; each accumulator keeps its tiny
-  // region set inline.
-  static thread_local std::vector<Accumulator> stack;
-  stack.clear();
-  if (stack.capacity() < scene_packet::maxFilterDepth) {
-    stack.reserve(scene_packet::maxFilterDepth);
-  }
+  // Filter depth is bounded by the scene-packet contract, so keep the whole
+  // stack inline and avoid vector state/allocation entirely.
+  std::array<Accumulator, scene_packet::maxFilterDepth> stack{};
+  std::size_t stackDepth = 0;
   const auto overlapsOrTouches = [](const auto& a, const auto& b) {
     return a[0] <= b[2] && b[0] <= a[2] &&
            a[1] <= b[3] && b[1] <= a[3];
@@ -184,16 +180,15 @@ void Renderer::computeFilterContentBounds() {
   for (std::size_t index = 0; index < frame_.commands.size(); ++index) {
     const RenderCommand& command = frame_.commands[index];
     if (command.action == RenderCommand::Action::filterBegin) {
+      if (stackDepth >= scene_packet::maxFilterDepth) continue;
       Accumulator level;
       level.beginIndex = index;
-      if (stack.size() >= scene_packet::maxFilterDepth) level.unbounded = true;
-      stack.push_back(level);
+      stack[stackDepth++] = level;
       continue;
     }
     if (command.action == RenderCommand::Action::filterEnd) {
-      if (stack.empty()) continue;
-      Accumulator level = std::move(stack.back());
-      stack.pop_back();
+      if (stackDepth == 0) continue;
+      Accumulator level = std::move(stack[--stackDepth]);
       const RenderCommand& begun = frame_.commands[level.beginIndex];
       FilterContentBounds& out = filterBounds_[level.beginIndex];
       float ex0 = 0.0F;
@@ -275,8 +270,8 @@ void Renderer::computeFilterContentBounds() {
           }
         }
       }
-      if (!stack.empty()) {
-        Accumulator& parent = stack.back();
+      if (stackDepth != 0) {
+        Accumulator& parent = stack[stackDepth - 1];
         if (!effective) {
           parent.unbounded = true;
         } else if (ex0 < ex1 && ey0 < ey1) {
@@ -285,8 +280,8 @@ void Renderer::computeFilterContentBounds() {
       }
       continue;
     }
-    if (stack.empty()) continue;
-    Accumulator& top = stack.back();
+    if (stackDepth == 0) continue;
+    Accumulator& top = stack[stackDepth - 1];
     if (top.unbounded) continue;
     if (command.colorMatrixIndex != 0) {
       top.unbounded = true;
@@ -332,8 +327,8 @@ void Renderer::computeFilterContentBounds() {
           std::max(std::max(x0, x1), std::max(x2, x3)),
           std::max(std::max(y0, y1), std::max(y2, y3)));
   }
-  for (const auto& level : stack) {
-    filterBounds_[level.beginIndex].bounded = false;
+  for (std::size_t index = 0; index < stackDepth; ++index) {
+    filterBounds_[stack[index].beginIndex].bounded = false;
   }
 }
 
