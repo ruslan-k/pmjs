@@ -439,18 +439,16 @@ void Renderer::renderScene() {
   // frame. Keep one thread-local backing store and clear values in place.
   // Trim only after a large scene collapses so peak maps do not pin memory.
   const std::size_t commandCount = frame_.commands.size();
-  static thread_local std::vector<bool> inlineFilterBoundary;
-  // Store the filter command as index+1 instead of an 8-byte pointer. Clip
-  // intersection is needed only for commands that actually inline a matrix, so
-  // compute it while preparing that draw instead of retaining another 16-byte
-  // clip plus flag for every command in the frame.
+  // Store the filter command as index+1 instead of an 8-byte pointer. The high
+  // bit marks filter begin/end commands that disappear after inlining, avoiding
+  // a second per-command boundary bitset. Scene packets are capped at 65536
+  // nodes, so the remaining index bits have ample headroom.
+  constexpr std::uint32_t inlineFilterBoundaryBit = 0x80000000U;
   static thread_local std::vector<std::uint32_t> inlineFilterCommand;
   if (inlineFilterCommand.capacity() > 1024 &&
       commandCount * 4 < inlineFilterCommand.capacity()) {
-    std::vector<bool>().swap(inlineFilterBoundary);
     std::vector<std::uint32_t>().swap(inlineFilterCommand);
   }
-  inlineFilterBoundary.assign(commandCount, false);
   inlineFilterCommand.assign(commandCount, 0);
   const auto preservesAlpha = [](const std::array<float, 21>& matrix) {
     constexpr float epsilon = 0.000001F;
@@ -523,8 +521,8 @@ void Renderer::renderScene() {
          !distributesOverSourceOver(filterParams(filter)))) {
       continue;
     }
-    inlineFilterBoundary[begin] = true;
-    inlineFilterBoundary[end] = true;
+    inlineFilterCommand[begin] = inlineFilterBoundaryBit;
+    inlineFilterCommand[end] = inlineFilterBoundaryBit;
     for (const std::size_t drawIndex : drawIndices) {
       inlineFilterCommand[drawIndex] = static_cast<std::uint32_t>(begin + 1);
     }
@@ -611,7 +609,8 @@ void Renderer::renderScene() {
   for (std::size_t commandIndex = 0;
        commandIndex < frame_.commands.size(); ++commandIndex) {
     const RenderCommand& command = frame_.commands[commandIndex];
-    if (inlineFilterBoundary[commandIndex]) continue;
+    const auto inlineFilterTag = inlineFilterCommand[commandIndex];
+    if (inlineFilterTag & inlineFilterBoundaryBit) continue;
     if (command.action != RenderCommand::Action::draw) {
       viewportMapping = {1, 1, 0, 0};
       if (command.action == RenderCommand::Action::filterBegin) preparingFilters[preparingFilterDepth] = &command;
@@ -790,7 +789,7 @@ void Renderer::renderScene() {
     writeVertex(1, vertex1, uv1);
     writeVertex(2, vertex2, uv2);
     writeVertex(3, vertex3, uv3);
-    const auto inlineFilterIndex = inlineFilterCommand[commandIndex];
+    const auto inlineFilterIndex = inlineFilterTag;
     const RenderCommand* inlineFilter = inlineFilterIndex == 0 ? nullptr :
       &frame_.commands[inlineFilterIndex - 1U];
     bool operationClipped = command.clipped;
