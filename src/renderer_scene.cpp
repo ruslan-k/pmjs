@@ -153,7 +153,10 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
         parent.world[1] * local[4] + parent.world[3] * local[5] + parent.world[5],
       };
     }
-    states.emplace_back(world, parent.alpha * values[valueOffset + 6],
+    const float worldAlpha = parentIndex == noParent
+      ? values[valueOffset + 6]
+      : parent.alpha * values[valueOffset + 6];
+    states.emplace_back(world, worldAlpha,
       parent.clipIndex, parent.maskImage, parent.maskTransformIndex);
     SceneState& state = states.back();
     if (flags & NodeFlags::hasAlphaMask) {
