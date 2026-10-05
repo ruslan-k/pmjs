@@ -122,21 +122,50 @@ int main() {
     200, 100, 50, 128, 200, 100, 50, 128,
     200, 100, 50, 128, 200, 100, 50, 128
   };
-  if (!images.updateRgba(image->handle, replacement.data()) || images.gpuBytes() != 16) {
-    throw std::runtime_error("image mutation did not discard its rendering view");
+  if (!images.updateRgba(image->handle, replacement.data()) || images.gpuBytes() != 32) {
+    throw std::runtime_error("image mutation discarded its reusable rendering view");
   }
   const auto changed = images.lookupPremultiplied(image->handle);
-  if (!changed) throw std::runtime_error("mutated image view allocation failed");
+  if (!changed || changed->texture != view->texture) {
+    throw std::runtime_error("mutated image did not reuse its rendering view");
+  }
   checkView(*changed, {100, 50, 25, 128, 100, 50, 25, 128,
                        100, 50, 25, 128, 100, 50, 25, 128});
   if (!images.updateRgbaRegion(image->handle, 0, 0, 2, 2, rgba.data(), 2) ||
-      images.gpuBytes() != 16) {
-    throw std::runtime_error("region mutation did not discard its rendering view");
+      images.gpuBytes() != 32) {
+    throw std::runtime_error("region mutation discarded its reusable rendering view");
   }
   const auto regionChanged = images.lookupPremultiplied(image->handle);
-  if (!regionChanged) throw std::runtime_error("region image view allocation failed");
+  if (!regionChanged || regionChanged->texture != view->texture) {
+    throw std::runtime_error("region image update did not reuse its rendering view");
+  }
   checkView(*regionChanged, {255, 0, 0, 255, 0, 128, 0, 128,
                             0, 0, 64, 64, 0, 0, 0, 0});
+
+  const std::array<std::uint8_t, 16> opaqueReplacement = {
+    10, 20, 30, 255, 40, 50, 60, 255,
+    70, 80, 90, 255, 100, 110, 120, 255
+  };
+  if (!images.updateRgba(image->handle, opaqueReplacement.data()) ||
+      images.gpuBytes() != 16) {
+    throw std::runtime_error("identity update did not collapse rendering view storage");
+  }
+  const auto identityView = images.lookupPremultiplied(image->handle);
+  if (!identityView || identityView->texture != image->texture ||
+      images.gpuBytes() != 16) {
+    throw std::runtime_error("identity rendering view did not alias original texture");
+  }
+  if (!images.updateRgba(image->handle, replacement.data()) ||
+      images.gpuBytes() != 16) {
+    throw std::runtime_error("non-identity mutation allocated rendering view eagerly");
+  }
+  const auto recreated = images.lookupPremultiplied(image->handle);
+  if (!recreated || recreated->texture == image->texture ||
+      images.gpuBytes() != 32) {
+    throw std::runtime_error("non-identity rendering view was not recreated lazily");
+  }
+  checkView(*recreated, {100, 50, 25, 128, 100, 50, 25, 128,
+                         100, 50, 25, 128, 100, 50, 25, 128});
   images.setWarmBudgetBytes(0);
   // The earlier release leaves the file image in the warm cache.
   images.update();
