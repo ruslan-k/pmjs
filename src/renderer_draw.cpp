@@ -744,7 +744,8 @@ void Renderer::renderScene() {
     const bool texturePremultiplied = command.premultipliedSpriteTexture || (info && info->premultiplied);
     const auto* commandSpriteVertices = spriteVertices(command);
     if (command.spriteWorldVertices && commandSpriteVertices == nullptr) continue;
-    const auto* commandMaskTransform = maskTransform(command);
+    const auto* commandMaskTransform =
+      command.maskImage ? maskTransform(command) : nullptr;
     if (command.maskImage && commandMaskTransform == nullptr) continue;
     const auto& t = command.transform;
     const auto point = [&](float x, float y, std::size_t corner) {
@@ -866,14 +867,17 @@ void Renderer::renderScene() {
       }
       operationClipped = true;
     }
-    const auto* commandColorEffect = colorEffect(command);
+    const auto* commandColorEffect =
+      command.appliesSpriteColor ? colorEffect(command) : nullptr;
     if (command.appliesSpriteColor && commandColorEffect == nullptr) continue;
     const RenderCommand* previousCommand =
       operations.empty() ? nullptr : resolveOperationCommand(operations.back());
     const auto* previousMaskTransform =
-      previousCommand ? maskTransform(*previousCommand) : nullptr;
+      command.maskImage && previousCommand
+        ? maskTransform(*previousCommand) : nullptr;
     const auto* previousColorEffect =
-      previousCommand ? colorEffect(*previousCommand) : nullptr;
+      command.appliesSpriteColor && previousCommand
+        ? colorEffect(*previousCommand) : nullptr;
     if (operations.empty() || operations.back().tileLayer != 0 ||
         operations.back().texture != texture ||
         operations.back().blendMode != command.blendMode ||
