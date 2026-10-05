@@ -36,6 +36,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   const std::size_t originalCustomFilterPlanCount =
     frame_.customFilterPlans.size();
   const std::size_t originalColorEffectCount = frame_.colorEffects.size();
+  const std::size_t originalClipCount = frame_.clips.size();
   const std::size_t originalMaskTransformCount = frame_.maskTransforms.size();
   const std::size_t originalSpriteVerticesCount = frame_.spriteVertices.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
@@ -167,8 +168,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     if (filterMarker) {
       if (maskImage != 0 || flags & ~NodeFlags::hasClipRectangle) return false;
       RenderCommand command;
-      command.clip = state.clip;
-      command.clipped = state.clipped;
+      setCommandClip(command, state.clip, state.clipped);
       if (kind == static_cast<std::uint32_t>(NodeKind::filterBegin)) {
         if (filterDepth >= maxFilterDepth ||
             blendValue > static_cast<std::uint32_t>(FilterKind::custom)) {
@@ -370,8 +370,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       }
       RenderCommand command{};
       command.primitive = RenderCommand::Primitive::effect;
-      command.clip = state.clip;
-      command.clipped = state.clipped;
+      setCommandClip(command, state.clip, state.clipped);
       frame_.effects.push_back(effect);
       command.effectIndex = static_cast<std::uint32_t>(frame_.effects.size());
       try {
@@ -398,8 +397,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
                 static_cast<float>(queueHeight_),
                 {red, green, blue, std::floor(state.alpha * 255.0F) / 255.0F});
       frame_.commands.back().primitive = RenderCommand::Primitive::screenFill;
-      frame_.commands.back().clip = state.clip;
-      frame_.commands.back().clipped = state.clipped;
+      setCommandClip(frame_.commands.back(), state.clip, state.clipped);
       continue;
     }
     if (kind == static_cast<std::uint32_t>(NodeKind::toneAdjust)) {
@@ -428,8 +426,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       if (!queueTileLayer(resource, state.world,
             animation,
             state.alpha, tint, blendMode)) return false;
-      frame_.commands.back().clip = state.clip;
-      frame_.commands.back().clipped = state.clipped;
+      setCommandClip(frame_.commands.back(), state.clip, state.clipped);
       if (state.maskImage && !images_.beginUse(state.maskImage)) return false;
       frame_.commands.back().maskImage = state.maskImage;
       if (state.maskImage) {
@@ -509,8 +506,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     } else {
       return false;
     }
-    frame_.commands.back().clip = state.clip;
-    frame_.commands.back().clipped = state.clipped;
+    setCommandClip(frame_.commands.back(), state.clip, state.clipped);
     frame_.commands.back().blur =
       flags & NodeFlags::hasBlurFilter ? values[valueOffset + 21] : 0.0F;
     frame_.commands.back().nearest = flags & NodeFlags::nearestSampling;
@@ -577,6 +573,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     frame_.filterParameters.resize(originalFilterParameterCount);
     frame_.customFilterPlans.resize(originalCustomFilterPlanCount);
     frame_.colorEffects.resize(originalColorEffectCount);
+    frame_.clips.resize(originalClipCount);
     frame_.maskTransforms.resize(originalMaskTransformCount);
     frame_.spriteVertices.resize(originalSpriteVerticesCount);
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
