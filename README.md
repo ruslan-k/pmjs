@@ -75,6 +75,7 @@ export PMJS_RESOURCE_PROFILE=low
 # Defaults under the low profile:
 #   image warm cache: 2 MiB
 #   transient image CPU readbacks: 30 frames (default profile: 60)
+#   premultiply scratch retention: 1 MiB (default profile: unbounded/eager reuse)
 #   glyph cache:      4 MiB / 2048 entries
 #   prepared audio:   4 MiB cache, 1 MiB per asset, 128 KiB sync-decode ceiling
 #   stream buffer:     16000 frames (~333 ms at 48 kHz; default profile: 24000)
@@ -82,6 +83,7 @@ export PMJS_RESOURCE_PROFILE=low
 # Optional per-game overrides:
 export PMJS_IMAGE_WARM_CACHE_BYTES=2097152
 export PMJS_IMAGE_CPU_PIXEL_FRAMES=30
+export PMJS_IMAGE_PREMULTIPLY_SCRATCH_RETAIN_BYTES=1048576
 export PMJS_GLYPH_CACHE_MAX_BYTES=4194304
 export PMJS_GLYPH_CACHE_MAX_ENTRIES=2048
 export PMJS_AUDIO_CACHE_BYTES=4194304
