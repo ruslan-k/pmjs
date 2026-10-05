@@ -163,6 +163,40 @@ std::optional<ImagePixels> readTexturePixels(const ImageInfo& image) {
   }
   return complete ? std::optional<ImagePixels>(std::move(pixels)) : std::nullopt;
 }
+
+bool premultiplyRgba(const void* sourcePixels, int width, int height,
+                     int sourceRowPixels, std::vector<std::uint8_t>* output) {
+  if (!sourcePixels || width <= 0 || height <= 0 || sourceRowPixels < width) {
+    return false;
+  }
+  const auto* source = static_cast<const std::uint8_t*>(sourcePixels);
+  if (output) {
+    output->resize(static_cast<std::size_t>(width) * height * 4U);
+  }
+  bool changed = false;
+  for (int row = 0; row < height; ++row) {
+    const auto* sourceRow =
+      source + static_cast<std::size_t>(row) * sourceRowPixels * 4U;
+    auto* destinationRow = output
+      ? output->data() + static_cast<std::size_t>(row) * width * 4U
+      : nullptr;
+    for (int column = 0; column < width; ++column) {
+      const auto* sourcePixel = sourceRow + static_cast<std::size_t>(column) * 4U;
+      auto* destinationPixel = destinationRow
+        ? destinationRow + static_cast<std::size_t>(column) * 4U
+        : nullptr;
+      const unsigned alpha = sourcePixel[3];
+      for (std::size_t channel = 0; channel < 3; ++channel) {
+        const auto converted = static_cast<std::uint8_t>(
+          (sourcePixel[channel] * alpha + 127U) / 255U);
+        changed |= converted != sourcePixel[channel];
+        if (destinationPixel) destinationPixel[channel] = converted;
+      }
+      if (destinationPixel) destinationPixel[3] = sourcePixel[3];
+    }
+  }
+  return changed;
+}
 }
 
 ImageFileSource::~ImageFileSource() {
@@ -526,10 +560,31 @@ bool ImageStore::updateRgba(ImageHandle handle, const void* pixels) {
                   GL_RGBA, GL_UNSIGNED_BYTE, pixels);
   const bool ok = glGetError() == GL_NO_ERROR;
   if (ok) {
-    clearPremultipliedTexture(slots_[(handle & indexMask) - 1U]);
+    auto& slot = slots_[(handle & indexMask) - 1U];
+    const std::size_t uploadBytes = static_cast<std::size_t>(info->width) *
+      static_cast<std::size_t>(info->height) * 4U;
+    if (slot.premultipliedTexture == slot.texture) {
+      if (premultiplyRgba(pixels, info->width, info->height, info->width,
+                          nullptr)) {
+        slot.premultipliedTexture = 0;
+      }
+    } else if (slot.premultipliedTexture) {
+      std::vector<std::uint8_t> premultiplied;
+      premultiplyRgba(pixels, info->width, info->height, info->width,
+                      &premultiplied);
+      while (glGetError() != GL_NO_ERROR) {}
+      glBindTexture(GL_TEXTURE_2D, slot.premultipliedTexture);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, info->width, info->height,
+                      GL_RGBA, GL_UNSIGNED_BYTE, premultiplied.data());
+      if (glGetError() == GL_NO_ERROR) {
+        textureUploadBytes_ += uploadBytes;
+      } else {
+        clearPremultipliedTexture(slot);
+      }
+    }
     ++textureFullUpdates_;
-    textureUploadBytes_ += static_cast<std::uint64_t>(info->width) *
-        static_cast<std::uint64_t>(info->height) * 4U;
+    textureUploadBytes_ += uploadBytes;
   }
   return ok;
 }
@@ -550,10 +605,31 @@ bool ImageStore::updateRgbaRegion(ImageHandle handle, int x, int y, int width,
   glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
   const bool ok = glGetError() == GL_NO_ERROR;
   if (ok) {
-    clearPremultipliedTexture(slots_[(handle & indexMask) - 1U]);
+    auto& slot = slots_[(handle & indexMask) - 1U];
+    const std::size_t uploadBytes = static_cast<std::size_t>(width) *
+      static_cast<std::size_t>(height) * 4U;
+    if (slot.premultipliedTexture == slot.texture) {
+      if (premultiplyRgba(pixels, width, height, sourceRowPixels, nullptr)) {
+        slot.premultipliedTexture = 0;
+      }
+    } else if (slot.premultipliedTexture) {
+      std::vector<std::uint8_t> premultiplied;
+      premultiplyRgba(pixels, width, height, sourceRowPixels, &premultiplied);
+      while (glGetError() != GL_NO_ERROR) {}
+      glBindTexture(GL_TEXTURE_2D, slot.premultipliedTexture);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+      glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, GL_RGBA,
+                      GL_UNSIGNED_BYTE, premultiplied.data());
+      glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+      if (glGetError() == GL_NO_ERROR) {
+        textureUploadBytes_ += uploadBytes;
+      } else {
+        clearPremultipliedTexture(slot);
+      }
+    }
     ++textureRegionUpdates_;
-    textureUploadBytes_ += static_cast<std::uint64_t>(width) *
-        static_cast<std::uint64_t>(height) * 4U;
+    textureUploadBytes_ += uploadBytes;
   }
   return ok;
 }
