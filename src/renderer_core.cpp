@@ -255,6 +255,7 @@ void Renderer::beginFrame() {
   sceneSubmittedThisFrame_ = false;
   sceneHasEffect_ = false;
   sceneHasCustomFilter_ = false;
+  sceneHasColorMatrixFilter_ = false;
 
   const std::size_t previousCommandCount = frame_.commands.size();
   const std::size_t previousEffectCount = frame_.effects.size();
