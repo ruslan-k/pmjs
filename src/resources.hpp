@@ -6,6 +6,7 @@
 #include <deque>
 #include <filesystem>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -128,6 +129,9 @@ class ImageStore {
   std::uint16_t transientCpuPixelFrames() const {
     return transientCpuPixelFrames_;
   }
+  void setPremultiplyScratchRetainBytes(std::size_t bytes) {
+    premultiplyScratchRetainBytes_ = bytes;
+  }
   std::size_t warmBytes() const;
   std::size_t warmCount() const;
   std::size_t pinnedBytes() const;
@@ -192,6 +196,8 @@ class ImageStore {
   std::uint64_t textureRegionUpdates_ = 0;
   std::uint64_t textureUploadBytes_ = 0;
   std::vector<std::uint8_t> premultiplyScratch_;
+  std::size_t premultiplyScratchRetainBytes_ =
+    std::numeric_limits<std::size_t>::max();
   ImageHandle fallbackHandle_ = 0;
   std::uint64_t fallbackUses_ = 0;
 };
