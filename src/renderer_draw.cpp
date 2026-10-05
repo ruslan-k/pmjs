@@ -1019,6 +1019,26 @@ void Renderer::renderScene() {
         static_cast<std::uintptr_t>(operation.first) *
         sizeof(std::uint32_t)));
   };
+  const auto setBoundTextureFiltering = [&](std::uint32_t texture,
+                                             bool nearest) {
+    const auto found = textureNearestState_.find(texture);
+    if (found != textureNearestState_.end() && found->second == nearest) return;
+    textureNearestState_[texture] = nearest;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    nearest ? GL_NEAREST : GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                    nearest ? GL_NEAREST : GL_LINEAR);
+  };
+  const auto setBoundTextureRepeat = [&](std::uint32_t texture,
+                                         bool repeat) {
+    const auto found = textureRepeatState_.find(texture);
+    if (found != textureRepeatState_.end() && found->second == repeat) return;
+    textureRepeatState_[texture] = repeat;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+                    repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+                    repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+  };
 
   BlendMode activeBlend = BlendMode::normal;
   std::uint32_t activeProgram = 0;
@@ -1178,9 +1198,7 @@ void Renderer::renderScene() {
       glBindVertexArray(vertexArray_);
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, groupTargets_[filterDepth].texture);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-      textureNearestState_[groupTargets_[filterDepth].texture] = false;
+      setBoundTextureFiltering(groupTargets_[filterDepth].texture, false);
       glUniform2f(textureSizeUniform_,
                   static_cast<float>(width_) / resolution,
                   static_cast<float>(height_) / resolution);
@@ -1202,8 +1220,7 @@ void Renderer::renderScene() {
         glBindTexture(GL_TEXTURE_2D, filterTarget_.texture);
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, width_, height_);
         if (diagnostics_) ++stats_.framebufferCopies;
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        setBoundTextureFiltering(filterTarget_.texture, false);
         glUniform1i(bloomImageUniform_, 3);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, groupTargets_[filterDepth].texture);
@@ -1289,12 +1306,8 @@ void Renderer::renderScene() {
         if (!displacement) continue;
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, displacement->texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        textureNearestState_[displacement->texture] = false;
-        textureRepeatState_[displacement->texture] = true;
+        setBoundTextureFiltering(displacement->texture, false);
+        setBoundTextureRepeat(displacement->texture, true);
         glUniform1i(displacementImageUniform_, 2);
         glUniform4fv(displacementBoundsUniform_, 1,
                      params.data());
@@ -1553,9 +1566,7 @@ void Renderer::renderScene() {
         glBindFramebuffer(GL_FRAMEBUFFER, filterDepth == 0 ? rootFramebuffer :
                           groupTargets_[filterDepth - 1].framebuffer);
         glBindTexture(GL_TEXTURE_2D, input.texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        textureNearestState_[input.texture] = false;
+        setBoundTextureFiltering(input.texture, false);
         glUseProgram(custom.program);
         glUniform1i(glGetUniformLocation(custom.program, "pmjsTargetYDown"), targetYDown);
         glUniform1i(glGetUniformLocation(custom.program, "uSampler"), 0);
@@ -1604,9 +1615,7 @@ void Renderer::renderScene() {
       glBindFramebuffer(GL_FRAMEBUFFER, filterDepth == 0 ? rootFramebuffer :
                         groupTargets_[filterDepth - 1].framebuffer);
       glBindTexture(GL_TEXTURE_2D, compositeTexture);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-      textureNearestState_[compositeTexture] = false;
+      setBoundTextureFiltering(compositeTexture, false);
       if (kind == scene_packet::FilterKind::blur) {
         glUniform2f(blurDirectionUniform_, 0, 1);
       }
@@ -1872,15 +1881,7 @@ void Renderer::renderScene() {
                     static_cast<float>(batch.textureWidth),
                     static_cast<float>(batch.textureHeight));
         glBindTexture(GL_TEXTURE_2D, batch.texture);
-        const auto nearest = textureNearestState_.find(batch.texture);
-        if (nearest == textureNearestState_.end() ||
-            nearest->second != operation.nearest) {
-          textureNearestState_[batch.texture] = operation.nearest;
-          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                          operation.nearest ? GL_NEAREST : GL_LINEAR);
-          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-                          operation.nearest ? GL_NEAREST : GL_LINEAR);
-        }
+        setBoundTextureFiltering(batch.texture, operation.nearest);
         glDrawArrays(GL_TRIANGLES, batch.first, batch.count);
         if (diagnostics_) {
           ++stats_.drawCalls;
@@ -1903,15 +1904,7 @@ void Renderer::renderScene() {
       activeProgram = spriteProgram;
     }
     glBindTexture(GL_TEXTURE_2D, operation.texture);
-    const auto nearest = textureNearestState_.find(operation.texture);
-    if (nearest == textureNearestState_.end() ||
-        nearest->second != operation.nearest) {
-      textureNearestState_[operation.texture] = operation.nearest;
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                      operation.nearest ? GL_NEAREST : GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-                      operation.nearest ? GL_NEAREST : GL_LINEAR);
-    }
+    setBoundTextureFiltering(operation.texture, operation.nearest);
     // Pixi render targets project downward in GL; readback reflection cannot
     // reproduce sampling and edge coverage at exact pixel-center boundaries.
     // Projection depends only on target orientation and logical dimensions, so
@@ -2037,14 +2030,7 @@ void Renderer::renderScene() {
       glUniform1i(spriteEffectMaskEnabledUniform_, 0);
     }
     const bool gpuRepeat = operation.repeat && !operation.clampedTilingSampling;
-    const auto repeat = textureRepeatState_.find(operation.texture);
-    if (repeat == textureRepeatState_.end() || repeat->second != gpuRepeat) {
-      textureRepeatState_[operation.texture] = gpuRepeat;
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
-                      gpuRepeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
-                      gpuRepeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-    }
+    setBoundTextureRepeat(operation.texture, gpuRepeat);
     drawQuadOperation(operation);
     if (diagnostics_) {
       ++stats_.drawCalls;
