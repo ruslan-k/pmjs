@@ -666,6 +666,26 @@ struct CanvasStore::FontState {
 
 CanvasStore::CanvasStore(ImageStore& images)
     : images_(images), fonts_(std::make_unique<FontState>()) {
+  if (const char* profile = std::getenv("PMJS_RESOURCE_PROFILE");
+      profile && std::string(profile) == "low") {
+    uploadScratchRetainBytes_ = 2U * 1024U * 1024U;
+  }
+  if (const char* raw =
+        std::getenv("PMJS_CANVAS_UPLOAD_SCRATCH_RETAIN_BYTES")) {
+    try {
+      std::size_t parsed = 0;
+      const auto configured = std::stoull(raw, &parsed);
+      if (parsed == 0 || raw[parsed] != '\0' ||
+          configured > std::numeric_limits<std::size_t>::max()) {
+        throw std::out_of_range(
+          "PMJS_CANVAS_UPLOAD_SCRATCH_RETAIN_BYTES");
+      }
+      uploadScratchRetainBytes_ = static_cast<std::size_t>(configured);
+    } catch (...) {
+      throw std::runtime_error(
+        "PMJS_CANVAS_UPLOAD_SCRATCH_RETAIN_BYTES must be a non-negative integer");
+    }
+  }
   if (textBackend_.skia()) fonts_->telemetryEnabled = false;
 }
 
@@ -1609,6 +1629,9 @@ bool CanvasStore::uploadSurface(Surface& target) {
   }
   surface.dirtyX0 = surface.dirtyY0 = 0;
   surface.dirtyX1 = surface.dirtyY1 = 0;
+  if (uploadScratch_.capacity() > uploadScratchRetainBytes_) {
+    std::vector<std::uint8_t>().swap(uploadScratch_);
+  }
   return true;
 }
 
