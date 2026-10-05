@@ -790,6 +790,15 @@ void Renderer::renderScene() {
     // introduce the atlas-wide uint16 UV rounding of an authored spritesheet.
     if (command.pixiSpritePacking && !command.standaloneBitmapRegion) {
       const auto packUv = [](double coordinate) {
+        // Normal authored spritesheet coordinates are in [0, 1]. In that
+        // range ToUint16 cannot wrap, so avoid fmod/trunc in the per-sprite
+        // hot path. Keep the exact wrapping fallback for malformed/custom UVs.
+        if (coordinate >= 0.0 && coordinate <= 1.0) {
+          const auto packed = static_cast<std::uint16_t>(
+            coordinate * 65535.0);
+          return static_cast<float>(
+            static_cast<double>(packed) / 65535.0);
+        }
         // JS ToUint16 truncates and wraps; an out-of-range C++ cast is undefined.
         double packed = std::fmod(std::trunc(coordinate * 65535.0), 65536.0);
         if (packed < 0) packed += 65536.0;
