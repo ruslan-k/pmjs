@@ -28,9 +28,23 @@ napi_value initialize(napi_env env, napi_callback_info info) try {
   const auto assetRoot = hasProperty(env, options, "assetRoot")
     ? asString(env, property(env, options, "assetRoot")) : std::string();
   std::size_t imageWarmCacheBytes = pmjs::ImageStore::defaultWarmBudgetBytes;
+  std::uint16_t transientCpuPixelFrames = 60;
   if (const char* profile = std::getenv("PMJS_RESOURCE_PROFILE");
       profile && std::string(profile) == "low") {
     imageWarmCacheBytes = 2U * 1024U * 1024U;
+    transientCpuPixelFrames = 30;
+  }
+  if (const char* rawFrames = std::getenv("PMJS_IMAGE_CPU_PIXEL_FRAMES")) {
+    try {
+      const auto configured = std::stoull(rawFrames);
+      if (configured > std::numeric_limits<std::uint16_t>::max()) {
+        throw std::out_of_range("PMJS_IMAGE_CPU_PIXEL_FRAMES");
+      }
+      transientCpuPixelFrames = static_cast<std::uint16_t>(configured);
+    } catch (...) {
+      throw std::runtime_error(
+        "PMJS_IMAGE_CPU_PIXEL_FRAMES must be an integer between 0 and 65535");
+    }
   }
   if (hasProperty(env, options, "imageWarmCacheBytes")) {
     constexpr double maxSafeInteger = 9007199254740991.0;
@@ -50,7 +64,7 @@ napi_value initialize(napi_env env, napi_callback_info info) try {
   if (title.empty()) throw std::runtime_error("windowTitle must not be empty");
   state = std::make_unique<State>(
     asString(env, property(env, options, "gameRoot")), width, height,
-    assetRoot, title, imageWarmCacheBytes);
+    assetRoot, title, imageWarmCacheBytes, transientCpuPixelFrames);
   return undefined(env);
 } catch (const std::exception& error) {
   napi_throw_error(env, nullptr, error.what());
