@@ -390,7 +390,7 @@ bool Renderer::queueImage(ImageHandle image,
     static_cast<float>(tint & 0xffU) / 255.0F,
     std::clamp(alpha, 0.0F, 1.0F),
   };
-  if (!images_.beginUse(image)) return false;
+  if (!images_.beginUse(*knownInfo)) return false;
   try {
     frame_.commands.push_back(
         {image, transform, source, {source[2], source[3]}, color, blendMode, false});
@@ -431,7 +431,7 @@ bool Renderer::queueTiled(ImageHandle image,
     static_cast<float>(tint & 0xffU) / 255.0F,
     std::clamp(alpha, 0.0F, 1.0F),
   };
-  if (!images_.beginUse(image)) return false;
+  if (!images_.beginUse(*knownInfo)) return false;
   try {
     frame_.commands.push_back(
         {image, transform, boundedSource, destination, color, blendMode, true});
