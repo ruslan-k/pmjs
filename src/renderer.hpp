@@ -238,6 +238,13 @@ class Renderer {
     std::uint32_t program;
     std::string source;
     bool pixiVertex = false;
+    int targetYDown = -1;
+    int sampler = -1;
+    int screenSize = -1;
+    int filterFrame = -1;
+    int filterTextureSize = -1;
+    int filterArea = -1;
+    int filterClamp = -1;
     std::vector<FilterUniform> uniforms;
   };
   std::uint32_t createFilterProgram(const std::string& fragmentSource,
