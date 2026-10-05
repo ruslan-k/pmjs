@@ -42,8 +42,10 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
   const std::size_t originalSpriteVerticesCount = frame_.spriteVertices.size();
   const bool originalSceneSubmitted = sceneSubmittedThisFrame_;
   const bool originalSceneHasEffect = sceneHasEffect_;
+  const bool originalSceneHasFilter = sceneHasFilter_;
   const bool originalSceneHasCustomFilter = sceneHasCustomFilter_;
   const bool originalSceneHasColorMatrixFilter = sceneHasColorMatrixFilter_;
+  const bool originalSceneHasToneAdjust = sceneHasToneAdjust_;
   // A scene packet can emit at most one command per node. Reserve once at the
   // packet boundary instead of repeatedly growing the retained command vector.
   if (frame_.commands.capacity() < originalCommandCount + nodeCount) {
@@ -178,6 +180,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
           return false;
         }
         command.action = RenderCommand::Action::filterBegin;
+        sceneHasFilter_ = true;
         commandFilterPayload.kind = static_cast<FilterKind>(blendValue);
         std::array<float, 21> filterParameters{};
         std::shared_ptr<const CustomFilterPlan> customFilterPlan;
@@ -411,6 +414,7 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
       continue;
     }
     if (kind == static_cast<std::uint32_t>(NodeKind::toneAdjust)) {
+      sceneHasToneAdjust_ = true;
       std::array<float, 20> matrix{};
       std::copy_n(values + valueOffset + 7, 20, matrix.begin());
       frame_.colorMatrices.push_back(matrix);
@@ -589,21 +593,28 @@ bool Renderer::queueScene(std::uint32_t version, const std::uint32_t* metadata,
     frame_.spriteVertices.resize(originalSpriteVerticesCount);
     sceneSubmittedThisFrame_ = originalSceneSubmitted;
     sceneHasEffect_ = originalSceneHasEffect;
+    sceneHasFilter_ = originalSceneHasFilter;
     sceneHasCustomFilter_ = originalSceneHasCustomFilter;
     sceneHasColorMatrixFilter_ = originalSceneHasColorMatrixFilter;
+    sceneHasToneAdjust_ = originalSceneHasToneAdjust;
     throw;
   }
   discardCommandsFrom(originalCommandCount);
   frame_.effects.resize(originalEffectCount);
   frame_.colorMatrices.resize(originalColorMatrixCount);
+  frame_.filterPayloads.resize(originalFilterPayloadCount);
   frame_.filterParameters.resize(originalFilterParameterCount);
   frame_.customFilterPlans.resize(originalCustomFilterPlanCount);
   frame_.colorEffects.resize(originalColorEffectCount);
+  frame_.clips.resize(originalClipCount);
   frame_.maskTransforms.resize(originalMaskTransformCount);
   frame_.spriteVertices.resize(originalSpriteVerticesCount);
   sceneSubmittedThisFrame_ = originalSceneSubmitted;
   sceneHasEffect_ = originalSceneHasEffect;
+  sceneHasFilter_ = originalSceneHasFilter;
   sceneHasCustomFilter_ = originalSceneHasCustomFilter;
+  sceneHasColorMatrixFilter_ = originalSceneHasColorMatrixFilter;
+  sceneHasToneAdjust_ = originalSceneHasToneAdjust;
   return false;
 }
 
