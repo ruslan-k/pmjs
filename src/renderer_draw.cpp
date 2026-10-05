@@ -530,7 +530,7 @@ void Renderer::renderScene() {
     begin = end;
     scannedFilterDepth = 0;
   }
-  const RenderCommand* composedToneCommand = nullptr;
+  std::uint32_t composedToneCommandIndex = 0;
   if (!offscreenRender_) {
     std::size_t toneIndex = frame_.commands.size();
     std::size_t toneCount = 0;
@@ -557,7 +557,8 @@ void Renderer::renderScene() {
                   command.colorMatrixIndex == 0 &&
                   command.blendMode == BlendMode::normal;
     }
-    if (cleanTail) composedToneCommand = &frame_.commands[toneIndex];
+    if (cleanTail) composedToneCommandIndex =
+      static_cast<std::uint32_t>(toneIndex + 1U);
   }
   struct DrawOperation {
     std::uint32_t tileLayer = 0;
@@ -574,7 +575,7 @@ void Renderer::renderScene() {
     float textureHeight = 1;
     float blur = 0;
     ImageHandle maskImage = 0;
-    const RenderCommand* matrixCommand = nullptr;
+    std::uint32_t matrixCommandIndex = 0;
     RenderCommand::Action action = RenderCommand::Action::draw;
     bool appliesSpriteColor : 1 = false;
     bool pixiSpritePacking : 1 = false;
@@ -670,7 +671,8 @@ void Renderer::renderScene() {
       DrawOperation operation{};
       operation.first = appendQuad(vertices);
       operation.count = 6;
-      operation.matrixCommand = &command;
+      operation.matrixCommandIndex =
+        static_cast<std::uint32_t>(commandIndex + 1U);
       operations.push_back(operation);
       continue;
     }
@@ -1554,17 +1556,19 @@ void Renderer::renderScene() {
       applyBlendMode(activeBlend);
       continue;
     }
-    if (operation.matrixCommand) {
-      if (operation.matrixCommand->colorMatrixIndex == 0 ||
-          operation.matrixCommand->colorMatrixIndex > frame_.colorMatrices.size()) {
+    if (operation.matrixCommandIndex != 0) {
+      const auto& matrixCommand =
+        frame_.commands[operation.matrixCommandIndex - 1U];
+      if (matrixCommand.colorMatrixIndex == 0 ||
+          matrixCommand.colorMatrixIndex > frame_.colorMatrices.size()) {
         continue;
       }
       const auto& toneMatrix =
-        frame_.colorMatrices[operation.matrixCommand->colorMatrixIndex - 1];
-      if (operation.matrixCommand == composedToneCommand) {
+        frame_.colorMatrices[matrixCommand.colorMatrixIndex - 1];
+      if (operation.matrixCommandIndex == composedToneCommandIndex) {
         ensureTarget(toneOverlayTarget_, width_, height_);
         presentationColorMatrix_ = toneMatrix;
-        presentationColorMatrixAlpha_ = operation.matrixCommand->color[3];
+        presentationColorMatrixAlpha_ = matrixCommand.color[3];
         toneCompositionActive_ = true;
         glBindFramebuffer(GL_FRAMEBUFFER, toneOverlayTarget_.framebuffer);
         glViewport(0, 0, std::lround(rasterFrame[2] * rasterResolution), std::lround(rasterFrame[3] * rasterResolution));
@@ -1602,7 +1606,7 @@ void Renderer::renderScene() {
       glUniform1i(premultipliedInputUniform_, 1);
       glUniform1fv(colorMatrixUniform_, 20, toneMatrix.data());
       glUniform1f(colorMatrixAlphaUniform_,
-                  operation.matrixCommand->color[3]);
+                  matrixCommand.color[3]);
       drawQuadOperation(operation);
       if (diagnostics_) {
         ++stats_.drawCalls;
