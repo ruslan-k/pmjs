@@ -988,6 +988,20 @@ void Renderer::renderScene() {
   bool simpleSpriteProjectionYDown = false;
   bool effectSpriteProjectionValid = false;
   bool effectSpriteProjectionYDown = false;
+  struct SpriteUniformState {
+    bool flagsValid = false;
+    bool clampedTilingSampling = false;
+    bool spriteWorldVertices = false;
+    bool pixiSpritePacking = false;
+    bool premultipliedSpriteTexture = false;
+    bool textureSizeValid = false;
+    float textureWidth = 0;
+    float textureHeight = 0;
+    bool nearestValid = false;
+    bool nearest = false;
+  };
+  SpriteUniformState simpleSpriteUniformState;
+  SpriteUniformState effectSpriteUniformState;
   bool scissorActive = false;
   std::size_t filterDepth = 0;
   std::array<const RenderCommand*, scene_packet::maxFilterDepth> filterCommands{};
@@ -1877,20 +1891,64 @@ void Renderer::renderScene() {
       projectionValid = true;
       projectionYDown = targetYDown;
     }
-    glUniform1i(simpleSprite ? simpleTilingClampUniform_ : spriteEffectTilingClampUniform_,
-                operation.clampedTilingSampling);
-    if (simpleSprite) glUniform2f(simpleTextureSizeUniform_, operation.textureWidth, operation.textureHeight);
-    glUniform1i(simpleSprite ? simpleSpriteVerticesUniform_ : spriteEffectVerticesUniform_, operation.spriteWorldVertices);
-    glUniform1i(simpleSprite ? simpleSpritePackingUniform_ : spriteEffectPackingUniform_,
-                operation.pixiSpritePacking ? 1 : 0);
-    glUniform1i(simpleSprite ? simpleSpritePremultipliedUniform_ : spriteEffectPremultipliedUniform_,
-                operation.premultipliedSpriteTexture ? 1 : 0);
+    auto& spriteUniformState = simpleSprite
+      ? simpleSpriteUniformState : effectSpriteUniformState;
+    if (!spriteUniformState.flagsValid ||
+        spriteUniformState.clampedTilingSampling !=
+          operation.clampedTilingSampling) {
+      glUniform1i(simpleSprite ? simpleTilingClampUniform_
+                              : spriteEffectTilingClampUniform_,
+                  operation.clampedTilingSampling);
+      spriteUniformState.clampedTilingSampling =
+        operation.clampedTilingSampling;
+    }
+    if (!spriteUniformState.flagsValid ||
+        spriteUniformState.spriteWorldVertices !=
+          operation.spriteWorldVertices) {
+      glUniform1i(simpleSprite ? simpleSpriteVerticesUniform_
+                              : spriteEffectVerticesUniform_,
+                  operation.spriteWorldVertices);
+      spriteUniformState.spriteWorldVertices =
+        operation.spriteWorldVertices;
+    }
+    if (!spriteUniformState.flagsValid ||
+        spriteUniformState.pixiSpritePacking != operation.pixiSpritePacking) {
+      glUniform1i(simpleSprite ? simpleSpritePackingUniform_
+                              : spriteEffectPackingUniform_,
+                  operation.pixiSpritePacking ? 1 : 0);
+      spriteUniformState.pixiSpritePacking = operation.pixiSpritePacking;
+    }
+    if (!spriteUniformState.flagsValid ||
+        spriteUniformState.premultipliedSpriteTexture !=
+          operation.premultipliedSpriteTexture) {
+      glUniform1i(simpleSprite ? simpleSpritePremultipliedUniform_
+                              : spriteEffectPremultipliedUniform_,
+                  operation.premultipliedSpriteTexture ? 1 : 0);
+      spriteUniformState.premultipliedSpriteTexture =
+        operation.premultipliedSpriteTexture;
+    }
+    spriteUniformState.flagsValid = true;
+    if (!spriteUniformState.textureSizeValid ||
+        spriteUniformState.textureWidth != operation.textureWidth ||
+        spriteUniformState.textureHeight != operation.textureHeight) {
+      glUniform2f(simpleSprite ? simpleTextureSizeUniform_
+                              : spriteEffectTextureSizeUniform_,
+                  operation.textureWidth, operation.textureHeight);
+      spriteUniformState.textureWidth = operation.textureWidth;
+      spriteUniformState.textureHeight = operation.textureHeight;
+      spriteUniformState.textureSizeValid = true;
+    }
     if (!simpleSprite) {
       if (operationCommand == nullptr) continue;
       const auto& frame = operationCommand->source;
       glUniform4f(spriteEffectFrameUniform_, frame[0], frame[1],
         frame[0] + frame[2] - 1, frame[1] + frame[3] - 1);
-      glUniform1i(spriteEffectNearestUniform_, operation.nearest);
+      if (!spriteUniformState.nearestValid ||
+          spriteUniformState.nearest != operation.nearest) {
+        glUniform1i(spriteEffectNearestUniform_, operation.nearest);
+        spriteUniformState.nearest = operation.nearest;
+        spriteUniformState.nearestValid = true;
+      }
       glUniform1i(spriteEffectColorEnabledUniform_,
                   operation.appliesSpriteColor ? 1 : 0);
       if (operation.appliesSpriteColor) {
@@ -1901,8 +1959,6 @@ void Renderer::renderScene() {
         glUniform4fv(spriteEffectBlendColorUniform_, 1,
                      operationColorEffect->blendColor.data());
       }
-      glUniform2f(spriteEffectTextureSizeUniform_, operation.textureWidth,
-                  operation.textureHeight);
       glUniform1f(spriteEffectBlurUniform_, operation.blur);
       glUniform1i(spriteEffectMatrixEnabledUniform_,
                   operation.inlineMatrixIndex != 0 ? 1 : 0);
