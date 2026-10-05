@@ -734,20 +734,9 @@ void Renderer::renderScene() {
       }
       continue;
     }
-    const auto info = command.image == 0 ? std::optional<ImageInfo>{} :
-      (command.pixiSpritePacking && !command.premultipliedSpriteTexture ?
-        images_.lookupPremultiplied(command.image) : images_.lookup(command.image));
-    if (command.image != 0 && !info) continue;
-    const float textureWidth = info ? static_cast<float>(info->width) : 1.0F;
-    const float textureHeight = info ? static_cast<float>(info->height) : 1.0F;
-    const std::uint32_t texture = info ? info->texture : whiteTexture_;
-    const bool texturePremultiplied = command.premultipliedSpriteTexture || (info && info->premultiplied);
     const auto* commandSpriteVertices =
       command.spriteWorldVertices ? spriteVertices(command) : nullptr;
     if (command.spriteWorldVertices && commandSpriteVertices == nullptr) continue;
-    const auto* commandMaskTransform =
-      command.maskImage ? maskTransform(command) : nullptr;
-    if (command.maskImage && commandMaskTransform == nullptr) continue;
     const auto& t = command.transform;
     const auto projectPoint = [&](float px, float py) {
       if (command.roundPixels) {
@@ -806,6 +795,23 @@ void Renderer::renderScene() {
                          p2[1] <= -1 && p3[1] <= -1;
       if (left || right || above || below) continue;
     }
+
+    // Defer image lookup/premultiplication until after visibility rejection.
+    // lookupPremultiplied() can perform a full readback and create a second GPU
+    // texture, so doing it for a culled sprite is especially expensive.
+    const auto info = command.image == 0 ? std::optional<ImageInfo>{} :
+      (command.pixiSpritePacking && !command.premultipliedSpriteTexture ?
+        images_.lookupPremultiplied(command.image) : images_.lookup(command.image));
+    if (command.image != 0 && !info) continue;
+    const float textureWidth = info ? static_cast<float>(info->width) : 1.0F;
+    const float textureHeight = info ? static_cast<float>(info->height) : 1.0F;
+    const std::uint32_t texture = info ? info->texture : whiteTexture_;
+    const bool texturePremultiplied =
+      command.premultipliedSpriteTexture || (info && info->premultiplied);
+    const auto* commandMaskTransform =
+      command.maskImage ? maskTransform(command) : nullptr;
+    if (command.maskImage && commandMaskTransform == nullptr) continue;
+
     const float u0 = command.source[0] / textureWidth;
     const float v0 = command.source[1] / textureHeight;
     const float u1 = (command.source[0] + command.source[2]) / textureWidth;
