@@ -1568,16 +1568,17 @@ void Renderer::renderScene() {
         glBindTexture(GL_TEXTURE_2D, input.texture);
         setBoundTextureFiltering(input.texture, false);
         glUseProgram(custom.program);
-        glUniform1i(glGetUniformLocation(custom.program, "pmjsTargetYDown"), targetYDown);
-        glUniform1i(glGetUniformLocation(custom.program, "uSampler"), 0);
-        glUniform2f(glGetUniformLocation(custom.program, "pmjsScreenSize"), width_, height_);
-        glUniform4f(glGetUniformLocation(custom.program, "pmjsFilterFrame"),
+        glUniform1i(custom.targetYDown, targetYDown);
+        glUniform1i(custom.sampler, 0);
+        glUniform2f(custom.screenSize, width_, height_);
+        glUniform4f(custom.filterFrame,
           bounds[0], bounds[1], frameWidth, frameHeight);
-        glUniform2f(glGetUniformLocation(custom.program, "pmjsFilterTextureSize"), input.width, input.height);
-        glUniform4f(glGetUniformLocation(custom.program, "filterArea"),
+        glUniform2f(custom.filterTextureSize, input.width, input.height);
+        glUniform4f(custom.filterArea,
           input.width, input.height, bounds[0], bounds[1]);
-        glUniform4f(glGetUniformLocation(custom.program, "filterClamp"), 0, 0,
-          float(frameWidth - 1) / input.width, float(frameHeight - 1) / input.height);
+        glUniform4f(custom.filterClamp, 0, 0,
+          float(frameWidth - 1) / input.width,
+          float(frameHeight - 1) / input.height);
         int offset = 1;
         for (const auto& uniform : custom.uniforms) {
           const float* data = params.data() + offset;
