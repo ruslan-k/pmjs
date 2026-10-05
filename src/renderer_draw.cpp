@@ -11,12 +11,13 @@
 namespace pmjs {
 namespace {
 constexpr std::array<float, 4> zeroColor{};
-std::array<int, 4> effectFrame(const RenderCommand* filter, int width, int height) {
-  if (!filter || !filter->clipped) return {0, 0, width, height};
-  return {std::clamp(filter->clip[0], 0, width),
-          std::clamp(filter->clip[1], 0, height),
-          std::clamp(filter->clip[2], 0, width),
-          std::clamp(filter->clip[3], 0, height)};
+std::array<int, 4> effectFrame(const std::array<int, 4>* clip,
+                               int width, int height) {
+  if (!clip) return {0, 0, width, height};
+  return {std::clamp((*clip)[0], 0, width),
+          std::clamp((*clip)[1], 0, height),
+          std::clamp((*clip)[2], 0, width),
+          std::clamp((*clip)[3], 0, height)};
 }
 
 }  // namespace
@@ -226,17 +227,17 @@ void Renderer::computeFilterContentBounds() {
         ey1 = level.maxY;
         effective = true;
       } else if (begun.clipped) {
-        ex0 = static_cast<float>(begun.clip[0]);
-        ey0 = static_cast<float>(begun.clip[1]);
-        ex1 = static_cast<float>(begun.clip[2]);
-        ey1 = static_cast<float>(begun.clip[3]);
+        ex0 = static_cast<float>(commandClip(begun)[0]);
+        ey0 = static_cast<float>(commandClip(begun)[1]);
+        ex1 = static_cast<float>(commandClip(begun)[2]);
+        ey1 = static_cast<float>(commandClip(begun)[3]);
         effective = true;
       }
       if (effective && begun.clipped) {
-        ex0 = std::max(ex0, static_cast<float>(begun.clip[0]));
-        ey0 = std::max(ey0, static_cast<float>(begun.clip[1]));
-        ex1 = std::min(ex1, static_cast<float>(begun.clip[2]));
-        ey1 = std::min(ey1, static_cast<float>(begun.clip[3]));
+        ex0 = std::max(ex0, static_cast<float>(commandClip(begun)[0]));
+        ey0 = std::max(ey0, static_cast<float>(commandClip(begun)[1]));
+        ex1 = std::min(ex1, static_cast<float>(commandClip(begun)[2]));
+        ey1 = std::min(ey1, static_cast<float>(commandClip(begun)[3]));
       }
       if (!effective) {
         out.bounded = false;
@@ -259,10 +260,10 @@ void Renderer::computeFilterContentBounds() {
           int right = static_cast<int>(std::ceil(region[2]));
           int bottom = static_cast<int>(std::ceil(region[3]));
           if (begun.clipped) {
-            left = std::max(left, begun.clip[0]);
-            top = std::max(top, begun.clip[1]);
-            right = std::min(right, begun.clip[2]);
-            bottom = std::min(bottom, begun.clip[3]);
+            left = std::max(left, commandClip(begun)[0]);
+            top = std::max(top, commandClip(begun)[1]);
+            right = std::min(right, commandClip(begun)[2]);
+            bottom = std::min(bottom, commandClip(begun)[3]);
           }
           left = std::clamp(left, 0, width_);
           top = std::clamp(top, 0, height_);
@@ -395,10 +396,10 @@ bool Renderer::filterBoundsRect(const RenderCommand* filterBegin,
   right = std::clamp(right, 0, width_);
   bottom = std::clamp(bottom, 0, height_);
   if (filterBegin->clipped) {
-    left = std::max(left, filterBegin->clip[0]);
-    top = std::max(top, filterBegin->clip[1]);
-    right = std::min(right, filterBegin->clip[2]);
-    bottom = std::min(bottom, filterBegin->clip[3]);
+    left = std::max(left, commandClip(*filterBegin)[0]);
+    top = std::max(top, commandClip(*filterBegin)[1]);
+    right = std::min(right, commandClip(*filterBegin)[2]);
+    bottom = std::min(bottom, commandClip(*filterBegin)[3]);
   }
   *rect = {left, top, right, bottom};
   return true;
@@ -607,7 +608,7 @@ void Renderer::renderScene() {
     if (operation.clipOverrideIndex != 0) {
       return operationClipOverrides[operation.clipOverrideIndex - 1U];
     }
-    return operation.command->clip;
+    return commandClip(*operation.command);
   };
   const auto appendQuad = [&](const std::array<float, 48>& quad) {
     const std::size_t baseVertex = vertices_.size() / 12U;
@@ -671,7 +672,9 @@ void Renderer::renderScene() {
       operation.clipped = command.clipped;
       operations.push_back(operation);
       const auto* filter = preparingFilterDepth ? preparingFilters[preparingFilterDepth - 1] : nullptr;
-      const auto frame = effectFrame(filter, width_, height_);
+      const auto frame = effectFrame(
+        filter && filter->clipped ? &commandClip(*filter) : nullptr,
+        width_, height_);
       const auto& effect = frame_.effects[command.effectIndex - 1];
       const float sx = effect.resetViewport[0] / std::max(1, frame[2] - frame[0]);
       const float sy = effect.resetViewport[1] / std::max(1, frame[3] - frame[1]);
@@ -805,17 +808,17 @@ void Renderer::renderScene() {
     const RenderCommand* inlineFilter = inlineFilterIndex == 0 ? nullptr :
       &frame_.commands[inlineFilterIndex - 1U];
     bool operationClipped = command.clipped;
-    std::array<int, 4> operationClip = command.clip;
+    std::array<int, 4> operationClip = command.clipped ? commandClip(command) : std::array<int, 4>{};
     if (inlineFilter && inlineFilter->clipped) {
       if (command.clipped) {
         operationClip = {
-          std::max(inlineFilter->clip[0], command.clip[0]),
-          std::max(inlineFilter->clip[1], command.clip[1]),
-          std::min(inlineFilter->clip[2], command.clip[2]),
-          std::min(inlineFilter->clip[3], command.clip[3]),
+          std::max(commandClip(*inlineFilter)[0], commandClip(command)[0]),
+          std::max(commandClip(*inlineFilter)[1], commandClip(command)[1]),
+          std::min(commandClip(*inlineFilter)[2], commandClip(command)[2]),
+          std::min(commandClip(*inlineFilter)[3], commandClip(command)[3]),
         };
       } else {
-        operationClip = inlineFilter->clip;
+        operationClip = commandClip(*inlineFilter);
       }
       operationClipped = true;
     }
@@ -854,7 +857,7 @@ void Renderer::renderScene() {
         0, operationClipped, textureWidth, textureHeight,
         command.blur, command.maskImage, commandMaskTransform});
       if (operationClipped &&
-          (!command.clipped || operationClip != command.clip)) {
+          (!command.clipped || operationClip != commandClip(command))) {
         operationClipOverrides.push_back(operationClip);
         operations.back().clipOverrideIndex =
           static_cast<std::uint32_t>(operationClipOverrides.size());
@@ -988,7 +991,7 @@ void Renderer::renderScene() {
         savedClip[filterDepth] = boundedRect;
       } else {
         savedScissor[filterDepth] = operation.command->clipped;
-        savedClip[filterDepth] = operation.command->clip;
+        savedClip[filterDepth] = operation.command->clipped ? commandClip(*operation.command) : std::array<int, 4>{};
       }
       filterCommands[filterDepth] = operation.command;
       if (scissorActive) {
@@ -1619,7 +1622,9 @@ void Renderer::renderScene() {
           operation.command->effectIndex > frame_.effects.size()) continue;
       auto draw = frame_.effects[operation.command->effectIndex - 1];
       const auto* filter = filterDepth ? filterCommands[filterDepth - 1] : nullptr;
-      const auto filterFrame = effectFrame(filter, width_, height_);
+      const auto filterFrame = effectFrame(
+        filter && filter->clipped ? &commandClip(*filter) : nullptr,
+        width_, height_);
       if (filterDepth > 0) {
         // MZ draws directly in the filter's local GL coordinates, bypassing Pixi's
         // projection. Crop the backdrop to that frame without reflecting particles,
