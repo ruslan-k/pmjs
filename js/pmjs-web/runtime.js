@@ -129,6 +129,18 @@ var nativeEmptyGamepads = [];
 var nativeZeroAxes = [0, 0, 0, 0];
 var nativeGamepadExposed = false;
 var pendingKeyReleases = [];
+function compactPendingKeyReleases(heldKeys, removeKeyCode) {
+  var write = 0;
+  for (var read = 0; read < pendingKeyReleases.length; read++) {
+    var release = pendingKeyReleases[read];
+    if (removeKeyCode !== undefined && release.keyCode === removeKeyCode) {
+      continue;
+    }
+    if (heldKeys && heldKeys.indexOf(release.keyCode) >= 0) continue;
+    pendingKeyReleases[write++] = release;
+  }
+  pendingKeyReleases.length = write;
+}
 function nativeButtonMask(values) {
   var mask = 0;
   if (!values) return 0;
@@ -246,16 +258,10 @@ globalThis.__pmjsReceiveInput = function(state) {
   var events = state.keyEvents || [];
   var pressed = state.keysPressed || [];
   var heldKeys = state.keysDown || [];
-  pendingKeyReleases = pendingKeyReleases.filter(function(release) {
-    return heldKeys.indexOf(release.keyCode) < 0;
-  });
+  compactPendingKeyReleases(heldKeys);
   for (var k = 0; k < events.length; k++) {
     var source = events[k];
-    if (source.down) {
-      pendingKeyReleases = pendingKeyReleases.filter(function(release) {
-        return release.keyCode !== source.keyCode;
-      });
-    }
+    if (source.down) compactPendingKeyReleases(null, source.keyCode);
     if (!source.down && pressed.indexOf(source.keyCode) >= 0 &&
         heldKeys.indexOf(source.keyCode) < 0) pendingKeyReleases.push(source);
     else dispatchNativeKey(source);
