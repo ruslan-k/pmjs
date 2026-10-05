@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <optional>
 #include <memory>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -259,6 +260,8 @@ class CanvasStore {
   // Reused CPU workspaces keep blur and dirty uploads off the allocator hot path.
   std::vector<std::uint8_t> blurScratch_;
   std::vector<std::uint8_t> uploadScratch_;
+  std::size_t uploadScratchRetainBytes_ =
+    std::numeric_limits<std::size_t>::max();
   std::size_t liveCount_ = 0;
   std::size_t peakCpuBytes_ = 0;
   std::size_t peakLiveCount_ = 0;
