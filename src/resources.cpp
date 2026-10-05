@@ -569,14 +569,19 @@ bool ImageStore::updateRgba(ImageHandle handle, const void* pixels) {
         slot.premultipliedTexture = 0;
       }
     } else if (slot.premultipliedTexture) {
-      std::vector<std::uint8_t> premultiplied;
+      const std::size_t required = static_cast<std::size_t>(info->width) *
+        static_cast<std::size_t>(info->height) * 4U;
+      if (premultiplyScratch_.capacity() > 4U * 1024U * 1024U &&
+          required * 4U < premultiplyScratch_.capacity()) {
+        std::vector<std::uint8_t>().swap(premultiplyScratch_);
+      }
       premultiplyRgba(pixels, info->width, info->height, info->width,
-                      &premultiplied);
+                      &premultiplyScratch_);
       while (glGetError() != GL_NO_ERROR) {}
       glBindTexture(GL_TEXTURE_2D, slot.premultipliedTexture);
       glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, info->width, info->height,
-                      GL_RGBA, GL_UNSIGNED_BYTE, premultiplied.data());
+                      GL_RGBA, GL_UNSIGNED_BYTE, premultiplyScratch_.data());
       if (glGetError() == GL_NO_ERROR) {
         textureUploadBytes_ += uploadBytes;
       } else {
@@ -613,14 +618,20 @@ bool ImageStore::updateRgbaRegion(ImageHandle handle, int x, int y, int width,
         slot.premultipliedTexture = 0;
       }
     } else if (slot.premultipliedTexture) {
-      std::vector<std::uint8_t> premultiplied;
-      premultiplyRgba(pixels, width, height, sourceRowPixels, &premultiplied);
+      const std::size_t required = static_cast<std::size_t>(width) *
+        static_cast<std::size_t>(height) * 4U;
+      if (premultiplyScratch_.capacity() > 4U * 1024U * 1024U &&
+          required * 4U < premultiplyScratch_.capacity()) {
+        std::vector<std::uint8_t>().swap(premultiplyScratch_);
+      }
+      premultiplyRgba(pixels, width, height, sourceRowPixels,
+                      &premultiplyScratch_);
       while (glGetError() != GL_NO_ERROR) {}
       glBindTexture(GL_TEXTURE_2D, slot.premultipliedTexture);
       glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
       glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
       glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, GL_RGBA,
-                      GL_UNSIGNED_BYTE, premultiplied.data());
+                      GL_UNSIGNED_BYTE, premultiplyScratch_.data());
       glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
       if (glGetError() == GL_NO_ERROR) {
         textureUploadBytes_ += uploadBytes;
