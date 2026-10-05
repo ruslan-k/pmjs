@@ -154,6 +154,24 @@ inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
     ? voice.volume * voice.gain * leftPanGain : 0.0F;
   float stableRightGain = stableGain
     ? voice.volume * voice.gain * rightPanGain : 0.0F;
+  const auto advanceSourceFrame = [&]() {
+    if (!voice.asset) voice.samples.pop_front(2);
+    voice.phase -= 1;
+    ++voice.positionFrame;
+    if (voice.asset && voice.loop && voice.positionFrame >=
+        (voice.loopEnd > voice.loopStart ? voice.loopEnd
+          : voice.asset->samples.size() / 2)) {
+      voice.positionFrame = voice.loopStart;
+    } else if (voice.loop && voice.loopEnd > voice.loopStart &&
+               voice.positionFrame >= voice.loopEnd) {
+      voice.positionFrame = voice.loopStart;
+    } else if (voice.loop && voice.duration > 0 &&
+               voice.positionFrame >= (voice.asset
+                 ? voice.asset->samples.size() / 2
+                 : static_cast<std::uint64_t>(voice.duration * 48000))) {
+      voice.positionFrame = 0;
+    }
+  };
   for (int frame = 0; frame < frames; ++frame) {
     std::uint64_t nextSampleFrame = voice.positionFrame + 1;
     if (voice.asset) {
@@ -226,25 +244,20 @@ inline void mixVoiceInto(VoiceMixState& voice, float* output, int frames,
       ? stableRightGain : voice.volume * voice.gain * rightPanGain;
     output[frame * 2] += left * leftGain * master;
     output[frame * 2 + 1] += right * rightGain * master;
+    const bool unitPitchFrame =
+      voice.pitch == 1.0F && voice.phase == 0.0;
     voice.phase += voice.pitch;
-    while (voice.phase >= 1 && (voice.asset
-        ? (voice.loop || voice.positionFrame < voice.asset->samples.size() / 2)
-        : voice.samples.size() >= 2)) {
-      if (!voice.asset) {
-        voice.samples.pop_front(2);
+    if (unitPitchFrame) {
+      // The preconditions above guarantee a current+next source frame, so a
+      // unit-pitch sample advances exactly once without the generic loop.
+      advanceSourceFrame();
+    } else {
+      while (voice.phase >= 1 && (voice.asset
+          ? (voice.loop ||
+             voice.positionFrame < voice.asset->samples.size() / 2)
+          : voice.samples.size() >= 2)) {
+        advanceSourceFrame();
       }
-      voice.phase -= 1;
-      ++voice.positionFrame;
-      if (voice.asset && voice.loop && voice.positionFrame >=
-          (voice.loopEnd > voice.loopStart ? voice.loopEnd : voice.asset->samples.size() / 2))
-        voice.positionFrame = voice.loopStart;
-      else if (voice.loop && voice.loopEnd > voice.loopStart &&
-          voice.positionFrame >= voice.loopEnd)
-        voice.positionFrame = voice.loopStart;
-      else if (voice.loop && voice.duration > 0 &&
-               voice.positionFrame >= (voice.asset ? voice.asset->samples.size() / 2
-                 : static_cast<std::uint64_t>(voice.duration * 48000)))
-        voice.positionFrame = 0;
     }
   }
 }
